@@ -1,0 +1,20 @@
+{
+  "description": "After the agent writes a file, report (or strip) AI/C2PA provenance marks in it.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/service/scripts/hook_written_file.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

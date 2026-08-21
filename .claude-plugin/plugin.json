@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "watermarks-remover",
+  "displayName": "Watermarks Remover",
+  "version": "0.5.0",
+  "description": "Remove multi-vendor AI provenance marks: invisible Unicode (Layer A), statistical text watermarks via rewrite (Layer B), and C2PA/EXIF/XMP/container metadata on images, documents, and media. Ships the remove-ai-marks skill (thin client over the repo's HTTP service) and the self-contained clean-user-facing-text skill.",
+  "author": {
+    "name": "watermarks-remover contributors",
+    "url": "https://github.com/guillaumemeyer/watermarks-remover"
+  },
+  "homepage": "https://github.com/guillaumemeyer/watermarks-remover#readme",
+  "repository": "https://github.com/guillaumemeyer/watermarks-remover",
+  "license": "MIT",
+  "keywords": [
+    "watermark",
+    "c2pa",
+    "content-credentials",
+    "provenance",
+    "metadata",
+    "unicode",
+    "synthid",
+    "ai-detection"
+  ],
+  "userConfig": {
+    "hook_mode": {
+      "type": "string",
+      "title": "Hook mode",
+      "description": "What the PostToolUse hook does with files the agent writes: 'check' reports provenance marks and leaves the file alone, 'clean' strips them in place.",
+      "default": "check"
+    }
+  }
+}

@@ -33,6 +33,8 @@ issue.
 | Path | Role |
 | --- | --- |
 | `skills/remove-ai-marks/SKILL.md` | Agent skill entry (workflow, ethics) — remote client over HTTP |
+| `.claude-plugin/` | Claude Code plugin manifest + single-plugin marketplace (`make plugin-validate`) |
+| `install_skill.py` | Multi-host skill installer (Claude Code, Cowork bundle, Cursor) |
 | `skills/remove-ai-marks/references/` | Vendors, mark classes, matrix, ethics |
 | `service/scripts/` | Layer A/B hooks + image/container cleaners + `server.py` HTTP service |
 | `service/Dockerfile*` | Container images (core + optional backends) |

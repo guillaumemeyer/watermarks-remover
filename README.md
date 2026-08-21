@@ -33,6 +33,173 @@ Service path: [`service/`](service/)
 
 The skill ships **no code** — it calls the service over HTTP. Install the skill (markdown only) and start the service, then set `WATERMARKS_SERVICE_URL` if it is not `http://127.0.0.1:8765`.
 
+In Claude Code, the fastest route is the bundled
+[plugin marketplace](#claude-code-plugin-marketplace) — no clone, and it updates
+in place. Everywhere else, one installer covers every supported host
+(Python 3.10+ stdlib, no dependencies):
+
+```bash
+python3 install_skill.py --skill remove-ai-marks --target claude-code
+```
+
+| Host | Target | Lands in |
+| --- | --- | --- |
+| Claude Code (personal) | `--target claude-code` | `~/.claude/skills/<skill>` (honors `CLAUDE_CONFIG_DIR`) |
+| Claude Code (project) | `--target claude-project --project-dir PATH` | `PATH/.claude/skills/<skill>` |
+| Cowork, claude.ai, cloud sessions, routines | `--target cowork` | `dist/<skill>.zip` to upload under **Customize → Skills** |
+| Cursor | `--target cursor` (default) | `~/.cursor/skills/<skill>` |
+
+Shipped skills: `remove-ai-marks` (full, service-backed) and
+`clean-user-facing-text` (text only, self-contained). `--list` prints them.
+Existing installations are preserved unless you pass `--force`; replacement is
+staged first and the previous install is kept as a uniquely named backup.
+`--link` symlinks this checkout instead of copying, so edits are picked up
+live. On Windows, use `py install_skill.py ...`; the `install-skill.sh` wrapper
+is provided for macOS/Linux shells.
+
+Before writing anything, the installer validates the skill against the
+[Agent Skills](https://agentskills.io) packaging rules that claude.ai uploads
+and the Skills API enforce: spec-only frontmatter (`name`, `description`,
+`license`, `compatibility`, `metadata`, `allowed-tools`), a lowercase hyphenated
+`name` of at most 64 characters matching the directory, a non-empty
+`description` of at most 1024 characters, and a payload under 30 MB.
+
+### Automatic cleaning via hook (deterministic)
+
+A skill is an instruction: the model decides whether to invoke it, and the
+model is the thing producing the marks. A **hook** is executed by the harness
+on every matching tool call, cooperation not required. That makes the hook the
+deterministic half of this workflow.
+
+The plugin registers a `PostToolUse` hook on `Write|Edit|MultiEdit|NotebookEdit`
+that runs [`service/scripts/hook_written_file.py`](service/scripts/hook_written_file.py)
+against the file the agent just wrote. Two modes, matching the pre-commit
+convention of check-by-default:
+
+| Mode | Behaviour |
+| --- | --- |
+| `check` (default) | Reports provenance marks, leaves the file alone. Findings go to the model (exit 2), so it can offer to clean them. |
+| `clean` | Strips the marks in place, then tells the model the file on disk changed. |
+
+Set the mode from the plugin's settings (**Hook mode** in `/plugin manage`,
+read by the hook as `CLAUDE_PLUGIN_OPTION_HOOK_MODE`), or with
+`WATERMARKS_HOOK_MODE=clean` in the environment. The hook command deliberately
+does **not** interpolate `${user_config.hook_mode}`: Claude Code refuses to run
+a hook that references an option the user has never opened `/plugin manage` to
+set — a declared `default` does not satisfy it — so interpolating it would mean
+the hook silently never runs on a fresh install. Detection reuses `audit_lib`'s
+`scan_file` / `is_actionable`, so the hook, the pre-commit gate, and the CI
+SARIF export agree on what counts as actionable; cleaning shells out to
+`clean_file.py`, so no cleaning logic is duplicated. `clean` mode writes to a
+sibling temp file and swaps only on a real difference, so files that were
+already clean keep their mtime and don't retrigger file watchers.
+
+Without the plugin, wire it in `~/.claude/settings.json` (or a project
+`.claude/settings.json`) yourself:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["/path/to/watermarks-remover/service/scripts/hook_written_file.py",
+                     "--mode", "check"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+On Windows, replace `python3` with `py`.
+
+**What a hook cannot do.** No hook can rewrite the assistant's chat message
+before you read it. Claude Code's `Stop` hook receives `last_assistant_message`
+read-only, and there is no pre-send filter for final responses — the same limit
+this project already documents for Cursor rules. So the deterministic guarantee
+covers **files the agent writes**, plus the
+[pre-commit gate](#pre-commit-hook) for anything on its way into git. Text that
+only ever exists in the chat transcript still depends on the skill workflow,
+which is model-instruction-based and therefore best-effort.
+
+### Claude Code plugin (marketplace)
+
+The repository is also a Claude Code **plugin** and a single-plugin
+**marketplace** (`.claude-plugin/`), so both skills install and update in two
+commands, no clone or script required:
+
+```
+/plugin marketplace add guillaumemeyer/watermarks-remover
+/plugin install watermarks-remover@watermarks-remover
+```
+
+The skills then load namespaced: `/watermarks-remover:remove-ai-marks` and
+`/watermarks-remover:clean-user-facing-text` (the bare `/remove-ai-marks` also
+works when nothing else claims the name). `/plugin marketplace update
+watermarks-remover` pulls later versions. The same works from the CLI with
+`claude plugin marketplace add …` / `claude plugin install …`, and from a local
+checkout by passing a path instead of `owner/repo`.
+
+Maintainers: `make plugin-validate` runs `claude plugin validate . --strict`
+against both manifests; `tests/test_plugin_manifest.py` covers the same files
+without needing the CLI.
+
+### Claude Code
+
+```bash
+# Personal — available in all your projects
+python3 install_skill.py --skill remove-ai-marks --target claude-code
+# or: make install-claude-code-skill
+
+# Project — commit .claude/skills/ to share it with the repo
+python3 install_skill.py --skill remove-ai-marks --target claude-project \
+  --project-dir /path/to/project
+# or: make install-claude-project-skill PROJECT=/path/to/project
+```
+
+Claude Code picks up personal and project skills without a restart; `/skills`
+lists what it loaded. Invoke with `/remove-ai-marks` or ask to “strip AI
+watermarks / C2PA / Claude marks / SynthID-class text.” A project install is
+also what [cloud sessions](https://code.claude.com/docs/en/cloud-environments)
+read, since they clone the repository and load its `.claude/skills/`.
+
+### Cowork (and claude.ai, cloud sessions, routines)
+
+Cowork sessions do **not** read `~/.claude/skills` on your machine — they load
+the skills enabled for your claude.ai account, synced when the session starts.
+So install there by uploading a bundle:
+
+```bash
+python3 install_skill.py --skill remove-ai-marks --target cowork
+# writes dist/remove-ai-marks.zip   (make package-cowork-skill)
+```
+
+Then, in the Claude Desktop app, open **Customize → Skills → Add** and upload
+the zip (the same skill settings on claude.ai work too). The bundle is
+reproducible and contains a single top-level `remove-ai-marks/` directory with
+`SKILL.md` at its root, which is the layout the upload expects.
+
+Service reachability matters more here than in a local install: the skill is a
+thin HTTP client, so the session must be able to reach `WATERMARKS_SERVICE_URL`.
+Cowork sessions that run locally on your machine reach a local `make serve`;
+cloud sessions and routines run remotely and need a service URL reachable from
+there (and `WATERMARKS_SERVER_API_KEY` set on it). If you want a skill with no
+service at all, upload `clean-user-facing-text` instead — it is text-only and
+ships its own scripts:
+
+```bash
+python3 install_skill.py --skill clean-user-facing-text --target cowork
+```
+
+### Grok
+
 ```bash
 # Grok Build / project-local
 mkdir -p .grok/skills
@@ -43,27 +210,20 @@ mkdir -p ~/.grok/skills
 ln -sfn "$(pwd)/skills/remove-ai-marks" ~/.grok/skills/remove-ai-marks
 ```
 
-Invoke with `/remove-ai-marks` or ask to “strip AI watermarks / C2PA / Claude marks / SynthID-class text.”
-
-### Optional Cursor text-only skill
+### Optional text-only skill
 
 [`skills/clean-user-facing-text/`](skills/clean-user-facing-text/) is a
-self-contained Cursor skill for authorized manuscripts, documentation, and web
-copy. It excludes image, C2PA, service, and external-model tooling.
-
-Install it into `~/.cursor/skills/clean-user-facing-text`:
+self-contained skill for authorized manuscripts, documentation, and web
+copy. It excludes image, C2PA, service, and external-model tooling, and runs
+its own vendored Layer A scripts instead of calling the service.
 
 ```bash
-python3 install_skill.py
+python3 install_skill.py --skill clean-user-facing-text --target claude-code
+python3 install_skill.py --skill clean-user-facing-text --target cursor
 ```
 
-On Windows, use `py install_skill.py`. The `install-skill.sh` wrapper is
-provided for macOS/Linux shells. Existing installations are preserved unless
-you pass `--force`; replacement is staged first and the previous install is
-kept as a uniquely named backup.
-
 Skill invocation is model-selected. Projects that explicitly adopt this
-workflow can also copy the optional rule:
+workflow in Cursor can also copy the optional rule:
 
 ```bash
 mkdir -p /path/to/project/.cursor/rules
@@ -929,6 +1089,41 @@ make smoke                          # quick CLI smoke on fixtures
 - **Fix Layer A missing three invisible Default_Ignorable carriers**: `U+180F` (Mongolian free variation selector-4, added in Unicode 14), `U+3164` (Hangul filler), and `U+FFA0` (halfwidth Hangul filler) are blank-rendering Default_Ignorable code points, but their Unicode categories (`Mn`/`Lo`) meant the `Cf` catch-all never saw them and they were absent from the strip set — so both `inspect_text` and `clean_text` passed them through untouched even between plain ASCII. They are now stripped and flagged like their already-covered siblings (`U+180B`–`U+180D`, `U+115F`/`U+1160`), with the same in-context preservation: `U+180F` is kept after a Mongolian letter exactly like FVS1–3, and `U+3164`/`U+FFA0` are kept after a Hangul jamo of their own presentation form (compatibility jamo `U+3131`–`U+318E`, halfwidth jamo `U+FFA1`–`U+FFDC`) exactly like the conjoining fillers, so partial-syllable text is not corrupted. Applied to both the service engine and the vendored lightweight-skill copy
 - **Strip Unicode noncharacters in Layer A**: the 66 noncharacters (`U+FDD0`–`U+FDEF` plus `U+FFFE`/`U+FFFF` at the end of every plane) are permanently reserved for internal use and prohibited in interchange text, render as nothing or tofu, and survive normalisation, yet both `inspect_text` and `clean_text` passed them through untouched: a ready-made covert channel. Layer A now strips them and inspect reports them under the new `noncharacter` kind. Unlike other reserved ranges they can never be assigned, so stripping carries no future-Unicode risk. Applied to both the service engine and the vendored lightweight-skill copy
 - **Stop stripping visible-layout format controls next to their own script**: Egyptian hieroglyph quadrat controls (`U+13430`–`U+1343F`), Duployan shorthand controls (`U+1BCA0`–`U+1BCA3`), and musical beam/tie/slur/phrase controls (`U+1D173`–`U+1D17A`) are category `Cf`, so the catch-all stripped them, yet they visibly govern how their script renders (quadrat stacking, shorthand overlaps, beaming): removing them changes the rendered text, contradicting the "cleaners preserve the document body" invariant. They are now preserved when adjacent to their own script, exactly like the existing Mongolian/Khmer/Hangul handling, and still stripped (and flagged) when floating between unrelated text; `--strip-emoji-glue` paranoid mode still strips them everywhere. Applied to both the service engine and the vendored lightweight-skill copy
+- **Skills install into Claude Code and Cowork**: `install_skill.py` grew a
+  `--target` (`claude-code`, `claude-project`, `cowork`, `cursor`) and a
+  `--skill` selector covering both shipped skills, plus `--list`, `--link`
+  (symlink instead of copy), and `CLAUDE_CONFIG_DIR` support. The `cowork`
+  target builds a reproducible upload bundle (`dist/<skill>.zip`, single
+  top-level skill directory) because Cowork, cloud, and routine sessions load
+  the skills enabled for the claude.ai account rather than `~/.claude/skills`.
+  Every target validates the skill against the Agent Skills packaging rules
+  (spec-only frontmatter, name/description limits, 30 MB cap) before writing.
+  New `make` targets: `install-claude-code-skill`,
+  `install-claude-code-text-skill`, `install-claude-project-skill`,
+  `package-cowork-skill`, `package-cowork-text-skill`.
+- `clean-user-facing-text`'s description no longer names Cursor as the only
+  host, so it triggers in any Agent Skills host.
+- **The repository is now a Claude Code plugin and a single-plugin
+  marketplace** (`.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json`),
+  so both skills install with `/plugin marketplace add guillaumemeyer/watermarks-remover`
+  then `/plugin install watermarks-remover@watermarks-remover`, and update in place.
+  `make plugin-validate` runs `claude plugin validate . --strict`;
+  `tests/test_plugin_manifest.py` checks the manifests without the CLI.
+- **Deterministic auto-cleaning via a `PostToolUse` hook**
+  (`hooks/hooks.json` + `service/scripts/hook_written_file.py`): after the
+  agent writes a file, the harness runs the hook whether or not the model
+  cooperates. `check` (default) reports marks to the model; `clean` strips
+  them in place and tells the model the file moved, swapping only on a real
+  difference so clean files keep their mtime. Mode comes from the plugin's
+  `hook_mode` setting or `WATERMARKS_HOOK_MODE`. Detection reuses
+  `audit_lib.scan_file` / `is_actionable`, so the hook, the pre-commit gate,
+  and the CI SARIF export agree. Mode is read from the environment rather
+  than interpolated as `${user_config.hook_mode}`, because Claude Code
+  refuses to run a hook referencing an option the user has never set, which
+  would leave the hook silently dead on a fresh install. A hook still cannot
+  rewrite the assistant's chat message — no such hook point exists — so that
+  path stays best-effort.
+
 - **Layer B rewriting is now iterative and evaluation-driven**: each round
   generates `--candidates` variants (default 1,
   `WATERMARKS_REWRITE_CANDIDATES`) and `--max-loops` (default 1,

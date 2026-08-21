@@ -4,7 +4,9 @@
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
 	bench-synthid-text \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
-	install-skill install-cursor-text-skill clean
+	install-skill install-claude-code-skill install-claude-code-text-skill \
+	install-claude-project-skill package-cowork-skill package-cowork-text-skill \
+	install-cursor-text-skill plugin-validate clean
 
 SCRIPTS := service/scripts
 PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
@@ -120,14 +122,42 @@ compose-up-heavy:
 compose-check:
 	./compose-check.sh
 
+# Grok (symlink; edits in this checkout are picked up live).
 install-skill:
 	mkdir -p $(HOME)/.grok/skills
 	ln -sfn $(CURDIR)/skills/remove-ai-marks $(HOME)/.grok/skills/remove-ai-marks
 	@echo "linked -> $(HOME)/.grok/skills/remove-ai-marks"
 
+# Claude Code: personal skills (~/.claude/skills), available in every project.
+install-claude-code-skill:
+	$(PYTHON) install_skill.py --skill remove-ai-marks --target claude-code
+
+install-claude-code-text-skill:
+	$(PYTHON) install_skill.py --skill clean-user-facing-text --target claude-code
+
+# Claude Code: project skills (<PROJECT>/.claude/skills), shared via the repo.
+install-claude-project-skill:
+	$(PYTHON) install_skill.py --skill remove-ai-marks --target claude-project \
+	  --project-dir $(or $(PROJECT),$(CURDIR))
+
+# Cowork / cloud sessions load skills enabled for the claude.ai account, so
+# build an upload bundle for Customize > Skills instead of writing to a dir.
+package-cowork-skill:
+	$(PYTHON) install_skill.py --skill remove-ai-marks --target cowork --force
+
+package-cowork-text-skill:
+	$(PYTHON) install_skill.py --skill clean-user-facing-text --target cowork --force
+
 install-cursor-text-skill:
-	$(PYTHON) install_skill.py
+	$(PYTHON) install_skill.py --skill clean-user-facing-text --target cursor
+
+# Claude Code plugin + single-plugin marketplace manifests (.claude-plugin/).
+# Needs the claude CLI; tests/test_plugin_manifest.py covers the same files
+# structurally so CI stays CLI-free.
+plugin-validate:
+	claude plugin validate . --strict
 
 clean:
+	rm -rf dist
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache .venv

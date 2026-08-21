@@ -1,0 +1,41 @@
+{
+  "name": "watermarks-remover",
+  "owner": {
+    "name": "watermarks-remover contributors",
+    "url": "https://github.com/guillaumemeyer/watermarks-remover"
+  },
+  "description": "Anti-detection hygiene skills: invisible Unicode, statistical text watermarks, and C2PA/EXIF/XMP provenance metadata.",
+  "plugins": [
+    {
+      "name": "watermarks-remover",
+      "source": "./",
+      "displayName": "Watermarks Remover",
+      "description": "Remove multi-vendor AI provenance marks from text, images, documents, and media. Bundles the remove-ai-marks and clean-user-facing-text skills.",
+      "version": "0.5.0",
+      "author": {
+        "name": "watermarks-remover contributors",
+        "url": "https://github.com/guillaumemeyer/watermarks-remover"
+      },
+      "homepage": "https://github.com/guillaumemeyer/watermarks-remover#readme",
+      "repository": "https://github.com/guillaumemeyer/watermarks-remover",
+      "license": "MIT",
+      "category": "content",
+      "keywords": [
+        "watermark",
+        "c2pa",
+        "content-credentials",
+        "provenance",
+        "metadata",
+        "unicode",
+        "synthid",
+        "ai-detection"
+      ],
+      "tags": [
+        "watermark",
+        "c2pa",
+        "metadata",
+        "unicode"
+      ]
+    }
+  ]
+}
