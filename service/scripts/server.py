@@ -663,13 +663,28 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
         entry.get("available") and entry.get("is_watermarked")
         for entry in report.get("text_detectors") or []
     )
+    # The SynthID image score must feed the verdict too — a scorer saying
+    # "watermarked" used to read as clean because detected_wm covered the
+    # text detectors only (#165).
+    synthid = report.get("synthid") or {}
+    synthid_wm = bool(synthid.get("available") and synthid.get("is_watermarked"))
     suspicious = (
         bool(report.get("suspicious_total"))
         or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
         or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
         or detected_wm
+        or synthid_wm
     )
-    return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
+    # A scorer that failed is distinguishable from one that ran and found
+    # nothing: surface the failure instead of folding it into "clean".
+    synthid_failed = isinstance(synthid, dict) and synthid.get("available") is False
+    return {
+        "ok": True,
+        "kind": kind,
+        "report": report,
+        "suspicious": suspicious,
+        **({"synthid_probe_failed": True} if synthid_failed else {}),
+    }
 
 
 def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
