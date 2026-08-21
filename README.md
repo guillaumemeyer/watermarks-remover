@@ -19,7 +19,7 @@ Agent skill + stdlib Python service to strip **multi-vendor AI provenance marks*
 | --- | --- | --- |
 | **A** | Invisible Unicode, exotic spaces, bidi, tag chars | Deterministic Python scripts |
 | **B** | Statistical (token-sampling) text watermarks | Agent rewrite + optional `rewrite_text.py` hook |
-| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, AVIF, HEIC, BMP, GIF, TIFF, SVG, PDF, DOCX, XLSX, PPTX, EPUB, ODT, HTML, Markdown, MP4/MOV/M4A/M4V, WAV, MP3 |
+| **Files** | C2PA / EXIF / XMP / doc props | PNG, JPEG, WebP, AVIF, HEIC, BMP, GIF, TIFF, SVG, PDF, DOCX, XLSX, PPTX, EPUB, ODT, HTML, Markdown, MP4/MOV/M4A/M4V, WAV, MP3, FLAC |
 
 Vendors / ecosystems (class-level): **Claude**, **Gemini / SynthID-Text**, **OpenAI** provenance surfaces, **open-LLM** Kirchenbauer-style (green-list) and keyed-Gumbel / EXP (Aaronson) marks.
 
@@ -825,6 +825,10 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | MP4 / MOV / M4A / M4V | ISOBMFF `jumb`/`uuid` boxes (same mechanism as AVIF/HEIC) + `moov/udta` generator tags | Drop boxes |
 | WAV | RIFF `LIST INFO` chunk, embedded `id3 ` chunk | Drop chunks |
 | MP3 | ID3v2 frames (v2.3/v2.4 per-frame; v2.2 whole-tag) | Drop matched frames or whole tag |
+| FLAC | C2PA manifest in an ID3v2 `GEOB` frame | Drop the matched frame or whole ID3v2 tag |
+
+FLAC support covers C2PA's standardized ID3v2 carrier. Native FLAC metadata blocks,
+Vorbis Comments, and waveform-domain watermarks are left untouched.
 
 #### Why PDF needs qpdf, not just exiftool
 

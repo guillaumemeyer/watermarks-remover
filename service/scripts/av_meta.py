@@ -2,10 +2,11 @@
 """AI/C2PA provenance metadata for audio and video containers.
 
 Extends the file-cleaners layer (image_meta.py for PNG/JPEG/..., container_meta.py
-for SVG/PDF/DOCX/...) to MP4/MOV/M4A/M4V (ISOBMFF), WAV, and MP3. Generative
+for SVG/PDF/DOCX/...) to MP4/MOV/M4A/M4V (ISOBMFF), WAV, MP3, and FLAC. Generative
 audio/video tools embed provenance the same way image generators do -- C2PA
 manifests and XMP in ISOBMFF boxes, generator tags in RIFF chunks and ID3v2
-frames -- so this reuses the existing ISOBMFF box walker from image_meta.py
+frames (including FLAC's standard C2PA carrier) -- so this reuses the existing
+ISOBMFF box walker from image_meta.py
 (the same mechanism already proven for AVIF/HEIC) rather than duplicating it.
 
 Metadata only: waveform/pixel data is never touched, matching every other
@@ -40,13 +41,13 @@ from image_meta import (
     strip_isobmff,
 )
 
-AV_EXTS = {".mp4", ".mov", ".m4a", ".m4v", ".wav", ".mp3"}
+AV_EXTS = {".mp4", ".mov", ".m4a", ".m4v", ".wav", ".mp3", ".flac"}
 
 
 @dataclass
 class AVInspectReport:
     path: str
-    format: str  # mp4 | wav | mp3 | unknown
+    format: str  # mp4 | wav | mp3 | flac | unknown
     has_c2pa: bool
     has_ai_metadata: bool
     findings: list[str] = field(default_factory=list)
@@ -65,12 +66,17 @@ class AVInspectReport:
 
 
 def detect_av_format(data: bytes) -> str:
-    """Sniff MP4/MOV/M4A/M4V (ISOBMFF), WAV, or MP3 from magic bytes."""
+    """Sniff MP4/MOV/M4A/M4V (ISOBMFF), WAV, MP3, or FLAC from magic bytes."""
     if len(data) >= 12 and data[4:8] == b"ftyp":
         return "mp4"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "wav"
-    if len(data) >= 3 and data[:3] == b"ID3":
+    if data[:4] == b"fLaC":
+        return "flac"
+    if len(data) >= 10 and data[:3] == b"ID3":
+        parsed = _parse_id3v2_frames(data)
+        if parsed is not None and data[parsed[0] : parsed[0] + 4] == b"fLaC":
+            return "flac"
         return "mp3"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
         return "mp3"  # MPEG frame sync with no ID3v2 header (rare but valid)
@@ -160,6 +166,19 @@ def _id3v2_size_bytes(n: int) -> bytes:
     return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
 
 
+def _id3v2_frames_start(data: bytes, total: int, major: int) -> int | None:
+    pos = 10
+    if not (data[5] & 0x40):
+        return pos
+    if pos + 4 > total:
+        return None
+    ext_size = (
+        _id3v2_size(data, pos) if major == 4 else struct.unpack(">I", data[pos : pos + 4])[0] + 4
+    )
+    pos += ext_size
+    return pos if pos <= total else None
+
+
 def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]]] | None:
     """Parse an ID3v2 tag at the start of *data*.
 
@@ -172,15 +191,21 @@ def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]
         return None
     major = data[3]
     tag_size = _id3v2_size(data, 6)
-    total = 10 + tag_size
+    frames_end = 10 + tag_size
+    footer_size = 10 if major == 4 and data[5] & 0x10 else 0
+    total = frames_end + footer_size
     if total > len(data):
+        return None
+    if footer_size and data[frames_end:total] != b"3DI" + data[3:10]:
         return None
     if major < 3:
         return total, major, []
 
     frames: list[tuple[bytes, bytes]] = []
-    pos = 10
-    while pos + 10 <= total:
+    pos = _id3v2_frames_start(data, frames_end, major)
+    if pos is None:
+        return None
+    while pos + 10 <= frames_end:
         frame_id = data[pos : pos + 4]
         if frame_id == b"\x00\x00\x00\x00":
             break  # padding
@@ -191,7 +216,7 @@ def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]
         )
         frame_start = pos + 10
         frame_end = frame_start + frame_size
-        if frame_size < 0 or frame_end > total:
+        if frame_size < 0 or frame_end > frames_end:
             break
         frames.append((frame_id, data[frame_start:frame_end]))
         pos = frame_end
@@ -260,6 +285,75 @@ def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[
         return data, ["no ID3v2 frames removed (already clean or none matched)"]
 
     header = bytes([ord("I"), ord("D"), ord("3"), major, 0, 0]) + _id3v2_size_bytes(len(kept))
+    return header + bytes(kept) + rest, actions
+
+
+# ---------------------------------------------------------------------------
+# FLAC (C2PA's standardized ID3v2 GEOB carrier only)
+# ---------------------------------------------------------------------------
+
+
+def _geob_text_end(payload: bytes, start: int, encoding: int) -> int | None:
+    terminator = b"\x00" if encoding in (0, 3) else b"\x00\x00"
+    step = len(terminator)
+    for pos in range(start, len(payload) - step + 1, step):
+        if payload[pos : pos + step] == terminator:
+            return pos + step
+    return None
+
+
+def _is_c2pa_geob(frame_id: bytes, payload: bytes) -> bool:
+    if frame_id != b"GEOB" or not payload or payload[0] not in range(4):
+        return False
+    mime_end = payload.find(b"\x00", 1)
+    if mime_end < 0 or payload[1:mime_end].lower() != b"application/c2pa":
+        return False
+    filename_end = _geob_text_end(payload, mime_end + 1, payload[0])
+    if filename_end is None:
+        return False
+    description_end = _geob_text_end(payload, filename_end, payload[0])
+    return description_end is not None and description_end < len(payload)
+
+
+def _inspect_flac(data: bytes) -> tuple[bool, bool, list[str]]:
+    parsed = _parse_id3v2_frames(data)
+    if parsed is None:
+        return False, False, []
+    _total, _major, frames = parsed
+    if any(_is_c2pa_geob(frame_id, payload) for frame_id, payload in frames):
+        return True, True, ["C2PA-related manifest in ID3v2 frame GEOB: application/c2pa"]
+    return False, False, []
+
+
+def _strip_flac(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
+    parsed = _parse_id3v2_frames(data)
+    if parsed is None:
+        return data, ["no FLAC ID3v2 metadata removed (already clean or none matched)"]
+    total, major, frames = parsed
+    rest = data[total:]
+    if strip_all_metadata:
+        return rest, [f"drop FLAC ID3v2.{major} tag ({total} bytes)"]
+
+    kept = bytearray()
+    actions: list[str] = []
+    pos = _id3v2_frames_start(data, total, major)
+    if pos is None:
+        return data, ["no FLAC C2PA metadata removed (invalid ID3v2 extended header)"]
+    for frame_id, payload in frames:
+        frame_end = pos + 10 + len(payload)
+        if _is_c2pa_geob(frame_id, payload):
+            actions.append("drop FLAC ID3v2 frame GEOB: application/c2pa")
+        else:
+            kept.extend(data[pos:frame_end])
+        pos = frame_end
+
+    if not actions:
+        return data, ["no FLAC C2PA metadata removed (already clean or none matched)"]
+
+    if not kept:
+        return rest, actions
+
+    header = data[:5] + bytes([data[5] & ~0x50]) + _id3v2_size_bytes(len(kept))
     return header + bytes(kept) + rest, actions
 
 
@@ -346,12 +440,14 @@ def inspect_av(path: Path) -> AVInspectReport:
         has_c2pa, has_ai, findings = _inspect_wav(data)
     elif fmt == "mp3":
         has_c2pa, has_ai, findings = _inspect_id3v2(data)
+    elif fmt == "flac":
+        has_c2pa, has_ai, findings = _inspect_flac(data)
     else:
-        has_c2pa, has_ai, findings = False, False, ["unsupported format (MP4/MOV/M4A/WAV/MP3)"]
+        has_c2pa, has_ai, findings = False, False, ["unsupported format (MP4/MOV/M4A/WAV/MP3/FLAC)"]
 
     notes: list[str] = []
     if fmt == "unknown":
-        notes.append("format not fully inspected; only MP4/MOV/M4A/WAV/MP3 are supported")
+        notes.append("format not fully inspected; only MP4/MOV/M4A/WAV/MP3/FLAC are supported")
 
     return AVInspectReport(
         path=str(path),
@@ -372,6 +468,8 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
         cleaned, actions = _strip_wav(data, strip_all_metadata=strip_all_metadata)
     elif fmt == "mp3":
         cleaned, actions = _strip_id3v2(data, strip_all_metadata=strip_all_metadata)
+    elif fmt == "flac":
+        cleaned, actions = _strip_flac(data, strip_all_metadata=strip_all_metadata)
     else:
         raise ValueError(f"unsupported audio/video format for cleaning: {fmt}")
 

@@ -84,9 +84,11 @@ def _id3v2_size_bytes(n: int) -> bytes:
     return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
 
 
-def _id3v2_frame(frame_id: bytes, payload: bytes, *, major: int = 3) -> bytes:
+def _id3v2_frame(
+    frame_id: bytes, payload: bytes, *, major: int = 3, flags: bytes = b"\x00\x00"
+) -> bytes:
     size = _id3v2_size_bytes(len(payload)) if major == 4 else struct.pack(">I", len(payload))
-    return frame_id + size + b"\x00\x00" + payload
+    return frame_id + size + flags + payload
 
 
 def _mp3(*frames: bytes, major: int = 3) -> bytes:
@@ -94,6 +96,22 @@ def _mp3(*frames: bytes, major: int = 3) -> bytes:
     header = b"ID3" + bytes([major, 0, 0]) + _id3v2_size_bytes(len(body))
     audio = bytes([0xFF, 0xFB, 0x90, 0x00]) * 4  # placeholder MPEG frame-sync bytes
     return header + body + audio
+
+
+def _flac(
+    *frames: bytes, major: int = 3, extended_header: bytes = b"", footer: bool = False
+) -> bytes:
+    body = extended_header + b"".join(frames)
+    flags = (0x40 if extended_header else 0) | (0x10 if footer else 0)
+    size = _id3v2_size_bytes(len(body))
+    id3_footer = b"3DI" + bytes([major, 0, flags]) + size if footer else b""
+    id3 = b"ID3" + bytes([major, 0, flags]) + size + body + id3_footer if body else b""
+    streaminfo = b"\x80\x00\x00\x22" + b"\x00" * 34
+    return id3 + b"fLaC" + streaminfo
+
+
+def _c2pa_geob() -> bytes:
+    return b"\x00application/c2pa\x00manifest.c2pa\x00Content Credentials\x00jumbf-data"
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +136,153 @@ def test_detect_mp3_frame_sync_only():
     assert detect_av_format(data) == "mp3"
 
 
+def test_detect_flac_with_or_without_id3():
+    assert detect_av_format(_flac()) == "flac"
+    assert detect_av_format(_flac(_id3v2_frame(b"TIT2", b"\x00My Track"))) == "flac"
+
+
 def test_detect_unknown():
     assert detect_av_format(b"not a known av container") == "unknown"
+
+
+def test_flac_c2pa_geob_detected(tmp_path):
+    data = _flac(_id3v2_frame(b"GEOB", _c2pa_geob()))
+    src = tmp_path / "voice.flac"
+    src.write_bytes(data)
+
+    report = inspect_av(src)
+    assert report.format == "flac"
+    assert report.has_c2pa is True
+    assert report.has_ai_metadata is True
+    assert any("GEOB" in finding for finding in report.findings)
+    assert report.to_dict()["findings_confidence"] == ["confirmed"]
+
+
+def test_flac_keep_mode_drops_c2pa_geob_and_preserves_audio_and_title(tmp_path):
+    flac_payload = _flac()
+    data = _flac(
+        _id3v2_frame(b"TIT2", b"\x00My Track"),
+        _id3v2_frame(b"GEOB", _c2pa_geob()),
+    )
+    src = tmp_path / "voice.flac"
+    src.write_bytes(data)
+    dest = tmp_path / "voice.cleaned.flac"
+
+    result = clean_av(src, dest, strip_all_metadata=False)
+
+    cleaned = dest.read_bytes()
+    assert result["format"] == "flac"
+    assert result["still_has_c2pa"] is False
+    assert b"My Track" in cleaned
+    assert b"application/c2pa" not in cleaned
+    assert cleaned.endswith(flac_payload)
+    assert any("GEOB" in action for action in result["actions"])
+
+
+def test_flac_keep_mode_drops_empty_id3_tag(tmp_path):
+    flac_payload = _flac()
+    src = tmp_path / "voice.flac"
+    src.write_bytes(_flac(_id3v2_frame(b"GEOB", _c2pa_geob())))
+    dest = tmp_path / "voice.cleaned.flac"
+
+    clean_av(src, dest, strip_all_metadata=False)
+
+    assert dest.read_bytes() == flac_payload
+
+
+def test_flac_keep_mode_preserves_retained_frame_bytes(tmp_path):
+    title_frame = _id3v2_frame(b"TIT2", b"\x00My Track", major=4, flags=b"\x20\x00")
+    src = tmp_path / "voice.flac"
+    src.write_bytes(_flac(title_frame, _id3v2_frame(b"GEOB", _c2pa_geob(), major=4), major=4))
+    dest = tmp_path / "voice.cleaned.flac"
+
+    clean_av(src, dest, strip_all_metadata=False)
+
+    assert title_frame in dest.read_bytes()
+
+
+def test_flac_c2pa_geob_after_id3_extended_header(tmp_path):
+    v23_extended = struct.pack(">I", 10) + b"\x80\x00" + struct.pack(">I", 0) + b"\x00" * 4
+    v24_extended = _id3v2_size_bytes(6) + b"\x01\x00"
+    flac_payload = _flac()
+
+    for major, extended_header in ((3, v23_extended), (4, v24_extended)):
+        title_frame = _id3v2_frame(b"TIT2", b"\x00My Track", major=major)
+        src = tmp_path / f"voice-v24-{major}.flac"
+        src.write_bytes(
+            _flac(
+                title_frame,
+                _id3v2_frame(b"GEOB", _c2pa_geob(), major=major),
+                major=major,
+                extended_header=extended_header,
+            )
+        )
+
+        report = inspect_av(src)
+        assert report.has_c2pa is True
+
+        dest = tmp_path / f"voice-v24-{major}.cleaned.flac"
+        clean_av(src, dest, strip_all_metadata=False)
+        cleaned = dest.read_bytes()
+        assert b"application/c2pa" not in cleaned
+        assert title_frame in cleaned
+        assert cleaned.endswith(flac_payload)
+        assert cleaned[5] & 0x40 == 0
+
+
+def test_flac_c2pa_geob_before_id3v24_footer(tmp_path):
+    title_frame = _id3v2_frame(b"TIT2", b"\x00My Track", major=4)
+    src = tmp_path / "voice.flac"
+    src.write_bytes(
+        _flac(
+            title_frame,
+            _id3v2_frame(b"GEOB", _c2pa_geob(), major=4),
+            major=4,
+            footer=True,
+        )
+    )
+
+    report = inspect_av(src)
+    assert report.format == "flac"
+    assert report.has_c2pa is True
+
+    dest = tmp_path / "voice.cleaned.flac"
+    clean_av(src, dest, strip_all_metadata=False)
+    cleaned = dest.read_bytes()
+    assert detect_av_format(cleaned) == "flac"
+    assert title_frame in cleaned
+    assert b"application/c2pa" not in cleaned
+    assert b"3DI" not in cleaned
+    assert cleaned[5] & 0x10 == 0
+    assert cleaned.endswith(_flac())
+
+
+def test_flac_ignores_non_geob_ai_text(tmp_path):
+    data = _flac(_id3v2_frame(b"COMM", b"\x00Generated by AI"))
+    src = tmp_path / "voice.flac"
+    src.write_bytes(data)
+
+    report = inspect_av(src)
+    assert report.has_c2pa is False
+    assert report.has_ai_metadata is False
+
+    dest = tmp_path / "voice.cleaned.flac"
+    clean_av(src, dest, strip_all_metadata=False)
+    assert dest.read_bytes() == data
+
+
+def test_flac_ignores_truncated_c2pa_geob(tmp_path):
+    data = _flac(_id3v2_frame(b"GEOB", b"\x00application/c2pa\x00"))
+    src = tmp_path / "voice.flac"
+    src.write_bytes(data)
+
+    report = inspect_av(src)
+    assert report.has_c2pa is False
+    assert report.has_ai_metadata is False
+
+    dest = tmp_path / "voice.cleaned.flac"
+    clean_av(src, dest, strip_all_metadata=False)
+    assert dest.read_bytes() == data
 
 
 # ---------------------------------------------------------------------------
