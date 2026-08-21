@@ -281,7 +281,10 @@ def _inspect_wav(data: bytes) -> tuple[bool, bool, list[str]]:
         if cend > len(data):
             break
         payload = data[cstart:cend]
-        if cid == b"LIST" and payload[:4] == b"INFO":
+        if cid == b"C2PA":
+            has_c2pa = True
+            findings.append("WAV C2PA-related manifest chunk")
+        elif cid == b"LIST" and payload[:4] == b"INFO":
             hits = _contains_any(payload, AI_META_HINTS)
             if hits:
                 has_ai = True
@@ -316,10 +319,14 @@ def _strip_wav(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[st
         chunk_total = data[pos : cend + pad]
 
         drop = False
+        is_c2pa = cid == b"C2PA"
         is_info = cid == b"LIST" and payload[:4] == b"INFO"
         is_id3 = cid in (b"id3 ", b"ID3 ")
-        if (is_info or is_id3) and (strip_all_metadata or _contains_any(payload, AI_META_HINTS)):
-            actions.append(f"drop WAV {'LIST INFO' if is_info else 'id3'} chunk")
+        if is_c2pa or (
+            (is_info or is_id3) and (strip_all_metadata or _contains_any(payload, AI_META_HINTS))
+        ):
+            label = "C2PA" if is_c2pa else "LIST INFO" if is_info else "id3"
+            actions.append(f"drop WAV {label} chunk")
             drop = True
 
         if not drop:

@@ -823,7 +823,7 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | HTML | meta, JSON-LD, data-ai* | Strip tags/attrs |
 | Markdown | YAML frontmatter AI keys | Drop keys + Layer A body |
 | MP4 / MOV / M4A / M4V | ISOBMFF `jumb`/`uuid` boxes (same mechanism as AVIF/HEIC) + `moov/udta` generator tags | Drop boxes |
-| WAV | RIFF `LIST INFO` chunk, embedded `id3 ` chunk | Drop chunks |
+| WAV | RIFF `C2PA` / `LIST INFO` chunks, embedded `id3\x20` chunk | Drop chunks |
 | MP3 | ID3v2 frames (v2.3/v2.4 per-frame; v2.2 whole-tag) | Drop matched frames or whole tag |
 
 #### Why PDF needs qpdf, not just exiftool
