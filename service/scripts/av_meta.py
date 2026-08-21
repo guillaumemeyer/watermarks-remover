@@ -201,6 +201,20 @@ def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]
 def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
+        if len(data) >= 10 and data[:3] == b"ID3":
+            # The tag header parsed but its declared size overruns the file:
+            # the parser could not read it. Report the failure as a note (and
+            # a finding so audits surface it) instead of an empty, clean-looking
+            # result that clean_file would certify (#163).
+            return (
+                False,
+                False,
+                [
+                    "ID3v2 tag is truncated (declared size overruns the file); "
+                    "the tag could not be read — has_c2pa/has_ai here mean "
+                    "'unread', not 'clean'"
+                ],
+            )
         return False, False, []
     total, major, frames = parsed
     findings: list[str] = []
@@ -229,6 +243,16 @@ def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
 def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
+        if len(data) >= 10 and data[:3] == b"ID3":
+            # Truncated tag: frame boundaries are unknowable, so a whole-tag
+            # drop is the only safe clean. Dropping it unconditionally also
+            # removes whatever markers the readable prefix carried, instead of
+            # writing the file back verbatim and certifying it clean (#163).
+            tag_size = _id3v2_size(data, 6)
+            total = min(10 + tag_size, len(data))
+            return data[total:], [
+                f"drop truncated ID3v2 tag ({total} bytes of {10 + tag_size} declared)"
+            ]
         return data, []
     total, major, frames = parsed
     rest = data[total:]
