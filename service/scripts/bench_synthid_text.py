@@ -48,7 +48,7 @@ from urllib.parse import urlparse
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from common import eprint  # noqa: E402
+from common import eprint, subprocess_creationflags  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
@@ -127,6 +127,7 @@ def _markllm_commit(upstream: Path) -> str | None:
             text=True,
             timeout=10,
             check=False,
+            creationflags=subprocess_creationflags,
         )
         if r.returncode == 0:
             return r.stdout.strip()[:12]
@@ -147,6 +148,7 @@ def _repo_commit() -> str | None:
             text=True,
             timeout=10,
             check=False,
+            creationflags=subprocess_creationflags,
         )
         if r.returncode == 0:
             return r.stdout.strip()[:12]
@@ -167,6 +169,7 @@ def _run_cmd(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess[s
         text=True,
         timeout=timeout,
         check=False,
+        creationflags=subprocess_creationflags,
     )
 
 
@@ -509,6 +512,7 @@ class MarkLLMWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            creationflags=subprocess_creationflags,
         )
         self._stderr_tail: list[str] = []
         threading.Thread(target=self._drain_stderr, daemon=True).start()

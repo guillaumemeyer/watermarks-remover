@@ -22,6 +22,7 @@ from common import (
     safe_arg,
     safe_write_bytes,
     safe_write_text,
+    subprocess_creationflags,
     subprocess_preexec_fn,
     which,
 )
@@ -1853,6 +1854,7 @@ def _pdf_structural_rewrite(dest: Path, actions: list[str]) -> bool:
             timeout=120,
             check=False,
             preexec_fn=subprocess_preexec_fn,
+            creationflags=subprocess_creationflags,
         )
     except Exception as e:
         tmp.unlink(missing_ok=True)
@@ -1894,6 +1896,7 @@ def clean_pdf(path: Path, dest: Path) -> tuple[list[str], dict]:
                 timeout=60,
                 check=False,
                 preexec_fn=subprocess_preexec_fn,
+                creationflags=subprocess_creationflags,
             )
             actions.append(f"exiftool -all= (rc={r.returncode})")
         except Exception as e:

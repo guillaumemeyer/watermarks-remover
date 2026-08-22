@@ -56,6 +56,7 @@ from common import (
     MAX_INPUT_BYTES,
     eprint,
     looks_binary,
+    subprocess_creationflags,
     subprocess_preexec_fn,
     which,
 )
@@ -125,6 +126,7 @@ def _tool_usable(cmd: str) -> bool:
             timeout=10,
             preexec_fn=subprocess_preexec_fn,
             check=False,
+            creationflags=subprocess_creationflags,
         )
     except Exception:
         return False

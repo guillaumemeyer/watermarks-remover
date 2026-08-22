@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import EXIT_PARTIAL, eprint
+from common import EXIT_PARTIAL, eprint, subprocess_creationflags
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
@@ -68,6 +68,7 @@ def _clean_one(path: Path) -> tuple[str, str]:
         capture_output=True,
         text=True,
         check=False,
+        creationflags=subprocess_creationflags,
     )
     if proc.returncode == 2:
         # Unrecognized format or oversized input; clean_file.py already

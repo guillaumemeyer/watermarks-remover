@@ -26,6 +26,7 @@ from common import (
     classify_finding_confidence,
     safe_arg,
     safe_write_bytes,
+    subprocess_creationflags,
     subprocess_preexec_fn,
     which,
 )
@@ -1328,6 +1329,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 timeout=30,
                 preexec_fn=subprocess_preexec_fn,
                 check=False,
+                creationflags=subprocess_creationflags,
             )
             out = (r.stdout or "") + (r.stderr or "")
             low = out.lower()
@@ -1377,6 +1379,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
                 timeout=30,
                 preexec_fn=subprocess_preexec_fn,
                 check=False,
+                creationflags=subprocess_creationflags,
             )
             out = r.stdout or ""
             interesting = [
@@ -1489,6 +1492,7 @@ def run_synthid_score(
             timeout=180,
             preexec_fn=subprocess_preexec_fn,
             check=False,
+            creationflags=subprocess_creationflags,
         )
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -1588,6 +1592,7 @@ def run_markdiffusion_purify(
             timeout=timeout,
             preexec_fn=ctrlregen_subprocess_preexec_fn,
             check=False,
+            creationflags=subprocess_creationflags,
         )
     except subprocess.TimeoutExpired:
         return {
@@ -1667,6 +1672,7 @@ def run_ctrlregen_clean(
             timeout=timeout,
             preexec_fn=ctrlregen_subprocess_preexec_fn,
             check=False,
+            creationflags=subprocess_creationflags,
         )
     except subprocess.TimeoutExpired:
         return {"available": False, "error": f"CtrlRegen timed out after {timeout}s"}
@@ -2062,6 +2068,7 @@ def clean_image(
                 timeout=60,
                 check=False,
                 preexec_fn=subprocess_preexec_fn,
+                creationflags=subprocess_creationflags,
             )
             actions.append("exiftool -all= pass")
         except Exception as e:
