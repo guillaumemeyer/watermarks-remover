@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import contextlib
 
-from audit_lib import aggregate, print_human_report, scan_file
+from audit_lib import aggregate, format_sarif, print_human_report, scan_file
 from common import EXIT_PARTIAL, emit_json, eprint
 
 DEFAULT_MAX_BYTES = 4 << 20
@@ -559,7 +559,18 @@ def main() -> int:
     p.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
-    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--format",
+        choices=["human", "json", "sarif"],
+        default="human",
+        help="Output format (default: human)",
+    )
+    p.add_argument("--json", action="store_true", help="Emit a JSON report (alias for --format json)")
+    p.add_argument(
+        "--sarif",
+        action="store_true",
+        help="Emit an OASIS SARIF 2.1.0 report (alias for --format sarif)",
+    )
     args = p.parse_args()
 
     if not args.sitemap and not args.base:
@@ -610,8 +621,17 @@ def main() -> int:
         "files": files,
     }
 
+    out_format = args.format
     if args.json:
+        out_format = "json"
+    elif args.sarif:
+        out_format = "sarif"
+
+    if out_format == "json":
         emit_json(report)
+    elif out_format == "sarif":
+        sarif_doc = format_sarif(report)
+        emit_json(sarif_doc)
     else:
         print_human_report(
             files,

@@ -185,3 +185,47 @@ def test_audit_dir_cli_sarif_output(tmp_path):
     assert res2.returncode == 1
     sarif_doc2 = json.loads(res2.stdout)
     assert sarif_doc2["version"] == "2.1.0"
+
+
+def test_audit_website_sarif_output(monkeypatch, capsys):
+    import audit_website
+
+    monkeypatch.setattr(
+        audit_website,
+        "collect_urls",
+        lambda *args, **kwargs: ["https://example.com/page.html", "https://example.com/clean.txt"],
+    )
+    monkeypatch.setattr(
+        audit_website,
+        "fetch",
+        lambda url, *args, **kwargs: (
+            (b"<html><head><meta name='generator' content='ChatGPT'></head></html>", "text/html")
+            if "page.html" in url
+            else (b"clean text", "text/plain")
+        ),
+    )
+
+    # Test --sarif
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["audit_website.py", "--sitemap", "https://example.com/sitemap.xml", "--sarif"],
+    )
+    ret = audit_website.main()
+    assert ret == 1
+    out, _ = capsys.readouterr()
+    doc = json.loads(out)
+    assert doc["version"] == "2.1.0"
+    assert len(doc["runs"][0]["results"]) >= 1
+
+    # Test --format sarif
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["audit_website.py", "--sitemap", "https://example.com/sitemap.xml", "--format", "sarif"],
+    )
+    ret2 = audit_website.main()
+    assert ret2 == 1
+    out2, _ = capsys.readouterr()
+    doc2 = json.loads(out2)
+    assert doc2["version"] == "2.1.0"
