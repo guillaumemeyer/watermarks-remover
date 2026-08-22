@@ -321,6 +321,12 @@ def _is_emoji_base(cp: int) -> bool:
         return True
     if 0x2B00 <= cp <= 0x2BFF:  # misc symbols and arrows
         return True
+    # Emoji=Yes singletons outside the ranges above (general punctuation,
+    # letterlike symbols, supplemental arrows-B): !!, !?, i, curved up/down
+    # arrows. Without these a VS16 after them is stripped, visibly turning
+    # the emoji presentation back into the text glyph.
+    if cp in (0x203C, 0x2049, 0x2139, 0x2934, 0x2935):
+        return True
     if cp in (0x00A9, 0x00AE, 0x2122, 0x3030, 0x303D, 0x3297, 0x3299):
         return True
     # keycap bases
