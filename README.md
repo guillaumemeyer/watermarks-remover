@@ -816,7 +816,7 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | GIF | Comment / XMP application extensions | Drop comment & XMP, keep `NETSCAPE2.0` loop |
 | TIFF (classic + BigTIFF) | IFD tags: XMP, EXIF, GPS, IPTC, MakerNote | Drop tags, zero payloads, keep strips |
 | SVG | `<metadata>`, XMP | Strip blocks |
-| PDF | Byte/XMP + optional tools | **exiftool** then **qpdf**; degraded without either |
+| PDF | Byte/XMP + optional tools | **exiftool** then **qpdf**, then **ghostscript** for metadata inside embedded images; each missing tool degrades a different layer (document strip, structural rewrite, embedded images) |
 | DOCX | docProps / customXml | Scrub props, drop customXml |
 | EPUB | OPF metadata, XHTML meta/JSON-LD, embedded media | Scrub OPF, strip XHTML meta, clean media + Layer A (skips encrypted parts) |
 | ODT | meta.xml | Drop generator / AI-ish meta |
@@ -842,6 +842,58 @@ installed the clean still runs, but it says so:
 ```
 warning: exiftool PDF edits are incremental — the original metadata bytes
 remain recoverable; install qpdf for a structural rewrite
+```
+
+#### Why qpdf is not enough for images inside the PDF
+
+Both passes above work on the document: the Info dictionary, the XMP packet,
+the object graph. Neither descends into an image XObject, so a scan or a
+Photoshop export — a page that *is* one big JPEG — keeps whatever the image
+carries. On a real Photoshop-exported PDF that leaves 27 tags in place after a
+"successful" clean, `IFD0:Software`, the capture timestamps and a preview
+thumbnail among them; a C2PA manifest attached to the same image survives it
+too.
+
+So `clean_pdf` adds a third pass, `deep_images`, driven by Ghostscript's
+`pdfwrite`. It runs in two rungs and stops as soon as the file is clean:
+
+1. **Lossless.** `pdfwrite` with pass-through rebuilds the document from the
+   object graph while copying the compressed image data byte-for-byte — verified
+   by hashing the streams before and after. This clears everything the PDF
+   wrapped around the image. Pass-through covers the codecs Ghostscript supports
+   for it, JPEG (DCTDecode) and JPEG2000 (JPXDecode); Flate, CCITT and LZW
+   images are decoded and re-encoded, which is lossless in practice for those
+   codecs but not byte-identical. `never` is the option for a document whose
+   streams must survive untouched.
+2. **Re-encode, only on evidence.** Anything living in the JPEG's own APPn
+   segments — EXIF in APP1, a C2PA manifest in APP11, Photoshop resources in
+   APP13 — travels with the bytes it is attached to, so pass-through preserves
+   it. Rung 2 runs the same pass with pass-through off, and only when rung 1
+   demonstrably left something behind: an AI/C2PA marker in any mode, or, under
+   `always`, any surviving APPn metadata. APP0 (JFIF) and APP2 (ICC) are left
+   alone — the first is structural and the second decides how the colours are
+   read. Pixels are spent on evidence, never on suspicion.
+
+`deep_images` takes `auto` (default: rung 1 only when markers survived the
+document strip, then rung 2 if they survive that), `always` (rung 1 for every
+PDF, escalating to rung 2 for camera and editor EXIF too), `lossless` (rung 1
+only — never recompress, and report whatever survives through the usual
+`still_has_c2pa` / `post_findings` fields) and `never`. An unrecognised value is
+rejected rather than quietly treated as `auto`. The report says which rungs ran
+via `meta.deep_image_pass` and `meta.images_reencoded`, and when the pass is
+skipped it names the option that would go further:
+
+```text
+deep image pass not needed for AI/C2PA markers; pass deep_images="always"
+to also clear non-AI EXIF inside images
+```
+
+Without Ghostscript installed the clean still runs and says what it could not
+reach:
+
+```text
+warning: metadata inside embedded images left in place; install ghostscript
+for the deep image pass
 ```
 
 Pixel-domain watermark **removal** is now available as an optional external CtrlRegen backend (see above); it is a regenerating remover, not a guarantee. **C2PA soft binding** (in-content watermark that can re-link a remote Content Credentials manifest after metadata is stripped) remains **out of scope**. Stripping hard-bound C2PA does **not** clear those channels.

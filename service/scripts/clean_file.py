@@ -33,6 +33,17 @@ def main() -> int:
     p.add_argument("--in-place", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--nfkc", action="store_true", help="Text: NFKC normalize")
+    p.add_argument(
+        "--deep-images",
+        choices=("auto", "always", "lossless", "never"),
+        default="auto",
+        help=(
+            "PDF: Ghostscript re-distill that reaches metadata inside embedded "
+            "images. auto (default) only when AI/C2PA markers survive the "
+            "document strip; always also clears non-AI EXIF; lossless never "
+            "recompresses images; never skips the pass entirely"
+        ),
+    )
     p.add_argument("--aggressive-homoglyphs", action="store_true")
     p.add_argument(
         "--keep-non-ai-metadata",
@@ -172,7 +183,7 @@ def main() -> int:
         return 1 if residual else 0
 
     try:
-        result = clean_container(src, dest, fmt=container_fmt)
+        result = clean_container(src, dest, fmt=container_fmt, deep_images=args.deep_images)
     except Exception as e:
         eprint(f"error: {e}")
         return 1
