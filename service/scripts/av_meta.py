@@ -199,6 +199,20 @@ def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]
 
 
 def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
+    if len(data) >= 10 and data[:3] == b"ID3":
+        major = data[3]
+        tag_size = _id3v2_size(data, 6)
+        total = 10 + tag_size
+        if total > len(data):
+            hits = _contains_any(data, AI_META_HINTS)
+            has_c2pa = _classify_c2pa(hits)
+            findings = [
+                f"truncated ID3v2.{major} tag detected ({len(data)} bytes present, {total} declared) — metadata may be incomplete"
+            ]
+            if hits:
+                findings.append(f"partial ID3v2.{major} tag markers: {', '.join(hits[:8])}")
+            return has_c2pa, True, findings
+
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
         return False, False, []
@@ -227,6 +241,22 @@ def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
 
 
 def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
+    if len(data) >= 10 and data[:3] == b"ID3":
+        major = data[3]
+        tag_size = _id3v2_size(data, 6)
+        total = 10 + tag_size
+        if total > len(data):
+            audio_pos = -1
+            for i in range(10, len(data) - 1):
+                if data[i] == 0xFF and (data[i + 1] & 0xE0) == 0xE0:
+                    audio_pos = i
+                    break
+            if audio_pos != -1:
+                return data[audio_pos:], [
+                    f"drop truncated ID3v2.{major} tag (found audio frame at offset {audio_pos})"
+                ]
+            return b"", [f"drop truncated ID3v2.{major} tag ({len(data)} bytes)"]
+
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
         return data, []

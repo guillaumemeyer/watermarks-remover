@@ -31,16 +31,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import EXIT_PARTIAL, eprint
+from common import EXIT_PARTIAL, eprint, result_has_changes
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
 
 def _changed(result: dict) -> bool:
-    stats = result.get("stats")
-    if stats is not None:
-        return bool(stats.get("removed_count") or stats.get("replaced_count"))
-    return bool(result.get("actions"))
+    return result_has_changes(result)
 
 
 def _failure_detail(proc: subprocess.CompletedProcess[str], summary: str) -> str:

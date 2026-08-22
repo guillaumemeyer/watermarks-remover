@@ -5,6 +5,7 @@ Stdlib-first; PDF prefers optional exiftool/c2patool when present.
 """
 
 import base64
+import contextlib
 import io
 import posixpath
 import re
@@ -180,16 +181,25 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
             try:
                 with zipfile.ZipFile(io.BytesIO(data)) as zf:
                     names = set(zf.namelist())
-                    if "word/document.xml" in names:
+                    if "word/document.xml" in names or any(n.startswith("word/") for n in names):
                         return "docx"
-                    if "xl/workbook.xml" in names:
+                    if "xl/workbook.xml" in names or any(n.startswith("xl/") for n in names):
                         return "xlsx"
-                    if "ppt/presentation.xml" in names:
+                    if "ppt/presentation.xml" in names or any(n.startswith("ppt/") for n in names):
                         return "pptx"
-                    if "content.xml" in names and "meta.xml" in names:
+                    if (
+                        "content.xml" in names and "meta.xml" in names
+                    ) or "META-INF/manifest.xml" in names:
                         return "odt"
-                    if "META-INF/container.xml" in names and any(n.endswith(".opf") for n in names):
+                    if "META-INF/container.xml" in names or any(n.endswith(".opf") for n in names):
                         return "epub"
+                    if "mimetype" in names:
+                        with contextlib.suppress(Exception):
+                            mt = zf.read("mimetype").decode("ascii", errors="ignore").strip()
+                            if "epub" in mt:
+                                return "epub"
+                            if "opendocument" in mt or "oasis" in mt:
+                                return "odt"
             except _ZIP_PARSE_ERRORS:
                 pass
     return "unknown"

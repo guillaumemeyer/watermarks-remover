@@ -663,11 +663,27 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
         entry.get("available") and entry.get("is_watermarked")
         for entry in report.get("text_detectors") or []
     )
+    synthid_wm = False
+    synthid_entry = report.get("synthid")
+    if (
+        synthid_entry
+        and synthid_entry.get("available")
+        and (
+            synthid_entry.get("is_watermarked")
+            or (
+                synthid_entry.get("confidence") is not None
+                and synthid_entry.get("confidence") >= 0.5
+            )
+        )
+    ):
+        synthid_wm = True
+
     suspicious = (
         bool(report.get("suspicious_total"))
         or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
         or bool(report.get("stylometry", {}).get("score", 0.0) >= 0.65)
         or detected_wm
+        or synthid_wm
     )
     return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
 

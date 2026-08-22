@@ -1726,6 +1726,17 @@ def inspect_image(
     if probe_note:
         notes.append(probe_note)
 
+    synthid_rep = run_synthid_score(path, synthid_dir)
+    if synthid_rep:
+        if synthid_rep.get("available"):
+            if synthid_rep.get("is_watermarked") or (
+                synthid_rep.get("confidence") is not None and synthid_rep.get("confidence") >= 0.5
+            ):
+                conf = synthid_rep.get("confidence", 0.0)
+                findings.append(f"SynthID pixel watermark detected (confidence={conf:.3f})")
+        elif synthid_rep.get("error"):
+            findings.append(f"SynthID scorer inconclusive: {synthid_rep['error']}")
+
     return ImageInspectReport(
         path=str(path),
         format=fmt,
@@ -1733,7 +1744,7 @@ def inspect_image(
         has_ai_metadata=has_ai,
         findings=findings,
         tools=tools,
-        synthid=run_synthid_score(path, synthid_dir),
+        synthid=synthid_rep,
         notes=notes,
     )
 

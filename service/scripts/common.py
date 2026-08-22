@@ -276,14 +276,43 @@ def safe_write_text(path: str | Path, text: str) -> None:
     safe_write_bytes(path, text.encode("utf-8", errors="surrogateescape"))
 
 
+def is_mutating_action(action: str) -> bool:
+    """True if *action* describes an actual modification, False for informational notices."""
+    action_lower = action.strip().lower()
+    if action_lower.startswith("no ") or action_lower.startswith("warning:"):
+        return False
+    if "already clean" in action_lower or "none matched" in action_lower:
+        return False
+    if "available for inspect" in action_lower:
+        return False
+    if "failed" in action_lower:
+        return False
+    return not action_lower.startswith("layer a text: removed=0 replaced=0")
+
+
+def result_has_changes(result: dict[str, Any]) -> bool:
+    """True if a clean operation modified the content."""
+    stats = result.get("stats")
+    if stats is not None:
+        return bool(stats.get("removed_count") or stats.get("replaced_count"))
+    actions = result.get("actions", [])
+    return any(is_mutating_action(a) for a in actions)
+
+
 def backup_path(src: Path) -> Path:
     """Create a ``.bak`` copy of *src* via a safe write; return the backup path.
 
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
-    renamed over it.
+    renamed over it. Preserves an existing .bak so repeated in-place runs never
+    overwrite the original uncleaned file, while still refusing symlinks.
     """
     bak = src.with_suffix(src.suffix + ".bak")
+    if bak.is_symlink():
+        eprint(f"cannot create backup {bak}: refusing to write through symlink: {bak}")
+        raise SystemExit(2)
+    if bak.is_file():
+        return bak
     try:
         safe_write_bytes(bak, src.read_bytes())
     except OSError as e:
