@@ -97,7 +97,9 @@ def main() -> int:
         )
 
     if args.in_place:
-        bak = backup_path(args.path)
+        bak, created = backup_path(args.path)
+        if not created:
+            eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
         dest = args.path
         src = bak
     else:

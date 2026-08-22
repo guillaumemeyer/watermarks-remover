@@ -197,21 +197,26 @@ def test_safe_write_bytes_without_fchmod(tmp_path: Path, monkeypatch):
 def test_backup_path_creates_bak_copy(tmp_path: Path):
     src = tmp_path / "doc.md"
     src.write_text("body")
-    bak = backup_path(src)
+    bak, created = backup_path(src)
     assert bak.name == "doc.md.bak"
+    assert created is True
     assert bak.read_text() == "body"
     assert src.read_text() == "body"
 
 
 def test_backup_path_refuses_symlinked_bak(tmp_path: Path):
+    # An existing .bak is now PRESERVED rather than written through (#172), so
+    # a symlinked .bak can no longer trigger the write path at all: the call
+    # succeeds without touching the symlink target.
     src = tmp_path / "doc.md"
     src.write_text("body")
     bak = tmp_path / "doc.md.bak"
     victim = tmp_path / "victim.txt"
     victim.write_text("PRECIOUS")
     _make_symlink(bak, victim)
-    with pytest.raises(SystemExit):
-        backup_path(src)
+    result, created = backup_path(src)
+    assert created is False
+    assert result == bak
     assert victim.read_text() == "PRECIOUS"
 
 

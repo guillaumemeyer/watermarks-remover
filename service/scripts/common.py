@@ -282,14 +282,23 @@ def backup_path(src: Path) -> Path:
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
     renamed over it.
+
+    A pre-existing ``.bak`` from an earlier run is preserved, not overwritten
+    — the second run of an auto-fix hook (clean → commit-blocked → re-stage →
+    clean again) used to back up the first run's output over the original,
+    destroying the only pristine copy (#172). The returned tuple's second
+    element reports whether this call created the backup or kept an existing
+    one, so callers can tell the user.
     """
     bak = src.with_suffix(src.suffix + ".bak")
+    if bak.exists():
+        return bak, False
     try:
         safe_write_bytes(bak, src.read_bytes())
     except OSError as e:
         eprint(f"cannot create backup {bak}: {e}")
         raise SystemExit(2) from None
-    return bak
+    return bak, True
 
 
 def subprocess_rlimits() -> None:

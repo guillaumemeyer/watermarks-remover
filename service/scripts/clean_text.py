@@ -75,7 +75,7 @@ def main() -> int:
             eprint("--in-place requires a file path")
             return 2
         src = Path(args.path)
-        backup_path(src)  # side effect: keep a .bak of the original before overwriting
+        backup_path(src)  # side effect: keep a .bak of the original; an earlier run's .bak is preserved, not overwritten (#172)
         out = str(src)
     elif out is None and args.path not in (None, "-"):
         out = str(cleaned_path(Path(args.path)))
