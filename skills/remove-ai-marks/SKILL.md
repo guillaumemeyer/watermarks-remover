@@ -157,7 +157,7 @@ detecting before and after cleaning:
 
 ```bash
 curl -s -X POST "$WM/detect" -H 'Content-Type: application/json' \
-  -d '{"file": "'"$(base64 -w0 notes.txt)"'", "name": "notes.txt"}'
+  -d '{"file": "'"$(base64 < notes.txt | tr -d '\n')"'", "name": "notes.txt"}'
 ```
 
 Or fold detection into the clean: `/clean` with
