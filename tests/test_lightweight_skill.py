@@ -80,7 +80,11 @@ def test_lightweight_skill_has_no_template_placeholders():
     skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
 
     assert "TODO" not in skill_text
+
+
+def test_lightweight_skill_includes_required_references():
     assert (SKILL / "references" / "watermark-notes.md").is_file()
+    assert (SKILL / "references" / "writing-in-your-voice.md").is_file()
 
 
 def _run_installer(home: Path, *args: str, check: bool = True):
@@ -99,7 +103,9 @@ def _run_installer(home: Path, *args: str, check: bool = True):
 def test_installer_uses_cursor_skill_location(tmp_path):
     _run_installer(tmp_path)
 
-    assert (tmp_path / ".cursor" / "skills" / SKILL.name / "SKILL.md").is_file()
+    installed_skill = tmp_path / ".cursor" / "skills" / SKILL.name
+    assert (installed_skill / "SKILL.md").is_file()
+    assert (installed_skill / "references" / "writing-in-your-voice.md").is_file()
 
 
 def test_installer_preserves_existing_install_without_force(tmp_path):
