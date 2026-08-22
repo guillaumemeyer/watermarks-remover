@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,11 +37,31 @@ from common import EXIT_PARTIAL, eprint
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
 
+# Every strip_*/clean_* emitter appends a "nothing was removed" action instead
+# of returning an empty list, so a non-empty actions list never implied a
+# modification — and every non-text file reported changed on every run, making
+# the clean hook fail forever (#173). These are exactly those no-op phrasings
+# (image_meta / av_meta / container_meta); they must read as unchanged.
+_NOOP_ACTION_PATTERNS = (
+    re.compile(r"^no .+ removed", re.I),
+    re.compile(r"^nothing was removed", re.I),
+    re.compile(r"\(already clean or none matched\)", re.I),
+    re.compile(r"^no AI/C2PA markers found", re.I),
+)
+
+
+def _is_noop_action(action: str) -> bool:
+    return any(p.search(action) for p in _NOOP_ACTION_PATTERNS)
+
+
 def _changed(result: dict) -> bool:
     stats = result.get("stats")
     if stats is not None:
         return bool(stats.get("removed_count") or stats.get("replaced_count"))
-    return bool(result.get("actions"))
+    actions = [a for a in (result.get("actions") or []) if isinstance(a, str)]
+    if not actions:
+        return False
+    return not all(_is_noop_action(a) for a in actions)
 
 
 def _failure_detail(proc: subprocess.CompletedProcess[str], summary: str) -> str:
