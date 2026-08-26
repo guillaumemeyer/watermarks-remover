@@ -117,7 +117,7 @@ def _inspect_moov_udta(data: bytes) -> tuple[bool, bool, list[str]]:
     return has_c2pa, has_ai, findings
 
 
-def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
+def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str], bool]:
     actions: list[str] = []
     out = bytearray()
     boxes, scanned_end = _parse_isobmff_boxes(data)
@@ -136,7 +136,7 @@ def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, l
             new_moov.extend(_build_isobmff_box(s_fourcc, s_payload, s_hdr))
         out.extend(_build_isobmff_box(b"moov", bytes(new_moov), hdr))
     out.extend(data[scanned_end:])
-    return bytes(out), actions
+    return bytes(out), actions, len(data) - scanned_end >= 8
 
 
 def _inspect_mp4(data: bytes) -> tuple[bool, bool, list[str]]:
@@ -145,13 +145,15 @@ def _inspect_mp4(data: bytes) -> tuple[bool, bool, list[str]]:
     return has_c2pa or udta_c2pa, has_ai or udta_ai, findings + udta_findings
 
 
-def _strip_mp4(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
+def _strip_mp4(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str], bool]:
     cleaned, actions = strip_isobmff(data, fmt="mp4", strip_all_metadata=strip_all_metadata)
-    cleaned, udta_actions = _strip_moov_udta(cleaned, strip_all_metadata=strip_all_metadata)
+    cleaned, udta_actions, inspection_incomplete = _strip_moov_udta(
+        cleaned, strip_all_metadata=strip_all_metadata
+    )
     actions = [a for a in actions if not a.startswith("no MP4 metadata")] + udta_actions
     if not actions:
         actions = ["no MP4 metadata boxes removed (already clean or none matched)"]
-    return cleaned, actions
+    return cleaned, actions, inspection_incomplete
 
 
 # ---------------------------------------------------------------------------
@@ -473,8 +475,11 @@ def inspect_av(path: Path) -> AVInspectReport:
 def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict[str, Any]:
     data = path.read_bytes()
     fmt = detect_av_format(data)
+    inspection_incomplete = False
     if fmt == "mp4":
-        cleaned, actions = _strip_mp4(data, strip_all_metadata=strip_all_metadata)
+        cleaned, actions, inspection_incomplete = _strip_mp4(
+            data, strip_all_metadata=strip_all_metadata
+        )
     elif fmt == "wav":
         cleaned, actions = _strip_wav(data, strip_all_metadata=strip_all_metadata)
     elif fmt == "mp3":
@@ -487,6 +492,9 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
     safe_write_bytes(dest, cleaned)
 
     after = inspect_av(dest)
+    post_findings = list(after.findings)
+    if inspection_incomplete:
+        post_findings.append("MP4 not fully inspected: preserved a truncated top-level box tail")
     return {
         "input": str(path),
         "output": str(dest),
@@ -495,6 +503,6 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
         "bytes_in": len(data),
         "bytes_out": len(cleaned),
         "still_has_c2pa": after.has_c2pa,
-        "still_has_ai_metadata": after.has_ai_metadata,
-        "post_findings": after.findings,
+        "still_has_ai_metadata": after.has_ai_metadata or inspection_incomplete,
+        "post_findings": post_findings,
     }
