@@ -120,7 +120,8 @@ def _inspect_moov_udta(data: bytes) -> tuple[bool, bool, list[str]]:
 def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     out = bytearray()
-    for fourcc, payload, _size, hdr in _parse_isobmff_boxes(data)[0]:
+    boxes, scanned_end = _parse_isobmff_boxes(data)
+    for fourcc, payload, _size, hdr in boxes:
         if fourcc != b"moov":
             out.extend(_build_isobmff_box(fourcc, payload, hdr))
             continue
@@ -134,6 +135,7 @@ def _strip_moov_udta(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, l
                 continue
             new_moov.extend(_build_isobmff_box(s_fourcc, s_payload, s_hdr))
         out.extend(_build_isobmff_box(b"moov", bytes(new_moov), hdr))
+    out.extend(data[scanned_end:])
     return bytes(out), actions
 
 
