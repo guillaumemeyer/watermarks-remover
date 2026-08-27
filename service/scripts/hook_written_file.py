@@ -168,7 +168,19 @@ def run_clean(path: Path) -> int:
             eprint(f"watermarks-remover: {path}: {detail}")
             return EXIT_HOOK_ERROR
 
+        residual = result.get("still_has_c2pa") or result.get("still_has_ai_metadata")
         if temp_path.read_bytes() == path.read_bytes():
+            if residual:
+                findings = result.get("post_findings") or []
+                detail = "; ".join(str(finding) for finding in findings) or _describe(result)
+                _emit(
+                    f"watermarks-remover: {path.name} was left unchanged; "
+                    f"cleanup left residual or inconclusive signals ({detail})",
+                    additional_context=(
+                        f"The watermarks-remover hook could not confirm that {path} is clean. "
+                        f"The file was left unchanged ({detail})."
+                    ),
+                )
             return EXIT_QUIET
 
         # mkstemp creates the temp file 0600; without this the swap would strip
@@ -179,7 +191,7 @@ def run_clean(path: Path) -> int:
         temp_path.unlink(missing_ok=True)
 
     summary = _describe(result)
-    if result.get("still_has_c2pa") or result.get("still_has_ai_metadata"):
+    if residual:
         summary += "; residual provenance signals may remain"
     _emit(
         f"watermarks-remover: cleaned {path.name} in place ({summary})",
