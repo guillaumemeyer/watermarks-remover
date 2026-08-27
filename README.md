@@ -1199,6 +1199,8 @@ make smoke                          # quick CLI smoke on fixtures
 
 ### Unreleased
 
+- Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
+
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 
 **Service / Docker distribution**
