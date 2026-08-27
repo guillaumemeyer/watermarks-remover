@@ -127,8 +127,9 @@ def run_check(path: Path) -> int:
     eprint(f"watermarks-remover: {path} carries AI/C2PA provenance marks:")
     for finding in findings:
         eprint(f"  - {finding}")
+    cmd = "python" if sys.platform == "win32" else "python3"
     eprint(
-        f"Strip them with `python3 {CLEAN_FILE_PY} {path} --in-place`, "
+        f"Strip them with `{cmd} {CLEAN_FILE_PY} {path} --in-place`, "
         "or set WATERMARKS_HOOK_MODE=clean to have this hook do it."
     )
     return EXIT_SHOW_MODEL
