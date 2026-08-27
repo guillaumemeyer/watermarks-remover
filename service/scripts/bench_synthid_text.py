@@ -1398,11 +1398,7 @@ def aggregate_minimal(rows: list[dict[str, Any]]) -> dict[str, Any]:
     # Excluded samples arrive as rows with no verdict and zero attempts; their
     # notes carry the excluded_reason (plus any sample-level notes such as
     # duplicate-generation warnings).
-    excluded = [
-        r
-        for r in rows
-        if r.get("cleared") is None and (r.get("attempts") or 0) == 0
-    ]
+    excluded = [r for r in rows if r.get("cleared") is None and (r.get("attempts") or 0) == 0]
     excluded_reasons: dict[str, int] = {}
     for r in excluded:
         for note in r.get("notes") or []:
@@ -1590,9 +1586,7 @@ def render_markdown_minimal(
     L.append("| --- | --- |")
     L.append(f"| Samples evaluated | {agg['n_samples']} |")
     L.append(f"| Samples excluded (sanity gate / generation) | {agg.get('n_excluded', 0)} |")
-    L.append(
-        f"| Identical generations across seeds | {agg.get('n_duplicate_generations', 0)} |"
-    )
+    L.append(f"| Identical generations across seeds | {agg.get('n_duplicate_generations', 0)} |")
     L.append(f"| Cleared | {agg['n_cleared']} |")
     L.append(f"| Clear rate | {_fmt(agg['clear_rate'])} |")
     L.append(f"| Mean minimal level | {_fmt(agg['mean_min_level'])} |")
@@ -1844,9 +1838,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _semantic_startup_probe(
-    bench: "Benchmark", semantic_model: str, require: bool
-) -> int | None:
+def _semantic_startup_probe(bench: Benchmark, semantic_model: str, require: bool) -> int | None:
     """Probe the semantic backend at startup; return an exit code or None.
 
     Semantic divergence is the quality axis of a default-level decision, so a

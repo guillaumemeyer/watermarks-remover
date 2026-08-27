@@ -1062,8 +1062,7 @@ def test_aggregate_minimal_reports_exclusions_and_duplicates():
             "margin": 0.9,
             "attempts": 3,
             "notes": [
-                "identical watermarked generation as seed 1 "
-                "(seed may not be applied; sanity risk)"
+                "identical watermarked generation as seed 1 (seed may not be applied; sanity risk)"
             ],
         },
         {
@@ -1108,9 +1107,7 @@ def test_generate_samples_flags_identical_generations(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "watermark_sample", _same)
     samples = b.generate_samples(tmp_path / "work")
     assert len(samples) == 2
-    dup_notes = [
-        n for s in samples for n in s["notes"] if "identical watermarked generation" in n
-    ]
+    dup_notes = [n for s in samples for n in s["notes"] if "identical watermarked generation" in n]
     assert len(dup_notes) == 1
 
 
@@ -1148,6 +1145,7 @@ def test_semantic_probe_ready(capsys):
     code = bench._semantic_startup_probe(_StubBench(available=True), "all-MiniLM-L6-v2", False)
     assert code is None
     assert "semantic backend: ready" in capsys.readouterr().err
+
 
 def test_render_minimal_reports_semantic_status_and_exclusions():
     config = {
@@ -1187,5 +1185,3 @@ def test_render_minimal_reports_semantic_status_and_exclusions():
     assert "| Samples excluded (sanity gate / generation) | 1 |" in md
     assert "| Identical generations across seeds | 0 |" in md
     assert "0.0500 points below the detection threshold" in md
-
-
