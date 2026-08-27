@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import re
 import struct
 import sys
 import threading
@@ -428,3 +429,20 @@ def test_clean_extensionless_svg_container_post_inspection(conn):
     assert body["kind"] == "container"
     assert body["report"]["format"] == "svg"
     assert body["report"]["still_has_c2pa"] is False
+
+
+def test_log_message_includes_readable_timestamp(monkeypatch):
+    """Request logs are prefixed with local time plus UTC offset."""
+    lines: list[str] = []
+    monkeypatch.setattr(server, "eprint", lines.append)
+    monkeypatch.setattr(server.Handler, "address_string", lambda self: "127.0.0.1")
+
+    handler = server.Handler.__new__(server.Handler)
+    handler.log_message('"%s" %s -', "GET /health HTTP/1.1", 200)
+
+    assert len(lines) == 1
+    assert re.match(
+        r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}\] 127\.0\.0\.1 - ",
+        lines[0],
+    )
+    assert lines[0].endswith('"GET /health HTTP/1.1" 200 -')
