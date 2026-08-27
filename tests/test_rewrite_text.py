@@ -473,8 +473,8 @@ def test_candidate_pass_treats_pvalue_threshold_as_no_margin():
     # keyed-Gumbel reports a p-value threshold (1e-06) that does not scale with
     # its score, so threshold - score is meaningless and must not gate a clear.
     gumbel_report = {"available": True, "is_watermarked": False, "score": 0.21, "threshold": 1e-06}
-    assert _candidate_pass(gumbel_report, 0.0) == (True, None)
-    assert _candidate_pass(gumbel_report, 0.5) == (True, None)
+    assert _candidate_pass(gumbel_report, 0.0) == (True, None, None)
+    assert _candidate_pass(gumbel_report, 0.5) == (True, None, None)
 
 
 def test_target_margin_gates_small_margin_pass(monkeypatch):
@@ -789,3 +789,61 @@ def test_rewrite_blocks_redirect_and_never_sends_key():
     finally:
         collector.shutdown()
         redirector.shutdown()
+
+
+def test_candidate_pass_raw_margin_precision():
+    # 0.50000 - 0.37656 = 0.12344, which is >= 0.123439 raw, but if rounded first could drift
+    evaluation = {"is_watermarked": False, "score": 0.37656, "threshold": 0.50000}
+    passed, margin, raw_margin = rewrite_text._candidate_pass(evaluation, target_margin=0.123439)
+    assert passed is True
+    assert margin == 0.1234
+    assert raw_margin == pytest.approx(0.12344)
+
+
+def test_rewrite_metadata_records_selection_and_target_margin(monkeypatch):
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: "rewritten")
+    _out, info = rewrite(
+        "sample input",
+        **_rewrite_candidates_kwargs(candidates=1, target_margin=0.25, selection="max-margin"),
+    )
+    assert info["target_margin"] == 0.25
+    assert info["selection"] == "max-margin"
+
+
+def test_max_margin_ranks_by_p_value_when_margins_tied():
+    rec_high_p = {
+        "passed": True,
+        "margin": None,
+        "raw_margin": None,
+        "evaluation": {"is_watermarked": False, "p_value": 0.05},
+        "lexical_divergence": 0.5,
+    }
+    rec_low_p = {
+        "passed": True,
+        "margin": None,
+        "raw_margin": None,
+        "evaluation": {"is_watermarked": False, "p_value": 1e-6},
+        "lexical_divergence": 0.5,
+    }
+    # rec_low_p has a lower p-value (1e-6 < 0.05), so it represents a safer pass and ranks higher
+    assert rewrite_text._margin_of(rec_low_p) > rewrite_text._margin_of(rec_high_p)
+
+
+def test_max_margin_ranks_by_raw_margin_when_rounded_margins_tie():
+    # 0.12343 and 0.12344 both round to 0.1234 for telemetry, so ranking on the
+    # rounded value would let the p-value tie-breaker pick the smaller raw margin.
+    rec_small_raw = {
+        "passed": True,
+        "margin": 0.1234,
+        "raw_margin": 0.12343,
+        "evaluation": {"is_watermarked": False},
+        "lexical_divergence": 0.5,
+    }
+    rec_large_raw = {
+        "passed": True,
+        "margin": 0.1234,
+        "raw_margin": 0.12344,
+        "evaluation": {"is_watermarked": False},
+        "lexical_divergence": 0.5,
+    }
+    assert rewrite_text._margin_of(rec_large_raw) > rewrite_text._margin_of(rec_small_raw)
