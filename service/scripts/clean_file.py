@@ -61,6 +61,14 @@ def main() -> int:
         action="store_true",
         help="Clean as text even when the bytes look like a binary container",
     )
+    p.add_argument(
+        "-q",
+        "--quiet",
+        "--only-changed",
+        dest="quiet",
+        action="store_true",
+        help="Only report files that were modified or carry warnings/residuals",
+    )
     args = p.parse_args()
 
     if not args.path.is_file():
@@ -109,7 +117,7 @@ def main() -> int:
 
     if args.in_place:
         bak, created = backup_path(args.path)
-        if not created:
+        if not created and not args.quiet:
             eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
         dest = args.path
         src = bak
@@ -134,7 +142,7 @@ def main() -> int:
         }
         if args.json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
-        else:
+        elif not args.quiet or stats["removed_count"] or stats["replaced_count"]:
             eprint(
                 f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
             )
@@ -152,12 +160,17 @@ def main() -> int:
             return 1
         result = {"kind": "image", **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
+        is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
+            not a.lower().startswith("no ") and "already clean" not in a.lower()
+            for a in result.get("actions", [])
+        )
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-            for a in result["actions"]:
-                eprint(f"  - {a}")
+            if not args.quiet or is_changed or residual:
+                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
+                for a in result["actions"]:
+                    eprint(f"  - {a}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -174,12 +187,17 @@ def main() -> int:
             return 1
         result = {"kind": "av", **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
+        is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
+            not a.lower().startswith("no ") and "already clean" not in a.lower()
+            for a in result.get("actions", [])
+        )
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-            for a in result["actions"]:
-                eprint(f"  - {a}")
+            if not args.quiet or is_changed or residual:
+                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
+                for a in result["actions"]:
+                    eprint(f"  - {a}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -192,12 +210,17 @@ def main() -> int:
     result = {"kind": "container", **result}
     residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
     degraded = bool(result.get("meta", {}).get("degraded"))
+    is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
+        not a.lower().startswith("no ") and "already clean" not in a.lower()
+        for a in result.get("actions", [])
+    )
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        eprint(f"wrote {result['output']} format={result['format']}")
-        for a in result["actions"]:
-            eprint(f"  - {a}")
+        if not args.quiet or is_changed or residual or degraded:
+            eprint(f"wrote {result['output']} format={result['format']}")
+            for a in result["actions"]:
+                eprint(f"  - {a}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")
             for f in result.get("post_findings") or []:
