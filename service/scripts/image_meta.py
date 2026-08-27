@@ -1434,6 +1434,13 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
     return tools
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse HTTP redirects to prevent SSRF and credential forwarding."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
 def _synthid_score_http(
     path: Path, base_url: str, api_key: str, timeout: float
 ) -> dict[str, Any] | None:
@@ -1455,8 +1462,9 @@ def _synthid_score_http(
         headers=headers,
         method="POST",
     )
+    opener = urllib.request.build_opener(_NoRedirect())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with opener.open(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.HTTPError,

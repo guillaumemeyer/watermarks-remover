@@ -190,3 +190,67 @@ def test_inspect_report_to_dict_includes_synthid():
         has_ai_metadata=False,
     )
     assert empty.to_dict()["synthid"] is None
+
+
+def test_synthid_score_http_blocks_redirect(tmp_path: Path):
+    """Ensure _synthid_score_http refuses 302 redirects to prevent SSRF and key leakage."""
+    import http.server
+    import threading
+
+    state: dict = {"collector_port": None}
+    captured: dict = {}
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://127.0.0.1:{state['collector_port']}/leak",
+            )
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    class Collector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured["hit"] = True
+            self.send_response(200)
+            self.end_headers()
+
+        def do_POST(self):
+            captured["hit"] = True
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+    redirector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirector)
+    state["collector_port"] = collector.server_address[1]
+    t1 = threading.Thread(target=collector.serve_forever, daemon=True)
+    t2 = threading.Thread(target=redirector.serve_forever, daemon=True)
+    t1.start()
+    t2.start()
+
+    img = tmp_path / "target.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    try:
+        res = image_meta._synthid_score_http(
+            img,
+            f"http://127.0.0.1:{redirector.server_address[1]}",
+            api_key="secret-key",
+            timeout=2.0,
+        )
+        assert res is not None
+        assert res.get("available") is False
+        assert (
+            "unreachable" in res.get("error", "").lower()
+            or "httperror" in res.get("error", "").lower()
+        )
+        assert captured == {}, "redirect target must not receive any forwarded request"
+    finally:
+        collector.shutdown()
+        redirector.shutdown()
