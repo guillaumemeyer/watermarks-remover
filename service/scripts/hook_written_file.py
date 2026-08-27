@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -128,9 +129,13 @@ def run_check(path: Path) -> int:
     for finding in findings:
         eprint(f"  - {finding}")
     cmd = "python" if sys.platform == "win32" else "python3"
+    if sys.platform == "win32":
+        # cmd.exe tokenizes on whitespace, so a path with spaces must be quoted.
+        command = f'{cmd} "{CLEAN_FILE_PY}" "{path}" --in-place'
+    else:
+        command = f"{cmd} {shlex.quote(str(CLEAN_FILE_PY))} {shlex.quote(str(path))} --in-place"
     eprint(
-        f"Strip them with `{cmd} {CLEAN_FILE_PY} {path} --in-place`, "
-        "or set WATERMARKS_HOOK_MODE=clean to have this hook do it."
+        f"Strip them with `{command}`, or set WATERMARKS_HOOK_MODE=clean to have this hook do it."
     )
     return EXIT_SHOW_MODEL
 
