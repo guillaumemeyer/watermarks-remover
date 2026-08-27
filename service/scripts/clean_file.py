@@ -112,8 +112,10 @@ def main() -> int:
         bak, created = backup_path(args.path)
         if not created:
             eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
+            src = args.path
+        else:
+            src = bak
         dest = args.path
-        src = bak
     else:
         src = args.path
         dest = args.output or cleaned_path(args.path)

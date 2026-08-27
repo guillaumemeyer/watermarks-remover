@@ -335,6 +335,9 @@ def backup_path(src: Path) -> tuple[Path, bool]:
     """
     bak = src.with_suffix(src.suffix + ".bak")
     if bak.exists():
+        if not bak.is_file() or bak.is_symlink():
+            eprint(f"cannot create backup {bak}: target exists and is not a regular file")
+            raise SystemExit(2)
         return bak, False
     try:
         safe_write_bytes(bak, src.read_bytes())

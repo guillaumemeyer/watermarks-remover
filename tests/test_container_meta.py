@@ -791,3 +791,14 @@ def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
     monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1)
     with pytest.raises(container_meta.ZipBudgetExceeded):
         inspect_docx(buf.getvalue())
+
+
+def test_zip_budget_rejection_propagates_from_detect_container_format_mimetype(monkeypatch):
+    import container_meta
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 5)
+    with pytest.raises(container_meta.ZipBudgetExceeded):
+        detect_container_format(Path("x.bin"), buf.getvalue())

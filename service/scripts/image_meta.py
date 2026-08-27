@@ -1728,7 +1728,11 @@ def synthid_is_watermarked(entry: dict[str, Any] | None) -> bool:
     if entry.get("is_watermarked"):
         return True
     confidence = entry.get("confidence")
-    return confidence is not None and confidence >= 0.5
+    return (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and confidence >= 0.5
+    )
 
 
 def inspect_image(
@@ -1777,8 +1781,13 @@ def inspect_image(
     synthid_rep = run_synthid_score(path, synthid_dir)
     if synthid_rep:
         if synthid_is_watermarked(synthid_rep):
-            conf = synthid_rep.get("confidence", 0.0)
-            findings.append(f"SynthID pixel watermark detected (confidence={conf:.3f})")
+            conf = synthid_rep.get("confidence")
+            suffix = (
+                f" (confidence={conf:.3f})"
+                if isinstance(conf, (int, float)) and not isinstance(conf, bool)
+                else ""
+            )
+            findings.append(f"SynthID pixel watermark detected{suffix}")
         elif synthid_rep.get("error"):
             findings.append(f"SynthID scorer inconclusive: {synthid_rep['error']}")
 

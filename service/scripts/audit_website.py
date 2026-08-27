@@ -207,14 +207,10 @@ def guess_kind(url: str, data: bytes, content_type: str | None = None) -> str:
         if brand in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"):
             return "heic"
         return "mp4"
-    if (
-        data.startswith(b"PK\x03\x04")
-        or data.startswith(b"PK\x05\x06")
-        or data.startswith(b"PK\x07\x08")
-    ):
-        ckind = detect_container_format(Path(path), data)
-        if ckind != "unknown":
-            return ckind
+    url_filename = Path(urllib.parse.urlsplit(url).path).name or "input"
+    ckind = detect_container_format(Path(url_filename), data)
+    if ckind != "unknown":
+        return ckind
     if data[:100].lstrip().startswith(b"<") and b"svg" in data[:500].lower():
         return "svg"
     if b"<html" in data[:2000].lower() or data[:100].lstrip().lower().startswith(b"<"):

@@ -37,9 +37,29 @@ def test_inspect_truncated_id3v2_without_ai_markers_does_not_claim_ai():
     assert any("truncated" in f.lower() for f in findings)
 
 
-def test_strip_truncated_id3v2_removes_truncated_tag():
+def test_strip_truncated_id3v2_without_audio_preserves_file():
     data = _truncated_id3v2_mp3()
     cleaned, actions = av_meta._strip_id3v2(data, strip_all_metadata=True)
-    # The truncated tag should be stripped or dropped
-    assert not cleaned.startswith(b"ID3")
-    assert any("truncated" in a.lower() or "drop" in a.lower() for a in actions)
+    # When no audio frame can be identified, the file must be preserved rather than wiped
+    assert cleaned == data
+    assert any("preserving file" in a.lower() for a in actions)
+
+
+def test_strip_truncated_id3v2_drops_tag_and_preserves_valid_audio_tail():
+    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: \xff\xfb\x90\x64
+    valid_frame = b"\xff\xfb\x90\x64" + (b"\xaa" * 100)
+    data = _truncated_id3v2_mp3() + valid_frame
+    cleaned, actions = av_meta._strip_id3v2(data, strip_all_metadata=True)
+    assert cleaned == valid_frame
+    assert any("found audio frame" in a.lower() for a in actions)
+
+
+def test_strip_truncated_id3v2_rejects_false_sync_before_valid_frame():
+    # False sync (\xff\xe0\x00\x00 has reserved layer 00) followed by valid frame
+    false_sync = b"\xff\xe0\x00\x00garbage"
+    valid_frame = b"\xff\xfb\x90\x64" + (b"\xbb" * 100)
+    data = _truncated_id3v2_mp3() + false_sync + valid_frame
+    cleaned, actions = av_meta._strip_id3v2(data, strip_all_metadata=True)
+    # Must skip false sync and cut cleanly at the real audio frame
+    assert cleaned == valid_frame
+    assert any("found audio frame" in a.lower() for a in actions)
