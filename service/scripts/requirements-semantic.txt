@@ -1,0 +1,11 @@
+# Optional dependency for the semantic-divergence metric in the SynthID-text
+# benchmark (bench_synthid_text.py). The benchmark degrades gracefully to a
+# '—' semantic column when this package is absent, so installing it is not
+# required to run the benchmark.
+#
+# sentence-transformers 6.0 requires transformers>=5.0,<6.0, which matches the
+# transformers==5.15.0 pin in requirements-markllm.txt. Install it into the
+# same environment that has that pin (the MarkLLM venv) so the two do not
+# drift. It pulls in torch and transformers; install into the MarkLLM venv
+# (setup_markllm.sh) rather than a fresh environment to reuse those wheels.
+sentence-transformers==6.0.0

@@ -7,9 +7,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3",
+            "command": "node",
             "args": [
-              "${CLAUDE_PLUGIN_ROOT}/service/scripts/hook_written_file.py"
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run_hook.js"
             ],
             "timeout": 30
           }
