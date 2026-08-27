@@ -419,23 +419,33 @@ def _candidate_pass(evaluation: dict, target_margin: float) -> tuple[bool | None
     score = evaluation.get("score")
     threshold = evaluation.get("threshold")
     margin = None
+    raw_margin = None
     if isinstance(score, (int, float)) and isinstance(threshold, (int, float)):
-        margin = round(float(threshold) - float(score), 4)
+        raw_margin = float(threshold) - float(score)
+        margin = round(raw_margin, 4)
     if verdict is True:
         return False, margin
     # Not watermarked. If the threshold is not a score-scale cutoff it cannot
     # express a margin, so fall back to a clean pass (no margin floor).
-    if margin is not None and margin < 0:
+    if raw_margin is not None and raw_margin < 0:
         margin = None
-    met = margin is not None and margin >= target_margin - 1e-9
-    if margin is None or met:
+        raw_margin = None
+    met = raw_margin is not None and raw_margin >= target_margin - 1e-9
+    if raw_margin is None or met:
         return True, margin
     return None, margin
 
 
-def _margin_of(rec: dict) -> float:
+def _margin_of(rec: dict) -> tuple[float, float, float]:
     m = rec.get("margin")
-    return m if m is not None else -float("inf")
+    margin_val = float(m) if m is not None else -float("inf")
+    # For evaluators that report p_value (e.g. Keyed-Gumbel), lower p_value indicates a safer pass
+    eval_rec = rec.get("evaluation") or {}
+    pval = eval_rec.get("p_value")
+    neg_pval = -float(pval) if isinstance(pval, (int, float)) else -float("inf")
+    # Secondary tiebreaker: prefer less divergence
+    div = -float(rec.get("lexical_divergence", 0.0))
+    return (margin_val, neg_pval, div)
 
 
 def rewrite(
@@ -472,6 +482,8 @@ def rewrite(
         "backend": backend,
         "strength": strength,
         "rewrite_level": rewrite_level,
+        "target_margin": target_margin,
+        "selection": selection,
         "model": model,
         "base_url": base_url,
         "temperature": temperature,

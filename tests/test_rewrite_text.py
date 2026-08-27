@@ -789,3 +789,38 @@ def test_rewrite_blocks_redirect_and_never_sends_key():
     finally:
         collector.shutdown()
         redirector.shutdown()
+
+
+def test_candidate_pass_raw_margin_precision():
+    # 0.50000 - 0.37656 = 0.12344, which is >= 0.123439 raw, but if rounded first could drift
+    evaluation = {"is_watermarked": False, "score": 0.37656, "threshold": 0.50000}
+    passed, margin = rewrite_text._candidate_pass(evaluation, target_margin=0.123439)
+    assert passed is True
+    assert margin == 0.1234
+
+
+def test_rewrite_metadata_records_selection_and_target_margin(monkeypatch):
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: "rewritten")
+    _out, info = rewrite(
+        "sample input",
+        **_rewrite_candidates_kwargs(candidates=1, target_margin=0.25, selection="max-margin"),
+    )
+    assert info["target_margin"] == 0.25
+    assert info["selection"] == "max-margin"
+
+
+def test_max_margin_ranks_by_p_value_when_margins_tied():
+    rec_high_p = {
+        "passed": True,
+        "margin": None,
+        "evaluation": {"is_watermarked": False, "p_value": 0.05},
+        "lexical_divergence": 0.5,
+    }
+    rec_low_p = {
+        "passed": True,
+        "margin": None,
+        "evaluation": {"is_watermarked": False, "p_value": 1e-6},
+        "lexical_divergence": 0.5,
+    }
+    # rec_low_p has a lower p-value (1e-6 < 0.05), so it represents a safer pass and ranks higher
+    assert rewrite_text._margin_of(rec_low_p) > rewrite_text._margin_of(rec_high_p)
