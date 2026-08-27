@@ -42,6 +42,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from functools import cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -870,7 +871,10 @@ class Handler(BaseHTTPRequestHandler):
     server_version = f"watermarks-remover/{VERSION}"
 
     def log_message(self, fmt: str, *args: object) -> None:
-        eprint(f"{self.address_string()} - {fmt % args}")
+        # Local time with UTC offset, e.g. "2026-08-27 14:03:11 +0300" — readable
+        # without conversion, and unambiguous across timezones/DST.
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        eprint(f"[{stamp}] {self.address_string()} - {fmt % args}")
 
     def _authorized(self) -> bool:
         if not API_KEY:
@@ -958,7 +962,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._respond(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(e)})
         except Exception as e:
-            eprint(f"error handling {path}: {e!r}")
+            self.log_error("error handling %s: %r", path, e)
             self._respond(
                 HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "internal error"}
             )
