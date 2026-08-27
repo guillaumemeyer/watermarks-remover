@@ -60,6 +60,13 @@ def _args(**overrides):
         no_worker=True,
         scheme="synthid",
         config=None,
+        mode="variants",
+        semantic_model="sentence-transformers/all-MiniLM-L6-v2",
+        rewrite_level_start=0.1,
+        rewrite_level_step=0.1,
+        rewrite_level_max=1.0,
+        level_attempts=3,
+        target_margin=0.0,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -75,7 +82,9 @@ def _make_bench(tmp_path, monkeypatch, patch_steps=True, **args_overrides):
             b, "detect", lambda text: DETECT_POS if text.startswith("watermarked") else DETECT_NEG
         )
         monkeypatch.setattr(
-            b, "rewrite", lambda text, strength, candidates: (text + " rewritten", _rewrite_stats())
+            b,
+            "rewrite",
+            lambda text, strength, candidates, **kw: (text + " rewritten", _rewrite_stats()),
         )
     return b, args
 
@@ -102,7 +111,12 @@ def _rewrite_stats(cleared=True, evaluator="markllm", attempts_made=1, passed=Tr
         "passed": passed,
         "markllm": {
             "before": dict(DETECT_POS),
-            "after": {"available": True, "is_watermarked": not cleared, "score": -0.5},
+            "after": {
+                "available": True,
+                "is_watermarked": not cleared,
+                "score": -0.5,
+                "threshold": 0.5,
+            },
             "cleared": cleared,
             "note": "same-config only",
         },
@@ -171,6 +185,7 @@ def test_aggregate_clear_rate_and_efficiency():
             "cleared": True,
             "score_before": 2.0,
             "score_after": -1.0,
+            "margin": 1.0,
             "quality": {
                 "lexical_divergence": 0.8,
                 "length_ratio": 1.0,
@@ -191,6 +206,7 @@ def test_aggregate_clear_rate_and_efficiency():
             "cleared": False,
             "score_before": 2.0,
             "score_after": 1.5,
+            "margin": -1.5,
             "quality": {
                 "lexical_divergence": 0.6,
                 "length_ratio": 1.0,
@@ -212,6 +228,7 @@ def test_aggregate_clear_rate_and_efficiency():
     assert a["mean_score_delta"] == 1.75  # ((2-(-1)) + (2-1.5)) / 2
     assert a["mean_tokens_out"] == 250
     assert a["mean_attempts"] == 2.0  # (1 + 3) / 2
+    assert a["mean_margin"] == -0.25  # (1.0 + -1.5) / 2
     assert a["clears_per_mtok_out"] == pytest.approx(2000.0)  # 0.5 / (250/1e6)
 
 
@@ -303,7 +320,7 @@ def test_run_variants_rows_and_clear_rate(tmp_path, monkeypatch):
 def test_rewrite_failure_is_recorded_not_fatal(tmp_path, monkeypatch):
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
 
-    def _boom(text, strength, candidates):
+    def _boom(text, strength, candidates, **kw):
         raise RuntimeError("backend down")
 
     monkeypatch.setattr(b, "rewrite", _boom)
@@ -337,6 +354,7 @@ class _FakeBench:
         self.variants = parse_variants(args.variants)
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
+        self.semantic = bench.SemanticEmbedder(args.semantic_model)
 
     def close_worker(self):
         pass
@@ -684,3 +702,339 @@ def test_run_cmd_no_rlimit_preexec(monkeypatch):
 
     b._run_cmd(["echo", "hi"], timeout=5)
     assert "preexec_fn" not in calls["kwargs"]
+
+
+# ---------------------------------------------------------------------------
+# Semantic divergence
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_embedder_score_is_one_minus_cosine():
+    class _FakeModel:
+        def encode(self, texts, normalize_embeddings=True):
+            return [[1.0, 0.0], [0.0, 1.0]]  # orthogonal -> cosine 0
+
+    class _FakeUtil:
+        def cos_sim(self, a, b):
+            class _V:
+                def item(self):
+                    return 0.0
+
+            return _V()
+
+    emb = bench.SemanticEmbedder("fake-model")
+    emb._model = _FakeModel()
+    emb._util = _FakeUtil()
+    assert emb.available() is True
+    assert emb.score("original", "candidate") == 1.0
+
+
+def test_semantic_embedder_graceful_when_package_missing(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *a, **k):
+        if name == "sentence_transformers":
+            raise ImportError("not installed")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    emb = bench.SemanticEmbedder("a-model")
+    assert emb.available() is False
+    assert emb.score("a", "b") is None
+    # a second call does not keep retrying the import
+    assert emb.score("a", "b") is None
+
+
+def test_semantic_embedder_failsoft_after_encode_failure():
+    class _FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def encode(self, texts, normalize_embeddings=True):
+            self.calls += 1
+            raise RuntimeError("encode exploded")
+
+    emb = bench.SemanticEmbedder("fake-model")
+    emb._model = _FakeModel()
+    emb._util = type("_U", (), {"cos_sim": lambda self, a, b: None})()
+    assert emb.score("orig", "cand") is None
+    assert emb.available() is False
+    # fail-soft: the backend is disabled after a failed encode, so a second
+    # score returns None WITHOUT re-encoding, and available() stays False.
+    assert emb.score("orig", "cand") is None
+    assert emb._model.calls == 1
+
+
+def test_quality_includes_semantic_divergence():
+    class _FakeSem:
+        def score(self, original, candidate):
+            return 0.42
+
+    sem = _FakeSem()
+    q = bench._quality("original text", "rewritten text", 4.0, sem)
+    assert q["semantic_divergence"] == 0.42
+    # no semantic backend -> the metric is present but None
+    q2 = bench._quality("original text", "rewritten text", 4.0)
+    assert q2["semantic_divergence"] is None
+
+
+def test_aggregate_mean_semantic_divergence_skips_none():
+    rows = [
+        {
+            "variant": "rewrite-paraphrase:1",
+            "kind": "rewrite",
+            "before_pos": True,
+            "after_pos": False,
+            "cleared": True,
+            "score_before": 2.0,
+            "score_after": -1.0,
+            "quality": {
+                "lexical_divergence": 0.8,
+                "semantic_divergence": 0.2,
+                "length_ratio": 1.0,
+                "numbers_preserved": 1.0,
+                "tokens_in": 100,
+                "tokens_out": 100,
+            },
+            "seconds": 1.0,
+            "usd": 0.0,
+            "notes": [],
+        },
+        {
+            "variant": "rewrite-paraphrase:1",
+            "kind": "rewrite",
+            "before_pos": True,
+            "after_pos": False,
+            "cleared": True,
+            "score_before": 2.0,
+            "score_after": -1.0,
+            "quality": {
+                "lexical_divergence": 0.6,
+                "semantic_divergence": None,
+                "length_ratio": 1.0,
+                "numbers_preserved": 1.0,
+                "tokens_in": 200,
+                "tokens_out": 200,
+            },
+            "seconds": 1.0,
+            "usd": 0.0,
+            "notes": [],
+        },
+    ]
+    agg = aggregate(rows, [("paraphrase", 1)])
+    a = agg["rewrite-paraphrase:1"]
+    assert a["semantic_n"] == 1
+    assert a["mean_semantic_divergence"] == 0.2
+
+
+# ---------------------------------------------------------------------------
+# Minimal-rewrite-level mode
+# ---------------------------------------------------------------------------
+
+
+def test_minimal_search_escalates_until_cleared(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
+    samples = b.generate_samples(tmp_path / "work")
+    levels_called = []
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        levels_called.append(rewrite_level)
+        cleared = rewrite_level is not None and rewrite_level >= 0.3
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=cleared, attempts_made=1)
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: 0.25)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["cleared"] is True
+    assert row["level"] == 0.3
+    assert row["semantic_divergence"] == 0.25
+    # one attempt per level, escalating 0.1 -> 0.2 -> 0.3
+    assert levels_called == [0.1, 0.2, 0.3]
+
+
+def test_minimal_search_always_evaluates_max_level(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path,
+        monkeypatch,
+        docs=1,
+        mode="minimal",
+        level_attempts=1,
+        rewrite_level_start=0.1,
+        rewrite_level_step=0.2,
+        rewrite_level_max=1.0,
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    levels_called = []
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        levels_called.append(rewrite_level)
+        # clears only at the configured maximum
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(
+            cleared=(rewrite_level == 1.0), attempts_made=1
+        )
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: 0.25)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    assert row["cleared"] is True
+    assert row["level"] == 1.0
+    # 0.1, 0.3, 0.5, 0.7, 0.9 then the clamped maximum 1.0
+    assert levels_called == [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+
+
+def test_minimal_search_rejects_bad_level_config(tmp_path, monkeypatch):
+    for overrides, err in [
+        ({"rewrite_level_step": 0.0}, "--rewrite-level-step must be a positive finite number"),
+        (
+            {"rewrite_level_step": float("inf")},
+            "--rewrite-level-step must be a positive finite number",
+        ),
+        (
+            {"rewrite_level_step": float("nan")},
+            "--rewrite-level-step must be a positive finite number",
+        ),
+        ({"rewrite_level_start": 0.0}, "must be in (0,1]"),
+        ({"rewrite_level_max": 1.5}, "must be in (0,1]"),
+    ]:
+        b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", **overrides)
+        samples = b.generate_samples(tmp_path / "work")
+        with pytest.raises(SystemExit) as e:
+            b.minimal_search(samples, tmp_path / "work")
+        assert err in str(e.value)
+
+
+def test_minimal_search_picks_min_semantic_among_clearing(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=3)
+    samples = b.generate_samples(tmp_path / "work")
+    sems = iter([0.9, 0.3, 0.7])
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=True, attempts_made=1)
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: next(sems))
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    assert row["cleared"] is True
+    # all attempts clear at the first level; the smallest semantic wins
+    assert row["level"] == 0.1
+    assert row["semantic_divergence"] == 0.3
+
+
+def test_minimal_search_records_not_cleared_when_no_level_clears(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
+    samples = b.generate_samples(tmp_path / "work")
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        return f"{text} rewritten", _rewrite_stats(cleared=False, attempts_made=1)
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    assert row["cleared"] is False
+    assert row["level"] == 1.0
+    assert row["semantic_divergence"] is None
+    assert "not cleared at any level" in "; ".join(row["notes"])
+
+
+def test_minimal_search_target_margin_gates_tiny_clear(tmp_path, monkeypatch):
+    b, _ = _make_bench(
+        tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1, target_margin=2.0
+    )
+    samples = b.generate_samples(tmp_path / "work")
+    levels_called = []
+
+    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+        levels_called.append(rewrite_level)
+        # "clears" by the detector (is_watermarked False) but the fake margin
+        # is 1.0 < target_margin 2.0, so it is gated out of the clear count.
+        return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=True, attempts_made=1)
+
+    monkeypatch.setattr(b, "rewrite", fake_rewrite)
+    monkeypatch.setattr(b.semantic, "score", lambda o, c: 0.25)
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    # No level can clear against target_margin=2.0 (fake margin is 1.0), so the
+    # search escalates to the max and records a failure, not a hair-thin pass.
+    assert row["cleared"] is False
+    assert row["level"] == b.args.rewrite_level_max
+    assert levels_called == [
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+        1.0,
+    ]
+
+
+def test_cleared_verdict_tristate(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal")
+    assert b._cleared_verdict({"available": True, "is_watermarked": False}) is True
+    assert b._cleared_verdict({"available": True, "is_watermarked": True}) is False
+    # fail-soft: unavailable detection is never a definite "still watermarked"
+    assert b._cleared_verdict({"available": False, "is_watermarked": True}) is None
+    assert b._cleared_verdict(None) is None
+    assert b._cleared_verdict({"available": True, "is_watermarked": None}) is True
+
+
+def test_minimal_search_detection_unavailable_is_excluded(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
+    samples = b.generate_samples(tmp_path / "work")
+
+    # Detection is fail-soft unavailable, so the after-report has no verdict.
+    monkeypatch.setattr(
+        b,
+        "_rewrite_report",
+        lambda stats, out_text: {"available": False, "is_watermarked": None},
+    )
+    rows = b.minimal_search(samples, tmp_path / "work")
+    row = rows[0]
+    # An unknown verdict is excluded (cleared=None), not reported as "not cleared".
+    assert row["cleared"] is None
+    assert "detection unavailable" in "; ".join(row["notes"])
+    # aggregate_minimal drops the unknown row from the clear-rate denominator.
+    agg = bench.aggregate_minimal(rows)
+    assert agg["n_samples"] == 0
+    assert agg["clear_rate"] is None
+
+
+def test_aggregate_minimal_means_and_usage():
+    rows = [
+        {
+            "cleared": True,
+            "level": 0.2,
+            "semantic_divergence": 0.1,
+            "lexical_divergence": 0.3,
+            "margin": 0.9,
+        },
+        {
+            "cleared": True,
+            "level": 0.6,
+            "semantic_divergence": 0.4,
+            "lexical_divergence": 0.5,
+            "margin": 1.5,
+        },
+        {"cleared": False, "level": 1.0, "semantic_divergence": None, "lexical_divergence": None},
+    ]
+    agg = bench.aggregate_minimal(rows)
+    assert agg["n_samples"] == 3
+    assert agg["n_cleared"] == 2
+    assert agg["clear_rate"] == pytest.approx(2 / 3, rel=1e-4)
+    assert agg["mean_min_level"] == pytest.approx(0.4, rel=1e-4)
+    assert agg["median_min_level"] == pytest.approx(
+        0.4, rel=1e-4
+    )  # conventional median of {0.2, 0.6}
+    assert agg["mean_min_semantic_divergence"] == pytest.approx(0.25, rel=1e-4)
+    assert agg["mean_min_lexical_divergence"] == pytest.approx(0.4, rel=1e-4)
+    assert agg["mean_min_margin"] == pytest.approx(1.2, rel=1e-4)  # (0.9 + 1.5) / 2
+    assert agg["level_usage"] == [(0.2, 1), (0.6, 1)]

@@ -27,6 +27,12 @@ attempts are generated and the most diverged one is selected). A vendor-detector
 seam (Google's retired SynthID-text detector) is reserved ahead of the
 same-config detectors should a vendor endpoint return.
 
+The rewrite instruction comes from --strength (a named prompt) or, when
+--rewrite-level is set, a numeric rewrite intensity in (0,1] that controls how
+many tokens change (0 — the unchanged original — is excluded; 1 rewrites
+everything). The level is a request: output lexical/semantic divergence is
+measured, not guaranteed.
+
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
     Authorization header (API key) can never be re-sent to an unvalidated host.
@@ -40,6 +46,7 @@ import argparse
 import itertools
 import json
 import os
+import random
 import re
 import sys
 import urllib.error
@@ -94,6 +101,24 @@ PROMPTS = {
         "Write a complete document from this outline in natural, varied human prose. "
         "Avoid formulaic transitions. Do not omit any bullet. Output only the document."
         "\n\n---\n{TEXT}"
+    ),
+    "level": (
+        "Rewrite the following text so that a fraction of the tokens close to "
+        "{LEVEL:.2f} changes — 0 would mean the wording is kept unchanged, 1 means "
+        "everything is rewritten. At low values keep the sentence structure, word "
+        "order, and every token that can stay, changing only function words and a "
+        "few non-essential content words. At high values change wording substantially "
+        "at the token level. Preserve all facts, numbers, names, and technical "
+        "identifiers. Do not add or remove claims. Output only the rewritten text."
+        "\n\n---\n{TEXT}"
+    ),
+    "chunk_unit": (
+        "Rewrite only this fragment to change a modest fraction of its tokens. "
+        "At low intensity keep the sentence structure, word order, and every "
+        "token that can stay, changing only function words and a few "
+        "non-essential content words. Preserve all facts, numbers, names, and "
+        "technical identifiers. Do not add or remove claims. Output only the "
+        "rewritten fragment.\n\n---\n{TEXT}"
     ),
 }
 
@@ -245,7 +270,16 @@ def _generate_once(
     raise SystemExit(f"unknown backend: {backend}")
 
 
-def build_prompt(strength: str, text: str, *, lang: str, original_lang: str) -> str:
+def build_prompt(
+    strength: str,
+    text: str,
+    *,
+    lang: str,
+    original_lang: str,
+    rewrite_level: float | None = None,
+) -> str:
+    if rewrite_level is not None:
+        return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
     if strength == "paraphrase":
         return PROMPTS["paraphrase"].format(TEXT=text)
     if strength == "humanize":
@@ -266,7 +300,31 @@ def build_prompt(strength: str, text: str, *, lang: str, original_lang: str) -> 
             "prose without omitting any bullet. Output only the final document.\n\n---\n"
             f"{text}"
         )
+    if strength == "chunk":
+        return PROMPTS["chunk_unit"].format(TEXT=text)
     raise ValueError(f"unknown strength: {strength}")
+
+
+def _split_units(text: str) -> list[tuple[str, str]]:
+    """Split a document into (unit, separator) pairs.
+
+    Breaks after sentence punctuation or on any blank-line / newline run, so
+    each fragment is rewritten independently (a fresh context per fragment ⇒
+    new per-token watermark keys). Punctuation is kept with its fragment. The
+    separator is the whitespace/blank-line run that follows a unit ('' for the
+    last); unshuffled chunk mode reassembles with it so paragraph/line layout
+    is preserved, while shuffled mode drops it.
+    """
+    parts = re.split(r"((?<=[.!?])\s+|\n+)", text)
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(parts):
+        unit = parts[i]
+        sep = parts[i + 1] if i + 1 < len(parts) else ""
+        if unit.strip() or "\n" in sep:
+            pairs.append((unit.strip(), sep))
+        i += 2
+    return pairs
 
 
 def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
@@ -340,6 +398,46 @@ def call_openai_compatible(
     return str(content).strip()
 
 
+def _candidate_pass(evaluation: dict, target_margin: float) -> tuple[bool | None, float | None]:
+    """Judge a detection report against a score-margin objective.
+
+    Returns (passed, margin). ``passed`` is True when the detector reports the
+    text not-watermarked AND its score sits at least ``target_margin`` below the
+    threshold; False when still watermarked; None when no verdict is available
+    (fail-soft) or when the margin floor is not met. ``margin`` = threshold -
+    score, or None when either field is missing OR the threshold is not a
+    score-scale cutoff.
+
+    Some detectors (keyed-Gumbel) report a *p-value* threshold that does not
+    scale with their ``score``, so ``threshold - score`` is meaningless; a
+    not-watermarked report whose score is above such a threshold is treated as
+    a clear pass rather than a gated margin.
+    """
+    verdict = evaluation.get("is_watermarked")
+    if verdict is None:
+        return None, None
+    score = evaluation.get("score")
+    threshold = evaluation.get("threshold")
+    margin = None
+    if isinstance(score, (int, float)) and isinstance(threshold, (int, float)):
+        margin = round(float(threshold) - float(score), 4)
+    if verdict is True:
+        return False, margin
+    # Not watermarked. If the threshold is not a score-scale cutoff it cannot
+    # express a margin, so fall back to a clean pass (no margin floor).
+    if margin is not None and margin < 0:
+        margin = None
+    met = margin is not None and margin >= target_margin - 1e-9
+    if margin is None or met:
+        return True, margin
+    return None, margin
+
+
+def _margin_of(rec: dict) -> float:
+    m = rec.get("margin")
+    return m if m is not None else -float("inf")
+
+
 def rewrite(
     text: str,
     *,
@@ -362,11 +460,18 @@ def rewrite(
     markllm_model: str | None = None,
     markllm_timeout: float = 180.0,
     gumbel_key: str | None = None,
+    rewrite_level: float | None = None,
+    target_margin: float = 0.0,
+    selection: str = "min-divergence",
+    chunk_shuffle: bool = False,
 ) -> tuple[str, dict]:
-    prompt = build_prompt(strength, text, lang=lang, original_lang=original_lang)
+    prompt = build_prompt(
+        strength, text, lang=lang, original_lang=original_lang, rewrite_level=rewrite_level
+    )
     info: dict = {
         "backend": backend,
         "strength": strength,
+        "rewrite_level": rewrite_level,
         "model": model,
         "base_url": base_url,
         "temperature": temperature,
@@ -422,19 +527,56 @@ def rewrite(
     evaluator_name, evaluator = _pick_evaluator(markllm_detector, gumbel_detector)
     info["evaluator"] = evaluator_name
 
+    is_chunk = strength == "chunk"
+    info["chunked"] = is_chunk
+    info["chunk_shuffle"] = bool(chunk_shuffle)
+
+    def _rewrite_unit(unit: str) -> str:
+        return _generate_once(
+            backend,
+            base_url,
+            model,
+            api_key,
+            build_prompt(
+                strength,
+                unit,
+                lang=lang,
+                original_lang=original_lang,
+                rewrite_level=rewrite_level,
+            ),
+            timeout,
+            temperature,
+            reasoning_effort,
+        )
+
+    def _generate_candidate() -> str:
+        if is_chunk:
+            pairs = _split_units(text)
+            if chunk_shuffle:
+                units = [unit for unit, _ in pairs if unit]
+                random.shuffle(units)
+                return " ".join(_rewrite_unit(unit) for unit in units)
+            # Skip rewriting empty leading units (blank lines at the top) but
+            # keep their separators so the reassembled document keeps the layout.
+            return "".join((_rewrite_unit(unit) if unit else "") + sep for unit, sep in pairs)
+        return _generate_once(
+            backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
+        )
+
     # Iterative rewrite: each loop generates --candidates variants and
-    # evaluates them, stopping as soon as one passes; --max-loops caps how
-    # many evaluation rounds run before the best-effort variant is returned.
-    # When no detector is configured the evaluator is lexical divergence,
-    # which has no pass/fail verdict, so every attempt is generated and the
-    # most diverged one is selected (the original --candidates behavior).
+    # evaluates them ALL (so the best is chosen, not the first to squeak under
+    # the threshold). A variant "passes" when the detector reports it
+    # not-watermarked AND its score sits at least --target-margin below the
+    # threshold; --max-loops caps the evaluation rounds before the best-effort
+    # variant is returned. When no detector is configured the evaluator is
+    # lexical divergence, which has no pass/fail verdict, so every attempt is
+    # generated and the most diverged one is selected (an unguided best-effort).
     attempts: list[tuple[str, dict]] = []
     passed: bool | None = None
     for loop in range(n_loops):
+        loop_passed = False
         for _ in range(n_cands):
-            cand = _generate_once(
-                backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
-            )
+            cand = _generate_candidate()
             cand_stats: dict | None = None
             if layer_a_after:
                 cand, cand_stats = clean_text(cand)
@@ -446,10 +588,9 @@ def rewrite(
                 }
             else:
                 evaluation = _safe_detect(evaluator, cand)
-            verdict = evaluation.get("is_watermarked")
-            passed_i: bool | None = (
-                True if verdict is False else (False if verdict is True else None)
-            )
+            passed_i, margin = _candidate_pass(evaluation, target_margin)
+            score = evaluation.get("score")
+            threshold = evaluation.get("threshold")
             attempts.append(
                 (
                     cand,
@@ -457,6 +598,13 @@ def rewrite(
                         "loop": loop,
                         "lexical_divergence": round(divergence, 4),
                         "selection_score": round(divergence, 4),
+                        "score_after": round(float(score), 4)
+                        if isinstance(score, (int, float))
+                        else None,
+                        "threshold": round(float(threshold), 4)
+                        if isinstance(threshold, (int, float))
+                        else None,
+                        "margin": margin,
                         "selected": False,
                         "passed": passed_i,
                         "evaluation": evaluation,
@@ -465,9 +613,9 @@ def rewrite(
                 )
             )
             if passed_i is True:
-                passed = True
-                break
-        if passed is True:
+                loop_passed = True
+        if loop_passed:
+            passed = True
             break
 
     if evaluator is not None and passed is None:
@@ -475,8 +623,12 @@ def rewrite(
     info["attempts_made"] = len(attempts)
     info["passed"] = passed
 
-    # Best-effort selection when no attempt passed: the lowest watermark score
-    # (detector evaluator) or the most lexically diverged variant (fallback).
+    # Best-effort selection: among the candidates that passed (met the margin
+    # objective) pick the one that changed the least (min-divergence, the
+    # content-preserving default) or the one with the largest margin
+    # (--select max-margin, robustness-first). When none passed, fall back to
+    # the lowest watermark score (detector evaluator) or the most diverged
+    # variant (unguided fallback).
     selected_idx: int
     best_score: float | None = None
     best_score_idx: int | None = None
@@ -491,8 +643,12 @@ def rewrite(
             if isinstance(s, (int, float)) and (best_score is None or s < best_score):
                 best_score = float(s)
                 best_score_idx = i
-    if passed is True:
-        selected_idx = len(attempts) - 1  # the passing attempt is the last one
+    passed_idxs = [i for i, (_c, r) in enumerate(attempts) if r["passed"] is True]
+    if passed_idxs:
+        if selection == "max-margin":
+            selected_idx = max(passed_idxs, key=lambda i: _margin_of(attempts[i][1]))
+        else:
+            selected_idx = min(passed_idxs, key=lambda i: attempts[i][1]["lexical_divergence"])
     elif best_score_idx is not None:
         selected_idx = best_score_idx
     else:
@@ -510,9 +666,16 @@ def rewrite(
         "cannot certify removal against a vendor detector."
     )
     if evaluator is not None and passed is not True:
+        margin_suffix = f" (target margin {target_margin:.2f})" if target_margin else ""
         note += (
             f" Exhausted {len(attempts)} attempt(s) without passing "
-            f"{evaluator_name} evaluation; returned the best-effort variant."
+            f"{evaluator_name} evaluation{margin_suffix}; returned the best-effort variant."
+        )
+    if markllm_scheme:
+        note += (
+            " Cross-model hygiene: rewrite with a model that is neither the "
+            "generator nor itself watermarked, or the rewritten text can be "
+            "re-stamped."
         )
     info["note"] = note
 
@@ -532,6 +695,16 @@ def rewrite(
             )
         else:
             markllm["cleared"] = None
+        a_score = after.get("score")
+        a_thr = after.get("threshold")
+        markllm["score_after"] = (
+            round(float(a_score), 4) if isinstance(a_score, (int, float)) else None
+        )
+        markllm["margin"] = (
+            round(float(a_thr) - float(a_score), 4)
+            if isinstance(a_score, (int, float)) and isinstance(a_thr, (int, float))
+            else None
+        )
         markllm["note"] = (
             "MarkLLM detection is only valid against the SAME scheme config + "
             "keys used at generation; it does not certify a vendor detector."
@@ -599,8 +772,41 @@ def build_parser() -> argparse.ArgumentParser:
     # and shell history. Set WATERMARKS_REWRITE_API_KEY instead.
     p.add_argument(
         "--strength",
-        choices=("paraphrase", "backtranslate", "structural", "humanize", "code"),
+        choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk"),
         default="paraphrase",
+    )
+    p.add_argument(
+        "--rewrite-level",
+        type=float,
+        default=None,
+        help="Numeric rewrite intensity in (0,1]; 0 (the unchanged original) is "
+        "excluded. When set, overrides --strength and builds a level-based prompt "
+        "that changes a fraction of tokens close to this value. Omit to use "
+        "--strength (the benchmark's minimal mode drives this explicitly). "
+        "Planned nominal default 0.5, to be tuned from benchmark output.",
+    )
+    p.add_argument(
+        "--target-margin",
+        type=float,
+        default=0.0,
+        help="Require a detection to sit at least this far below the threshold "
+        "to count as a pass (robustness floor; default 0.0 = any not-watermarked "
+        "verdict). Margin = threshold - score.",
+    )
+    p.add_argument(
+        "--select",
+        choices=("min-divergence", "max-margin"),
+        default="min-divergence",
+        help="Among candidates that pass --target-margin, select the one that "
+        "changed the least (min-divergence, the content-preserving default) or "
+        "the one with the largest score margin (max-margin, robustness-first).",
+    )
+    p.add_argument(
+        "--chunk-shuffle",
+        action="store_true",
+        help="With --strength chunk, shuffle the rewritten fragments (breaks "
+        "cross-fragment context ordering; destroys document coherence, so "
+        "opt-in)",
     )
     p.add_argument("--lang", default="French", help="Pivot language for backtranslate")
     p.add_argument("--original-lang", default="English")
@@ -679,6 +885,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
+    if args.rewrite_level is not None and not (0 < args.rewrite_level <= 1):
+        eprint(f"error: --rewrite-level must be in (0,1], got {args.rewrite_level}")
+        return 2
+
     text = read_text_input(args.path, allow_binary=args.force_text)
     allow_remote = (
         args.allow_remote
@@ -707,6 +917,10 @@ def main() -> int:
             markllm_model=args.markllm_model,
             markllm_timeout=args.markllm_timeout,
             gumbel_key=args.gumbel_key,
+            rewrite_level=args.rewrite_level,
+            target_margin=args.target_margin,
+            selection=args.select,
+            chunk_shuffle=args.chunk_shuffle,
         )
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")
