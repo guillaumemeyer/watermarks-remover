@@ -2170,6 +2170,7 @@ def clean_image(
             raise ValueError(f"unknown pixel remover: {remove_pixel}")
 
     after = inspect_image(dest, synthid_dir=synthid_dir)
+    changed = dest.read_bytes() != data
     return {
         "input": str(path),
         "output": str(dest),
@@ -2177,6 +2178,7 @@ def clean_image(
         "actions": actions,
         "bytes_in": len(data),
         "bytes_out": dest.stat().st_size,
+        "changed": changed,
         "still_has_c2pa": after.has_c2pa,
         "still_has_ai_metadata": after.has_ai_metadata,
         "post_findings": after.findings,

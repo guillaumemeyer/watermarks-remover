@@ -502,6 +502,7 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
         "actions": actions,
         "bytes_in": len(data),
         "bytes_out": len(cleaned),
+        "changed": cleaned != data,
         "still_has_c2pa": after.has_c2pa,
         "still_has_ai_metadata": after.has_ai_metadata or inspection_incomplete,
         "post_findings": post_findings,

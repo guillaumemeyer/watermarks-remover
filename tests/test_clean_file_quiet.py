@@ -89,3 +89,35 @@ def test_clean_file_quiet_suppresses_untouched_image(tmp_path: Path):
     )
     assert r_quiet.stderr.strip() == ""
     assert r_quiet.returncode == 0
+
+
+def test_clean_file_quiet_json_suppresses_untouched_text(tmp_path: Path):
+    """--quiet --json emits nothing for an unchanged text file."""
+    clean_txt = tmp_path / "clean.txt"
+    clean_txt.write_text("Hello clean world!", encoding="utf-8")
+
+    r_quiet_json = subprocess.run(
+        [sys.executable, str(CLEAN_FILE_PY), str(clean_txt), "--in-place", "-q", "--json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert r_quiet_json.returncode == 0
+    assert r_quiet_json.stdout.strip() == ""
+    assert r_quiet_json.stderr.strip() == ""
+
+
+def test_clean_file_quiet_json_suppresses_untouched_image(tmp_path: Path):
+    """--quiet --json emits nothing for an unchanged image file."""
+    clean_png = tmp_path / "clean.png"
+    clean_png.write_bytes(_minimal_clean_png())
+
+    r_quiet_json = subprocess.run(
+        [sys.executable, str(CLEAN_FILE_PY), str(clean_png), "--in-place", "-q", "--json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert r_quiet_json.returncode == 0
+    assert r_quiet_json.stdout.strip() == ""
+    assert r_quiet_json.stderr.strip() == ""

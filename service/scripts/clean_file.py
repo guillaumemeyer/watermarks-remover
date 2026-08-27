@@ -120,7 +120,10 @@ def main() -> int:
         if not created and not args.quiet:
             eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
         dest = args.path
-        src = bak
+        # On a repeated in-place run the backup already holds the original
+        # (pre-clean) bytes; process the current file so an already-clean
+        # destination is not reported as modified against a stale .bak.
+        src = bak if created else args.path
     else:
         src = args.path
         dest = args.output or cleaned_path(args.path)
@@ -140,12 +143,16 @@ def main() -> int:
             "output": str(dest),
             "stats": stats,
         }
+        changed = stats["removed_count"] or stats["replaced_count"]
+        should_report = not args.quiet or changed
         if args.json:
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-        elif not args.quiet or stats["removed_count"] or stats["replaced_count"]:
-            eprint(
-                f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
-            )
+            if should_report:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if should_report:
+                eprint(
+                    f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
+                )
         return 0
 
     if kind == "image":
@@ -160,14 +167,13 @@ def main() -> int:
             return 1
         result = {"kind": "image", **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
-        is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
-            not a.lower().startswith("no ") and "already clean" not in a.lower()
-            for a in result.get("actions", [])
-        )
+        is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
+        should_report = not args.quiet or is_changed or residual
         if args.json:
-            print(json.dumps(result, indent=2))
+            if should_report:
+                print(json.dumps(result, indent=2))
         else:
-            if not args.quiet or is_changed or residual:
+            if should_report:
                 eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
                 for a in result["actions"]:
                     eprint(f"  - {a}")
@@ -187,14 +193,13 @@ def main() -> int:
             return 1
         result = {"kind": "av", **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
-        is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
-            not a.lower().startswith("no ") and "already clean" not in a.lower()
-            for a in result.get("actions", [])
-        )
+        is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
+        should_report = not args.quiet or is_changed or residual
         if args.json:
-            print(json.dumps(result, indent=2))
+            if should_report:
+                print(json.dumps(result, indent=2))
         else:
-            if not args.quiet or is_changed or residual:
+            if should_report:
                 eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
                 for a in result["actions"]:
                     eprint(f"  - {a}")
@@ -210,14 +215,13 @@ def main() -> int:
     result = {"kind": "container", **result}
     residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
     degraded = bool(result.get("meta", {}).get("degraded"))
-    is_changed = (result["bytes_in"] != result["bytes_out"]) or any(
-        not a.lower().startswith("no ") and "already clean" not in a.lower()
-        for a in result.get("actions", [])
-    )
+    is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
+    should_report = not args.quiet or is_changed or residual or degraded
     if args.json:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if should_report:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        if not args.quiet or is_changed or residual or degraded:
+        if should_report:
             eprint(f"wrote {result['output']} format={result['format']}")
             for a in result["actions"]:
                 eprint(f"  - {a}")
