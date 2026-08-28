@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(ROOT))
@@ -238,8 +240,6 @@ def test_audit_website_sarif_output(monkeypatch, capsys):
 
 def test_audit_website_format_mutually_exclusive(monkeypatch):
     """Ensure --format, --json, and --sarif are mutually exclusive."""
-    import pytest
-
     import audit_website
 
     monkeypatch.setattr(
