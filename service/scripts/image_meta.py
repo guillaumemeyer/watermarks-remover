@@ -506,6 +506,11 @@ def inspect_webp(data: bytes) -> tuple[bool, bool, list[str]]:
 
 XMP_UUID = b"\xbe\x7a\xcf\xcb\x97\xa9\x42\xe8\x9c\x71\x99\x94\x91\xe3\xaf\xac"
 
+# C2PA stores its manifest in BMFF containers (MP4/MOV/HEIF/AVIF) as a top-level
+# `uuid` box whose user type is this ContentProvenanceBox UUID -- not as a `c2pa`
+# box. c2pa-rs writes it this way for video and for AVIF/HEIC images.
+C2PA_BMFF_UUID = b"\xd8\xfe\xc3\xd6\x1b\x0e\x48\x3c\x92\x97\x58\x28\x87\x7e\xc4\x81"
+
 
 def _parse_isobmff_boxes(
     data: bytes, start: int = 0, end: int | None = None
@@ -555,6 +560,19 @@ def _isobmff_free_box(size: int, header_size: int = 8) -> bytes:
     return _build_isobmff_box(b"free", b"\x00" * (size - header_size), header_size)
 
 
+def _is_c2pa_bmff_prov_box(payload: bytes) -> bool:
+    """True when a `uuid` box is a C2PA content-provenance box.
+
+    The C2PA content-provenance UUID is the 16-byte user type that sits
+    immediately after the `uuid` fourcc. Some writers put a 4-byte FullBox
+    version/flags prefix before it, so accept the UUID at offset 0 or offset 4
+    of the payload. Recognizing it by UUID keeps detection and stripping
+    deterministic instead of depending on `c2pa`/`jumb` ASCII appearing in the
+    manifest payload.
+    """
+    return bool(payload) and C2PA_BMFF_UUID in payload[:20]
+
+
 def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[str]]:
     findings: list[str] = []
     has_c2pa = False
@@ -592,6 +610,11 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                     h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth") for h in hits
                 ):
                     has_c2pa = True
+            elif _is_c2pa_bmff_prov_box(payload):
+                has_c2pa = True
+                findings.append(
+                    f"{fmt.upper()} uuid box (C2PA content-provenance manifest, user type d8fec3d6...)"
+                )
             else:
                 hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
                 if hits:
@@ -616,6 +639,11 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                             findings.append(f"{fmt.upper()} meta XMP uuid box")
                         if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                             has_c2pa = True
+                    elif _is_c2pa_bmff_prov_box(s_payload):
+                        has_c2pa = True
+                        findings.append(
+                            f"{fmt.upper()} meta uuid box (C2PA content-provenance manifest)"
+                        )
                     else:
                         hits = _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
                         if hits:
@@ -633,6 +661,12 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
     if whole and not has_c2pa:
         has_c2pa = True
         findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
+    elif C2PA_BMFF_UUID in data and not has_c2pa:
+        # A C2PA content-provenance uuid box whose manifest bytes carry no
+        # ASCII 'c2pa'/'jumb' marker (e.g. an auxiliary "merkle" box, or a
+        # truncated manifest) is still a manifest box; catch it by user type.
+        has_c2pa = True
+        findings.append("byte-scan C2PA BMFF content-provenance user type")
 
     return has_c2pa, has_ai or has_c2pa, findings
 
@@ -2013,6 +2047,10 @@ def strip_isobmff(
                 actions.append(f"drop top-level {name} box (XMP metadata)")
                 out.extend(_isobmff_free_box(size, header_size))
                 continue
+            if _is_c2pa_bmff_prov_box(payload):
+                actions.append(f"drop top-level {name} box (C2PA content-provenance manifest)")
+                out.extend(_isobmff_free_box(size, header_size))
+                continue
             if strip_all_metadata or _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
                 actions.append(f"drop top-level {name} box (UUID metadata)")
                 out.extend(_isobmff_free_box(size, header_size))
@@ -2031,6 +2069,12 @@ def strip_isobmff(
                 if s_fourcc == b"uuid":
                     if s_payload.startswith(XMP_UUID):
                         actions.append(f"drop meta sub-box {s_name} (XMP metadata)")
+                        clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
+                        continue
+                    if _is_c2pa_bmff_prov_box(s_payload):
+                        actions.append(
+                            f"drop meta sub-box {s_name} (C2PA content-provenance manifest)"
+                        )
                         clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                         continue
                     if strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS):
