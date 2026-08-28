@@ -204,7 +204,9 @@ def test_inspect_text_audit_mode():
     data = json.loads(res.stdout)
     assert data["density_tier"] == "high"
     assert data["flagged_count"] > 0
-    assert any(f["detector"] == "stylometry" for f in data["flagged"])
+    stylometry_flags = [f for f in data["flagged"] if f["detector"] == "stylometry"]
+    assert stylometry_flags
+    assert all(f.get("spans") for f in stylometry_flags)
 
 
 def test_audit_lib_check_stylometry():

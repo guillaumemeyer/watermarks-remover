@@ -15,7 +15,7 @@ Apply a final text-hygiene pass to prose the user owns or is authorized to proce
    - commands, paths, URLs, identifiers, API names, and exact values
    - formulas, citations, and text the user asks to quote verbatim
 3. Preserve every claim, fact, number, name, citation, and requirement. Never invent a detail, name, number, quote, or source to make the prose easier to write or more varied: if a fact is missing, flag the gap rather than fill it. The rewrite may sharpen, compress, or reorder, but it may not add or remove claims.
-4. **Measure before.** Inspect and score the input with the vendored zero-LLM stylometry estimator (see Scoring) and record the score. Read the report's `density_tier`: rewrite only when it is `high`; for `low` or `medium`, verify the text and otherwise leave it human-written. For a flag-only audit that never rewrites, use `--audit`:
+4. **Measure before.** Inspect and score the input with the vendored zero-LLM stylometry estimator (see Scoring) and record the score. Read the report's `density_tier`: rewrite only when it is `high`; for `low` or `medium`, verify the text and otherwise leave the text unchanged. For a flag-only audit that never rewrites, use `--audit`:
 
    ```bash
    PYTHON "$SCRIPTS/inspect_text.py" --stylometry --json INPUT
@@ -48,7 +48,7 @@ Apply a final text-hygiene pass to prose the user owns or is authorized to proce
    PYTHON "$SCRIPTS/clean_text.py" OUTPUT -o FINAL --stats --no-normalize-spaces
    ```
 
-9. **Measure after.** Score the rewritten text the same way and report both scores with their confidence levels. A lower after-score means the measurable signals moved; it is not a verdict from any detector, and it never overrides the fact and voice rules above.
+9. **Measure after.** Score the rewritten text the same way. Report scores and confidence levels when available; otherwise report `status: insufficient_length`. A lower after-score means the measurable signals moved; it is not a verdict from any detector, and it never overrides the fact and voice rules above.
 10. Return only the polished result unless the user asks for an audit or explanation.
 
 For practical guidance on preserving a writer's voice and removing formulaic prose,
@@ -115,7 +115,7 @@ below target those signals, most effective first. Levers 1, 2, and 6 are
 deterministic or near-deterministic; 3 to 5 are aims, not guarantees. Engage the
 rewrite levers only when the measure-before `density_tier` is `high`; for `low`
 or `medium`, the measurable AI-density signals are weak, so verify and otherwise
-leave human-written text alone. The pass ordering below follows the pattern
+leave the text unchanged. The pass ordering below follows the pattern
 catalogs in `references/detectors.md`.
 
 1. **Strip artifacts first (always).** Run the deterministic Unicode pass

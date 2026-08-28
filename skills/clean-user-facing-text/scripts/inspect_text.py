@@ -57,9 +57,8 @@ def main() -> int:
     if args.audit:
         args.stylometry = True
 
+    # read_text_input raises SystemExit(2) on unreadable/oversized/non-regular input.
     text = read_text_input(args.path, allow_binary=args.force_text)
-    if text is None:
-        return 2
 
     report = inspect_text(
         text,
@@ -96,6 +95,7 @@ def main() -> int:
                         "count": m["count"],
                         "weight": m["weight"],
                         "samples": m.get("samples", []),
+                        "spans": m.get("spans", []),
                         "severity": density_tier,
                     }
                 )

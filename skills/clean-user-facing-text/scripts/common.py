@@ -296,25 +296,39 @@ def safe_write_text(path: str | Path, text: str) -> None:
 
 
 def backup_path(src: Path) -> tuple[Path, bool]:
-    """Create a ``.bak`` copy of *src* via a safe write; return (backup, created).
+    """Create a ``.bak`` copy of *src* no-clobber; return (backup, created).
 
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
     renamed over it.
 
-    A pre-existing ``.bak`` from an earlier run is preserved, not overwritten
-    — the second run of an auto-fix hook (clean → commit-blocked → re-stage →
-    clean again) used to back up the first run's output over the original,
-    destroying the only pristine copy (#172). The returned tuple's second
-    element reports whether this call created the backup or kept an existing
-    one, so callers can tell the user.
+    A pre-existing ``.bak`` is preserved, not overwritten — the second run of
+    an auto-fix hook (clean → commit-blocked → re-stage → clean again) used to
+    back up the first run's output over the original, destroying the only
+    pristine copy (#172). The path is reserved atomically with ``O_EXCL``: only
+    one process/run creates the ``.bak``, and any later call that loses the
+    creation race keeps the already-existing pristine copy instead of backing
+    up possibly already-cleaned text. The returned tuple's second element
+    reports whether this call created the backup or kept an existing one.
     """
     bak = src.with_suffix(src.suffix + ".bak")
-    if bak.exists():
-        return bak, False
     try:
-        safe_write_bytes(bak, src.read_bytes())
+        fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _default_file_mode())
+    except FileExistsError:
+        # Another process or a previous run reserved the backup first; it holds
+        # the pristine copy, so write nothing through the existing path.
+        return bak, False
     except OSError as e:
+        eprint(f"cannot create backup {bak}: {e}")
+        raise SystemExit(2) from None
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(src.read_bytes())
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            os.unlink(bak)
         eprint(f"cannot create backup {bak}: {e}")
         raise SystemExit(2) from None
     return bak, True

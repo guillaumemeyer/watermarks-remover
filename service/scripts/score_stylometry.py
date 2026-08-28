@@ -104,17 +104,24 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     # skill references/detectors.md. Weights stay moderate: this is a gauge,
     # not a verdict, so a single hit should not dominate the composite.
     (r"\bstands?\s+as\s+a\s+testament\b", "stands as a testament to", 1.1),
-    (r"\bmark(?:s|ing)?\s+an?\s+(?:indelible|pivotal|significant|new)\s+(?:moment|chapter|milestone)\b",
-     "marking a pivotal moment/chapter", 1.0),
-    (r"\b(?:reflecting|symbolizing|showcasing|underscoring)\s+(?:the|a|its)\b",
-     "shallow -ing analysis (reflecting/symbolizing/showcasing)", 0.9),
+    (
+        r"\bmark(?:s|ing)?\s+an?\s+"
+        r"(?:indelible|pivotal|significant|new)\s+(?:moment|chapter|milestone)\b",
+        "marking a pivotal moment/chapter",
+        1.0,
+    ),
+    (
+        r"\b(?:reflecting|symbolizing|showcasing|underscoring)\s+(?:the|a|its)\b",
+        "shallow -ing analysis (reflecting/symbolizing/showcasing)",
+        0.9,
+    ),
     (r"\b(?:nestled|vibrant|breathtaking)\b", "sales language (nestled/vibrant)", 0.8),
     (r"\b(?:game[- ]changer|game-changing)\b", "game-changer", 0.9),
     (r"\b(?:unparalleled|unprecedented)\b", "unparalleled/unprecedented", 0.7),
     (r"\b(?:world-class|state-of-the-art|cutting-edge)\b", "world-class/state-of-the-art", 0.8),
     (r"\b(?:revolutionary|groundbreaking)\b", "revolutionary/groundbreaking", 0.6),
     (r"\b(?:leverag(?:e|ing|ed|es)|utiliz(?:e|ing|ed|es))\b", "leverage/utilize", 0.8),
-    (r"\b(?:boasts?|feature(?:s|d)?)\b", "boasts/features (copula avoidance)", 0.6),
+    (r"\bboasts?\b", "boasts (copula avoidance)", 0.6),
     (r"\bit['\u2019]?s\s+not\s+just\b", "it's not just X, it's Y", 0.8),
     (r"\b(?:not\s+just\b.{0,60}\bbut\s+also\b)", "not just X but also Y", 0.8),
     (r"\bdive(?:s|d)?\s+into\b", "dive into", 0.7),
@@ -124,8 +131,11 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     (r"\bit(?:['\u2019]s| is)\s+worth\s+noting\s+that\b", "it is worth noting that", 0.8),
     (r"\b(?:needless\s+to\s+say|it\s+goes\s+without\s+saying)\b", "needless to say", 0.8),
     (r"\bthe\s+future\s+looks\s+bright\b", "the future looks bright", 0.9),
-    (r"\b(?:sure\s+thing!?|great\s+question!?|happy\s+to\s+help)\b",
-     "assistant chatter (sure thing/great question)", 0.6),
+    (
+        r"\b(?:sure\s+thing!?|great\s+question!?|happy\s+to\s+help)\b",
+        "assistant chatter (sure thing/great question)",
+        0.6,
+    ),
 )
 
 RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
@@ -138,6 +148,7 @@ class MarkerMatch:
     count: int
     weight: float
     samples: list[str] = field(default_factory=list)
+    spans: list[tuple[int, int]] = field(default_factory=list)  # start/end char offsets
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +156,7 @@ class MarkerMatch:
             "count": self.count,
             "weight": self.weight,
             "samples": self.samples,
+            "spans": [list(s) for s in self.spans],
         }
 
 
@@ -269,8 +281,10 @@ def scan_ai_phrases(text: str) -> list[MarkerMatch]:
     matches: list[MarkerMatch] = []
     for pattern, label, weight in AI_PHRASE_PATTERNS:
         found_spans = []
+        offsets: list[tuple[int, int]] = []
         for m in re.finditer(pattern, text, re.IGNORECASE):
             found_spans.append(m.group(0))
+            offsets.append((m.start(), m.end()))
         if found_spans:
             matches.append(
                 MarkerMatch(
@@ -278,6 +292,7 @@ def scan_ai_phrases(text: str) -> list[MarkerMatch]:
                     count=len(found_spans),
                     weight=weight,
                     samples=found_spans[:3],
+                    spans=offsets[:10],
                 )
             )
     return matches
@@ -503,10 +518,8 @@ def main() -> int:
 
     args = p.parse_args()
 
-    # Read input
+    # read_text_input raises SystemExit(2) on unreadable/oversized/non-regular input.
     text = read_text_input(args.path)
-    if text is None:
-        return 2
 
     input_label = "<stdin>" if args.path == "-" else args.path
     report = score_text_stylometry(text, path=input_label)
