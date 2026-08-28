@@ -65,7 +65,8 @@ def main() -> int:
         elif report.synthid and report.synthid.get("error"):
             print(f"SynthID score: error: {report.synthid['error']}")
 
-    return 0 if not (report.has_c2pa or report.has_ai_metadata) else 1
+    synthid_wm = bool(report.synthid and report.synthid.get("available") and report.synthid.get("is_watermarked"))
+    return 0 if not (report.has_c2pa or report.has_ai_metadata or synthid_wm) else 1
 
 
 if __name__ == "__main__":
