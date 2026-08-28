@@ -195,6 +195,44 @@ def test_clean_image_roundtrip(tmp_path: Path):
     assert result["bytes_out"] > 0
 
 
+def test_clean_image_residual_scan_skips_exiftool_and_redundant_synthid(tmp_path: Path):
+    """The post-clean residual scan keeps the c2patool C2PA verifier but must not
+    spawn the (discarded) exiftool dump, and a metadata-only clean reuses
+    synthid_before instead of re-scoring the unchanged pixels."""
+    from unittest.mock import patch
+
+    import image_meta
+
+    src = tmp_path / "t.png"
+    src.write_bytes(_minimal_png_with_text())
+    dest = tmp_path / "t.cleaned.png"
+
+    exiftool_flags: list[bool] = []
+    synthid_calls = 0
+    real_run_optional_tools = image_meta.run_optional_tools
+
+    def spy_tools(path, *, include_exiftool=True):
+        exiftool_flags.append(include_exiftool)
+        return real_run_optional_tools(path, include_exiftool=include_exiftool)
+
+    def fake_synthid(path, upstream_dir=None):
+        nonlocal synthid_calls
+        synthid_calls += 1
+        return {"available": True, "score": 0.5}
+
+    with (
+        patch.object(image_meta, "run_optional_tools", spy_tools),
+        patch.object(image_meta, "run_synthid_score", fake_synthid),
+    ):
+        result = clean_image(src, dest, synthid_dir="/fake/dir")
+
+    # Residual scan ran run_optional_tools exactly once, with exiftool disabled.
+    assert exiftool_flags == [False]
+    # SynthID scored once (before); metadata-only clean reuses it for _after.
+    assert synthid_calls == 1
+    assert result["synthid_after"] == result["synthid_before"] == {"available": True, "score": 0.5}
+
+
 def test_webp_c2pa_and_xmp_are_detected_and_removed(tmp_path: Path):
     data = _minimal_webp(
         (b"VP8X", b"\x04" + b"\x00" * 9),

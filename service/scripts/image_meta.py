@@ -1349,7 +1349,7 @@ def strip_tiff(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
     return bytes(out), actions
 
 
-def run_optional_tools(path: Path) -> dict[str, Any]:
+def run_optional_tools(path: Path, *, include_exiftool: bool = True) -> dict[str, Any]:
     tools: dict[str, Any] = {}
     c2patool = which("c2patool")
     if c2patool:
@@ -1401,7 +1401,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
     else:
         tools["c2patool"] = {"available": False}
 
-    exiftool = which("exiftool")
+    exiftool = which("exiftool") if include_exiftool else None
     if exiftool:
         try:
             r = subprocess.run(
@@ -1739,8 +1739,13 @@ def run_ctrlregen_clean(
 def inspect_image(
     path: Path,
     synthid_dir: str | None = None,
+    *,
+    data: bytes | None = None,
+    run_synthid: bool = True,
+    include_exiftool: bool = True,
 ) -> ImageInspectReport:
-    data = path.read_bytes()
+    if data is None:
+        data = path.read_bytes()
     fmt = detect_format(data)
     if fmt == "png":
         has_c2pa, has_ai, findings = inspect_png(data)
@@ -1769,7 +1774,7 @@ def inspect_image(
             "format not fully inspected; only PNG/JPEG/WebP/AVIF/HEIC/BMP/GIF/TIFF are supported"
         )
 
-    tools = run_optional_tools(path)
+    tools = run_optional_tools(path, include_exiftool=include_exiftool)
     # Elevate flags from tools
     ct = tools.get("c2patool") or {}
     if ct.get("has_manifest"):
@@ -1786,7 +1791,7 @@ def inspect_image(
         has_ai_metadata=has_ai,
         findings=findings,
         tools=tools,
-        synthid=run_synthid_score(path, synthid_dir),
+        synthid=run_synthid_score(path, synthid_dir) if run_synthid else None,
         notes=notes,
     )
 
@@ -2169,8 +2174,24 @@ def clean_image(
         else:
             raise ValueError(f"unknown pixel remover: {remove_pixel}")
 
-    after = inspect_image(dest, synthid_dir=synthid_dir)
-    changed = dest.read_bytes() != data
+    # Residual scan on the final cleaned bytes: run the stdlib inspector plus
+    # the c2patool C2PA verifier only. clean_image discards the exiftool tool
+    # dump, so skip that subprocess. SynthID scores pixels, so a metadata-only
+    # clean leaves the score identical to synthid_before; re-score only when a
+    # pixel remover actually changed the image.
+    final_bytes = dest.read_bytes()
+    changed = final_bytes != data
+    after = inspect_image(
+        dest,
+        synthid_dir=synthid_dir,
+        data=final_bytes,
+        run_synthid=False,
+        include_exiftool=False,
+    )
+    if pixel_removal is not None and pixel_removal.get("available"):
+        synthid_after = run_synthid_score(dest, synthid_dir)
+    else:
+        synthid_after = synthid_before
     return {
         "input": str(path),
         "output": str(dest),
@@ -2183,6 +2204,6 @@ def clean_image(
         "still_has_ai_metadata": after.has_ai_metadata,
         "post_findings": after.findings,
         "synthid_before": synthid_before,
-        "synthid_after": after.synthid,
+        "synthid_after": synthid_after,
         "pixel_removal": pixel_removal,
     }
