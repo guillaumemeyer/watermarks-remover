@@ -293,7 +293,7 @@ def format_sarif(report: dict[str, Any]) -> dict[str, Any]:
                 level = "note"
 
             artifact_loc: dict[str, str] = {"uri": rel_uri}
-            if not rel_uri.startswith(("http://", "https://")):
+            if not rel_uri.lower().startswith(("http://", "https://")):
                 artifact_loc["uriBaseId"] = "%SRCROOT%"
 
             results.append(

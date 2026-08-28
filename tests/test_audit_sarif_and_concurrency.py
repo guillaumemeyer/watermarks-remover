@@ -284,3 +284,21 @@ def test_audit_website_sarif_clean(monkeypatch, capsys):
     doc = json.loads(out)
     assert doc["version"] == "2.1.0"
     assert doc["runs"][0]["results"] == []
+
+
+def test_audit_sarif_case_insensitive_url_scheme():
+    """Ensure uppercase URL schemes in format_sarif omit uriBaseId."""
+    report = {
+        "files": [
+            {
+                "path": "HTTPS://EXAMPLE.COM/PHOTO.JPG",
+                "findings": ["C2PA manifest found"],
+                "confidence": ["confirmed"],
+            }
+        ]
+    }
+    doc = format_sarif(report)
+    loc = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+    assert loc["uri"] == "HTTPS://EXAMPLE.COM/PHOTO.JPG"
+    assert "uriBaseId" not in loc
+
