@@ -53,6 +53,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from av_meta import clean_av, inspect_av
+from clean_audio import audio_purify, is_audio_format, is_audio_name
 from clean_video import video_purify
 from common import (
     MAX_INPUT_BYTES,
@@ -90,6 +91,7 @@ ALLOWED_CLEAN_OPTIONS = {
     "keep_non_ai_metadata": bool,
     "also_layer_a_text": bool,
     "remove_pixel": str,
+    "remove_audio_watermark": bool,
     "strip_all_metadata": bool,
     "detect_before": bool,
     "detect_after": bool,
@@ -833,7 +835,32 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             if remove_pixel not in (None, "ctrlregen", "diffusion"):
                 raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
             result = clean_av(src, dest, strip_all_metadata=strip_all)
-            if remove_pixel:
+            is_audio = is_audio_format(result.get("format", "")) or is_audio_name(name)
+            if is_audio and options.get("remove_audio_watermark"):
+                audio_dest = _tmp_path(tmpdir, "out.m4a")
+                audio_res = audio_purify(dest, audio_dest)
+                result["audio_mark_removal"] = audio_res
+                if audio_res.get("available"):
+                    dest = audio_dest
+                    result["actions"].append(
+                        f"destructive audio watermark chain (tempo {audio_res.get('tempo')}x, "
+                        f"{audio_res.get('pitch_semitones'):+.1f} semitones, "
+                        f"{audio_res.get('codec')})"
+                    )
+                    # The chain re-encodes the audio, so the metadata-clean
+                    # report fields are stale; recompute them from the final file.
+                    after = inspect_av(dest)
+                    result["bytes_out"] = dest.stat().st_size
+                    result["changed"] = True
+                    result["still_has_c2pa"] = after.has_c2pa
+                    result["still_has_ai_metadata"] = after.has_ai_metadata
+                    result["post_findings"] = after.findings
+                else:
+                    result["actions"].append(
+                        "destructive audio watermark chain skipped: "
+                        f"{audio_res.get('error', 'unknown error')}"
+                    )
+            elif remove_pixel:
                 pix = video_purify(dest, dest, remove_pixel=remove_pixel)
                 result["pixel_removal"] = pix
                 engine = "CtrlRegen" if remove_pixel == "ctrlregen" else "DiffusionPurification"

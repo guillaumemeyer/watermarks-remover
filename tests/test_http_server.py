@@ -54,6 +54,19 @@ def _minimal_mp4() -> bytes:
     return ftyp + mdat
 
 
+def _riff_chunk(cid: bytes, payload: bytes) -> bytes:
+    pad = b"\x00" if len(payload) & 1 else b""
+    return cid + struct.pack("<I", len(payload)) + payload + pad
+
+
+def _minimal_wav() -> bytes:
+    """A minimal mono 8-bit PCM WAV (classifies as AV/audio)."""
+    samples = bytes([128] * 200)
+    fmt = struct.pack("<HHIIHH", 1, 1, 8000, 8000, 1, 8)
+    body = b"WAVE" + _riff_chunk(b"fmt ", fmt) + _riff_chunk(b"data", samples)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -207,6 +220,20 @@ def test_clean_av_honors_remove_pixel(conn, monkeypatch):
     assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
 
 
+def test_clean_av_honors_remove_audio_watermark(conn):
+    data = _minimal_wav()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.wav", "options": {"remove_audio_watermark": True}},
+    )
+    assert status == 200
+    assert body["kind"] == "av"
+    assert "audio_mark_removal" in body["report"]
+    assert "available" in body["report"]["audio_mark_removal"]
+    assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
+
+
 def test_clean_av_rejects_invalid_remove_pixel(conn):
     data = _minimal_mp4()
     status, body = _post(
@@ -262,6 +289,7 @@ def test_known_deep_images_modes_accepted(conn):
         ("also_layer_a_text", {}, "boolean"),
         ("strip_all_metadata", [], "boolean"),
         ("remove_pixel", False, "string"),
+        ("remove_audio_watermark", "false", "boolean"),
     ],
 )
 def test_option_wrong_type_rejected(conn, key, value, type_name):
