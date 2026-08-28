@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -282,14 +283,23 @@ def backup_path(src: Path) -> Path:
     Used by ``--in-place`` flows so the original is never partially lost: the
     original file stays untouched until the cleaned output is atomically
     renamed over it.
+
+    A pre-existing ``.bak`` from an earlier run is preserved, not overwritten
+    — the second run of an auto-fix hook (clean → commit-blocked → re-stage →
+    clean again) used to back up the first run's output over the original,
+    destroying the only pristine copy (#172). The returned tuple's second
+    element reports whether this call created the backup or kept an existing
+    one, so callers can tell the user.
     """
     bak = src.with_suffix(src.suffix + ".bak")
+    if bak.exists():
+        return bak, False
     try:
         safe_write_bytes(bak, src.read_bytes())
     except OSError as e:
         eprint(f"cannot create backup {bak}: {e}")
         raise SystemExit(2) from None
-    return bak
+    return bak, True
 
 
 def subprocess_rlimits() -> None:
@@ -311,6 +321,14 @@ def subprocess_rlimits() -> None:
 # itself raises ValueError before the callable runs. Windows resource
 # limiting would need a Job Object (pywin32), which is out of scope.
 subprocess_preexec_fn = subprocess_rlimits if os.name == "posix" else None
+
+# The mirror image on Windows: a parent without a console of its own -- pythonw,
+# a service, anything GUI-hosted -- makes Windows allocate a fresh console
+# window for every child it starts. The window blinks and takes keyboard focus,
+# several times per cleaned file once exiftool, qpdf, ghostscript and c2patool
+# have each had a turn. CREATE_NO_WINDOW suppresses it; the flag does not exist
+# on POSIX, where 0 is the no-op value subprocess already expects.
+subprocess_creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def emit_json(data: Any) -> None:

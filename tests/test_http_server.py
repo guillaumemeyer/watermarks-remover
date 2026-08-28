@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import re
 import struct
 import sys
 import threading
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import container_meta
 import server
 
 
@@ -87,7 +89,7 @@ def test_health(conn):
 def test_capabilities(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf"}
+    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ghostscript"}
     assert "pixel_backends" in body
     assert "scorers" in body
     assert "harnesses" in body
@@ -180,6 +182,33 @@ def test_unknown_option_rejected(conn):
     )
     assert status == 400
     assert "unknown option" in body["error"]
+
+
+def test_unknown_deep_images_mode_rejected(conn):
+    """A typo must answer 400, not fall through to a mode that may recompress."""
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(b"x"), "name": "x.txt", "options": {"deep_images": "lossles"}},
+    )
+    assert status == 400
+    assert "deep_images" in body["error"]
+
+
+def test_known_deep_images_modes_accepted(conn):
+    # Driven from the frozenset itself: a mode added there without a test here
+    # would otherwise look covered.
+    for mode in sorted(container_meta.DEEP_IMAGE_MODES):
+        status, _body = _post(
+            conn,
+            "/clean",
+            {
+                "file": _b64(b"plain text\n"),
+                "name": "x.txt",
+                "options": {"deep_images": mode},
+            },
+        )
+        assert status == 200, mode
 
 
 @pytest.mark.parametrize(
@@ -400,3 +429,20 @@ def test_clean_extensionless_svg_container_post_inspection(conn):
     assert body["kind"] == "container"
     assert body["report"]["format"] == "svg"
     assert body["report"]["still_has_c2pa"] is False
+
+
+def test_log_message_includes_readable_timestamp(monkeypatch):
+    """Request logs are prefixed with local time plus UTC offset."""
+    lines: list[str] = []
+    monkeypatch.setattr(server, "eprint", lines.append)
+    monkeypatch.setattr(server.Handler, "address_string", lambda self: "127.0.0.1")
+
+    handler = server.Handler.__new__(server.Handler)
+    handler.log_message('"%s" %s -', "GET /health HTTP/1.1", 200)
+
+    assert len(lines) == 1
+    assert re.match(
+        r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}\] 127\.0\.0\.1 - ",
+        lines[0],
+    )
+    assert lines[0].endswith('"GET /health HTTP/1.1" 200 -')

@@ -152,3 +152,12 @@ def test_hook_command_never_substitutes_an_unset_plugin_option(hooks):
         for hook in entry["hooks"]:
             rendered = json.dumps([hook.get("command"), *hook.get("args", [])])
             assert "user_config" not in rendered
+
+
+def test_hook_command_is_cross_platform(hooks):
+    # Windows does not ship `python3.exe` by default. Using `node` to launch the
+    # platform-aware launcher (run_hook.js) guarantees cross-platform execution
+    # in Claude Code (#239).
+    for entry in hooks["hooks"]["PostToolUse"]:
+        for hook in entry["hooks"]:
+            assert hook["command"] == "node"

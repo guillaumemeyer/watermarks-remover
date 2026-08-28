@@ -86,6 +86,8 @@ smoke-markdiffusion:
 	  echo "smoke-markdiffusion skipped (set MARKDIFFUSION_DIR)"; \
 	else \
 	  $(PYTHON) $(SCRIPTS)/markdiffusion_harness.py --help >/dev/null && echo "markdiffusion_harness adapter present"; \
+	fi
+
 bench-synthid-text:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
 	  echo "bench-synthid-text skipped (set MARKLLM_DIR; see docs/synthid-text-benchmark.md)"; \

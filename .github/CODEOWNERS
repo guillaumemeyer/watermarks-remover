@@ -5,4 +5,6 @@
 # Security-sensitive surface stays explicitly with the maintainer:
 # CI/CD workflows, dependency automation, and the security policy.
 /.github/ @guillaumemeyer
+CODE_OF_CONDUCT.md @guillaumemeyer
+LICENSE @guillaumemeyer
 SECURITY.md @guillaumemeyer

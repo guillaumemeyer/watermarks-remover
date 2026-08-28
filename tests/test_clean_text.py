@@ -106,6 +106,25 @@ def test_clean_preserves_arrow_emoji_vs16():
     assert stats["removed_count"] == 0
 
 
+def test_clean_preserves_punctuation_and_letterlike_emoji_vs16():
+    # Emoji=Yes singletons outside the block ranges: double exclamation,
+    # exclamation question, information source, curved up/down arrows.
+    for base in ("\u203c", "\u2049", "\u2139", "\u2934", "\u2935"):
+        raw = f"note {base}\ufe0f end"
+        cleaned, stats = clean_text(raw)
+        assert cleaned == raw
+        assert stats["removed_count"] == 0
+    # And a ZWJ chain across one of them stays bound.
+    raw = "\u2139\ufe0f\u200d\U0001f4a1"
+    cleaned, _ = clean_text(raw)
+    assert cleaned == raw
+
+
+def test_inspect_punctuation_emoji_glue_not_suspicious():
+    report = inspect_text("\u203c\ufe0f \u2049\ufe0f \u2139\ufe0f")
+    assert report.suspicious_total == 0
+
+
 def test_clean_preserves_cjk_ideographic_variation_selector():
     raw = "\u845b\U000e0100"  # CJK ideograph + VS17
     cleaned, stats = clean_text(raw)

@@ -44,6 +44,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from common import subprocess_creationflags
 from detect_gumbel import DEFAULT_THRESHOLD, DEFAULT_WINDOW, detect_text
 
 DEFAULT_MARKLLM_SCHEME = "kgw"
@@ -226,6 +227,7 @@ class MarkLLMTextDetector:
                     timeout=timeout,
                     preexec_fn=_markllm_preexec(),
                     check=False,
+                    creationflags=subprocess_creationflags,
                 )
             except subprocess.TimeoutExpired:
                 report["error"] = "MarkLLM detection timed out"

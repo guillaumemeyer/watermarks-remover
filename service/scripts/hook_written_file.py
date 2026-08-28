@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from audit_lib import is_actionable, scan_file
-from common import MAX_INPUT_BYTES, eprint
+from common import MAX_INPUT_BYTES, eprint, subprocess_creationflags
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
@@ -127,9 +128,14 @@ def run_check(path: Path) -> int:
     eprint(f"watermarks-remover: {path} carries AI/C2PA provenance marks:")
     for finding in findings:
         eprint(f"  - {finding}")
+    cmd = "python" if sys.platform == "win32" else "python3"
+    if sys.platform == "win32":
+        # cmd.exe tokenizes on whitespace, so a path with spaces must be quoted.
+        command = f'{cmd} "{CLEAN_FILE_PY}" "{path}" --in-place'
+    else:
+        command = f"{cmd} {shlex.quote(str(CLEAN_FILE_PY))} {shlex.quote(str(path))} --in-place"
     eprint(
-        f"Strip them with `python3 {CLEAN_FILE_PY} {path} --in-place`, "
-        "or set WATERMARKS_HOOK_MODE=clean to have this hook do it."
+        f"Strip them with `{command}`, or set WATERMARKS_HOOK_MODE=clean to have this hook do it."
     )
     return EXIT_SHOW_MODEL
 
@@ -147,6 +153,7 @@ def run_clean(path: Path) -> int:
             capture_output=True,
             text=True,
             check=False,
+            creationflags=subprocess_creationflags,
         )
         if proc.returncode == 2:
             # Unrecognized format or oversized input; clean_file.py explained
@@ -167,7 +174,19 @@ def run_clean(path: Path) -> int:
             eprint(f"watermarks-remover: {path}: {detail}")
             return EXIT_HOOK_ERROR
 
+        residual = result.get("still_has_c2pa") or result.get("still_has_ai_metadata")
         if temp_path.read_bytes() == path.read_bytes():
+            if residual:
+                findings = result.get("post_findings") or []
+                detail = "; ".join(str(finding) for finding in findings) or _describe(result)
+                _emit(
+                    f"watermarks-remover: {path.name} was left unchanged; "
+                    f"cleanup left residual or inconclusive signals ({detail})",
+                    additional_context=(
+                        f"The watermarks-remover hook could not confirm that {path} is clean. "
+                        f"The file was left unchanged ({detail})."
+                    ),
+                )
             return EXIT_QUIET
 
         # mkstemp creates the temp file 0600; without this the swap would strip
@@ -178,7 +197,7 @@ def run_clean(path: Path) -> int:
         temp_path.unlink(missing_ok=True)
 
     summary = _describe(result)
-    if result.get("still_has_c2pa") or result.get("still_has_ai_metadata"):
+    if residual:
         summary += "; residual provenance signals may remain"
     _emit(
         f"watermarks-remover: cleaned {path.name} in place ({summary})",
