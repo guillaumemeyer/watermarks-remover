@@ -559,17 +559,26 @@ def main() -> int:
     p.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
-    p.add_argument(
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
         "--format",
         choices=["human", "json", "sarif"],
         default="human",
         help="Output format (default: human)",
     )
-    p.add_argument("--json", action="store_true", help="Emit a JSON report (alias for --format json)")
-    p.add_argument(
+    g.add_argument(
+        "--json",
+        action="store_const",
+        const="json",
+        dest="format",
+        help="Emit a JSON report (shorthand for --format json)",
+    )
+    g.add_argument(
         "--sarif",
-        action="store_true",
-        help="Emit an OASIS SARIF 2.1.0 report (alias for --format sarif)",
+        action="store_const",
+        const="sarif",
+        dest="format",
+        help="Emit an OASIS SARIF 2.1.0 report (shorthand for --format sarif)",
     )
     args = p.parse_args()
 
@@ -621,15 +630,9 @@ def main() -> int:
         "files": files,
     }
 
-    out_format = args.format
-    if args.json:
-        out_format = "json"
-    elif args.sarif:
-        out_format = "sarif"
-
-    if out_format == "json":
+    if args.format == "json":
         emit_json(report)
-    elif out_format == "sarif":
+    elif args.format == "sarif":
         sarif_doc = format_sarif(report)
         emit_json(sarif_doc)
     else:

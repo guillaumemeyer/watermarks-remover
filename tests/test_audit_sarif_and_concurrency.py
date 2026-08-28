@@ -188,6 +188,7 @@ def test_audit_dir_cli_sarif_output(tmp_path):
 
 
 def test_audit_website_sarif_output(monkeypatch, capsys):
+    """Validate OASIS SARIF 2.1.0 output formatting for website audits."""
     import audit_website
 
     monkeypatch.setattr(
@@ -216,7 +217,11 @@ def test_audit_website_sarif_output(monkeypatch, capsys):
     out, _ = capsys.readouterr()
     doc = json.loads(out)
     assert doc["version"] == "2.1.0"
-    assert len(doc["runs"][0]["results"]) >= 1
+    results = doc["runs"][0]["results"]
+    assert len(results) >= 1
+    loc = results[0]["locations"][0]["physicalLocation"]["artifactLocation"]
+    assert loc["uri"] == "https://example.com/page.html"
+    assert "uriBaseId" not in loc
 
     # Test --format sarif
     monkeypatch.setattr(
@@ -229,3 +234,54 @@ def test_audit_website_sarif_output(monkeypatch, capsys):
     out2, _ = capsys.readouterr()
     doc2 = json.loads(out2)
     assert doc2["version"] == "2.1.0"
+
+
+def test_audit_website_format_mutually_exclusive(monkeypatch):
+    """Ensure --format, --json, and --sarif are mutually exclusive."""
+    import pytest
+
+    import audit_website
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "audit_website.py",
+            "--sitemap",
+            "https://example.com/sitemap.xml",
+            "--sarif",
+            "--json",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        audit_website.main()
+    assert exc.value.code == 2
+
+
+def test_audit_website_sarif_clean(monkeypatch, capsys):
+    """Verify SARIF output on a clean website returns exit code 0 and empty results."""
+    import audit_website
+
+    monkeypatch.setattr(
+        audit_website,
+        "collect_urls",
+        lambda *args, **kwargs: ["https://example.com/clean.txt"],
+    )
+    monkeypatch.setattr(
+        audit_website,
+        "fetch",
+        lambda url, *args, **kwargs: (b"all clean text", "text/plain"),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["audit_website.py", "--sitemap", "https://example.com/sitemap.xml", "--sarif"],
+    )
+    ret = audit_website.main()
+    assert ret == 0
+    out, _ = capsys.readouterr()
+    doc = json.loads(out)
+    assert doc["version"] == "2.1.0"
+    assert doc["runs"][0]["results"] == []
+
