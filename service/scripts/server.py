@@ -53,7 +53,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from av_meta import clean_av, inspect_av
-from clean_audio import audio_purify, is_audio_format, is_audio_name
+from clean_audio import audio_purify, is_audio_format, is_audio_name, media_has_video
 from clean_video import video_purify
 from common import (
     MAX_INPUT_BYTES,
@@ -835,7 +835,12 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             if remove_pixel not in (None, "ctrlregen", "diffusion"):
                 raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
             result = clean_av(src, dest, strip_all_metadata=strip_all)
-            is_audio = is_audio_format(result.get("format", "")) or is_audio_name(name)
+            # Only run the audio chain on audio-only media; a video-bearing
+            # payload (e.g. a video mislabeled .m4a) must not have its video
+            # track dropped by the -vn re-encode.
+            is_audio = (is_audio_format(result.get("format", "")) or is_audio_name(name)) and not (
+                media_has_video(src)
+            )
             if is_audio and options.get("remove_audio_watermark"):
                 audio_dest = _tmp_path(tmpdir, "out.m4a")
                 audio_res = audio_purify(dest, audio_dest)
@@ -847,9 +852,11 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                         f"{audio_res.get('pitch_semitones'):+.1f} semitones, "
                         f"{audio_res.get('codec')})"
                     )
-                    # The chain re-encodes the audio, so the metadata-clean
-                    # report fields are stale; recompute them from the final file.
+                    # The chain re-encodes to M4A, so the metadata-clean report
+                    # fields are stale; recompute them from the final file and
+                    # reflect the new container, not the source format.
                     after = inspect_av(dest)
+                    result["format"] = after.format
                     result["bytes_out"] = dest.stat().st_size
                     result["changed"] = True
                     result["still_has_c2pa"] = after.has_c2pa

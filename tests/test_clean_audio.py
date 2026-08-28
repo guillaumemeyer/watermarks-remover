@@ -100,6 +100,19 @@ def test_plan_rejects_out_of_range_tempo():
         plan_audio_degrade(tempo=3.0)
 
 
+def test_plan_rejects_malformed_bitrate():
+    with pytest.raises(ValueError):
+        plan_audio_degrade(reencode_bitrate="invalid")
+
+
+def test_bitrate_kbps_parses_canonical_value():
+    from clean_audio import _bitrate_kbps
+
+    assert _bitrate_kbps("96k") == 96
+    assert _bitrate_kbps("invalid") == 0
+    assert _bitrate_kbps("0k") == 0
+
+
 # ---------------------------------------------------------------------------
 # audio_purify -- availability gating and the destructive chain
 # ---------------------------------------------------------------------------
@@ -118,10 +131,45 @@ def test_audio_purify_unavailable_without_ffmpeg(tmp_path, monkeypatch):
     assert not dest.exists()
 
 
-def test_audio_purify_rejects_missing_file(tmp_path):
+def test_audio_purify_rejects_missing_file(tmp_path, monkeypatch):
+    # Mock ffmpeg present so the test reaches the missing-file branch regardless
+    # of whether the runner has ffmpeg installed.
+    import clean_audio
+
+    monkeypatch.setattr(clean_audio, "_ffmpeg_available", lambda: True)
     result = audio_purify(tmp_path / "missing.wav", tmp_path / "out.m4a")
     assert result["available"] is False
     assert "not a file" in result["error"]
+
+
+@needs_ffmpeg
+def test_media_has_video_distinguishes_audio_from_video(tmp_path):
+    import clean_audio
+
+    audio = tmp_path / "tone.wav"
+    subprocess.run(
+        [FFMPEG, "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(audio)],
+        check=True,
+        capture_output=True,
+    )
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            FFMPEG,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=64x64:rate=10",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert clean_audio.media_has_video(audio) is False
+    assert clean_audio.media_has_video(video) is True
 
 
 @needs_ffmpeg

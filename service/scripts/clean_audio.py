@@ -13,6 +13,7 @@ Neural re-synthesis is a separate, heavier path and is out of scope here.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -77,9 +78,9 @@ def _build_filter(tempo: float, pitch_semitones: float, sample_rate: int) -> str
 
 
 def _bitrate_kbps(bitrate: str) -> int:
-    """Parse a bitrate like '96k' -> 96 (kbps)."""
-    num = "".join(ch for ch in str(bitrate) if ch.isdigit())
-    return int(num) if num else 0
+    """Parse a canonical bitrate like ``96k`` -> 96 (kbps), or 0 if malformed."""
+    match = re.fullmatch(r"([1-9]\d*)k", str(bitrate).strip())
+    return int(match.group(1)) if match else 0
 
 
 def plan_audio_degrade(
@@ -95,7 +96,9 @@ def plan_audio_degrade(
             "pitch shift must exceed +/-1 semitone to exit the audio survival envelope"
         )
     kbps = _bitrate_kbps(reencode_bitrate)
-    if kbps and kbps >= _BITRATE_FLOOR_K:
+    if not kbps:
+        raise ValueError("reencode bitrate must be a positive value such as 96k")
+    if kbps >= _BITRATE_FLOOR_K:
         raise ValueError("lossy re-encode bitrate must be below 128 kbps")
 
     exceeded = ["tempo change >5%"]
@@ -149,6 +152,40 @@ def _probe_sample_rate(path: Path) -> int:
         return int((r.stdout or "").strip())
     except ValueError:
         return 44100
+
+
+def media_has_video(path: Path) -> bool:
+    """True when the media has a video stream (an ffprobe stream-type probe).
+
+    Used to keep the audio-only destructive chain off a video-bearing payload that
+    happens to carry an audio extension. Falls back to False when ffprobe is
+    unavailable, letting the caller gate on the audio heuristic instead.
+    """
+    ffprobe = which("ffprobe")
+    if not ffprobe:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                safe_arg(str(path)),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            preexec_fn=subprocess_preexec_fn,
+            creationflags=subprocess_creationflags,
+        )
+    except Exception:  # probe failures fall back to the caller's heuristic
+        return False
+    return "video" in (r.stdout or "").splitlines()
 
 
 def audio_purify(

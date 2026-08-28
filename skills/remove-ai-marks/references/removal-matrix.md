@@ -21,7 +21,7 @@
 | Pixel image watermark (Tree-Ring-class) | DiffusionPurification regeneration (external MarkDiffusion backend) | `clean_image.py --remove-pixel diffusion` | Blind regeneration; more drift than CtrlRegen; heavy compute | Same-scheme only via the MarkDiffusion harness (not a vendor-detector oracle) |
 | TrustMark video watermark (per-frame + temporal vote) | Per-frame pixel purification (CtrlRegen / DiffusionPurification) + ffmpeg demux/remux, guided by a vote-collapse frame planner | `/clean` (kind=av, `options.remove_pixel` = `ctrlregen`\|`diffusion`) | Re-encodes video (lossy); heavy compute; needs `tools.ffmpeg` + `pixel_backends` present; raises the purge count to the minimum that crosses `vote_threshold` | Model-based (`vote_threshold`); not vendor-detector-verified |
 | SynthID audio/video watermark | — | Out of scope | — | — |
-| Audio watermarks (silentcipher / AudioSeal / WavMark) | Destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) | `/clean` (kind=av, `options.remove_audio_watermark` = true) | Alters pitch/tempo/quality/duration; needs `tools.ffmpeg` | Not vendor-detector-verified (we do not ship silentcipher/AudioSeal/WavMark decoders) |
+| Audio watermarks (silentcipher / AudioSeal / WavMark) | Destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) | `/clean` (kind=av, `options.remove_audio_watermark` = true) | Alters pitch/tempo/quality/duration; returns M4A/AAC; needs `tools.ffmpeg` | Not vendor-detector-verified (we do not ship silentcipher/AudioSeal/WavMark decoders) |
 | C2PA soft binding (in-content link to manifest) | — | Out of scope (survives our metadata strip) | — | Vendor detector only |
 | Data-driven model backdoors | — | Out of scope | — | — |
 
