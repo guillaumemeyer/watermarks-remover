@@ -301,4 +301,3 @@ def test_audit_sarif_case_insensitive_url_scheme():
     loc = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
     assert loc["uri"] == "HTTPS://EXAMPLE.COM/PHOTO.JPG"
     assert "uriBaseId" not in loc
-
