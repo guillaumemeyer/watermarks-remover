@@ -284,4 +284,3 @@ def test_audit_website_sarif_clean(monkeypatch, capsys):
     doc = json.loads(out)
     assert doc["version"] == "2.1.0"
     assert doc["runs"][0]["results"] == []
-
