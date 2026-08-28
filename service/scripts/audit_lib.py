@@ -292,6 +292,10 @@ def format_sarif(report: dict[str, Any]) -> dict[str, Any]:
             elif conf == "informational":
                 level = "note"
 
+            artifact_loc: dict[str, str] = {"uri": rel_uri}
+            if not rel_uri.lower().startswith(("http://", "https://")):
+                artifact_loc["uriBaseId"] = "%SRCROOT%"
+
             results.append(
                 {
                     "ruleId": rule_id,
@@ -300,10 +304,7 @@ def format_sarif(report: dict[str, Any]) -> dict[str, Any]:
                     "locations": [
                         {
                             "physicalLocation": {
-                                "artifactLocation": {
-                                    "uri": rel_uri,
-                                    "uriBaseId": "%SRCROOT%",
-                                }
+                                "artifactLocation": artifact_loc,
                             }
                         }
                     ],
