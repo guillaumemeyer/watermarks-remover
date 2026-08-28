@@ -3,4 +3,4 @@
 pytest==9.1.1
 pip-audit==2.10.1
 openapi-spec-validator==0.9.0
-ruff==0.16.3
+ruff==0.16.4
