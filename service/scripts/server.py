@@ -835,12 +835,14 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             if remove_pixel not in (None, "ctrlregen", "diffusion"):
                 raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
             result = clean_av(src, dest, strip_all_metadata=strip_all)
-            # Only run the audio chain on audio-only media; a video-bearing
-            # payload (e.g. a video mislabeled .m4a) must not have its video
-            # track dropped by the -vn re-encode.
-            is_audio = (is_audio_format(result.get("format", "")) or is_audio_name(name)) and not (
-                media_has_video(src)
-            )
+            # Only run the audio chain on audio-only media. WAV/MP3/FLAC are
+            # definitive audio containers (no video stream possible); the
+            # MP4-family/OGG audio names (.m4a/.aac/.ogg/.opus) could be a
+            # mislabeled video, so only treat those as audio when a stream probe
+            # confirms there is no video track (an inconclusive probe is not
+            # "no video", to avoid dropping a video track via the -vn re-encode).
+            definitely_audio = is_audio_format(result.get("format", ""))
+            is_audio = definitely_audio or (is_audio_name(name) and media_has_video(src) is False)
             if is_audio and options.get("remove_audio_watermark"):
                 audio_dest = _tmp_path(tmpdir, "out.m4a")
                 audio_res = audio_purify(dest, audio_dest)

@@ -172,6 +172,15 @@ def test_media_has_video_distinguishes_audio_from_video(tmp_path):
     assert clean_audio.media_has_video(video) is True
 
 
+def test_media_has_video_indeterminate_when_probe_unavailable(tmp_path, monkeypatch):
+    # A failed/inconclusive probe must not be conflated with "no video", so the
+    # server never drops a video track via the -vn audio chain.
+    import clean_audio
+
+    monkeypatch.setattr(clean_audio, "which", lambda cmd: None)
+    assert clean_audio.media_has_video(tmp_path / "clip.mp4") is None
+
+
 @needs_ffmpeg
 def test_audio_purify_applies_destructive_chain(tmp_path):
     src = tmp_path / "tone.wav"

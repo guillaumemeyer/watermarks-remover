@@ -154,16 +154,16 @@ def _probe_sample_rate(path: Path) -> int:
         return 44100
 
 
-def media_has_video(path: Path) -> bool:
-    """True when the media has a video stream (an ffprobe stream-type probe).
+def media_has_video(path: Path) -> bool | None:
+    """Probe whether the media has a video stream.
 
-    Used to keep the audio-only destructive chain off a video-bearing payload that
-    happens to carry an audio extension. Falls back to False when ffprobe is
-    unavailable, letting the caller gate on the audio heuristic instead.
+    Returns ``None`` when the probe is inconclusive (ffprobe unavailable or
+    failed), so the caller can distinguish "no video present" from "could not
+    tell" and avoid running the ``-vn`` audio chain on a video-bearing payload.
     """
     ffprobe = which("ffprobe")
     if not ffprobe:
-        return False
+        return None
     try:
         r = subprocess.run(
             [
@@ -183,8 +183,10 @@ def media_has_video(path: Path) -> bool:
             preexec_fn=subprocess_preexec_fn,
             creationflags=subprocess_creationflags,
         )
-    except Exception:  # probe failures fall back to the caller's heuristic
-        return False
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
     return "video" in (r.stdout or "").splitlines()
 
 
