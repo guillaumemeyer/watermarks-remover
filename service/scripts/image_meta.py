@@ -570,7 +570,24 @@ def _is_c2pa_bmff_prov_box(payload: bytes) -> bool:
     deterministic instead of depending on `c2pa`/`jumb` ASCII appearing in the
     manifest payload.
     """
-    return bool(payload) and C2PA_BMFF_UUID in payload[:20]
+    return payload[:16] == C2PA_BMFF_UUID or payload[4:20] == C2PA_BMFF_UUID
+
+
+def _contains_c2pa_prov_box(data: bytes) -> bool:
+    """True when *data* holds a BMFF `uuid` box with the C2PA user type.
+
+    Used only by the whole-file fallback in inspect_isobmff, when the box walk
+    cannot parse a header. Requiring the C2PA UUID to follow a `uuid` fourcc
+    (optionally after a 4-byte FullBox prefix) keeps a coincidental UUID byte
+    sequence inside `mdat` or another container from being reported as C2PA.
+    """
+    pos = 0
+    while (idx := data.find(b"uuid", pos)) != -1:
+        after = data[idx + 4 : idx + 24]
+        if after[:16] == C2PA_BMFF_UUID or after[4:20] == C2PA_BMFF_UUID:
+            return True
+        pos = idx + 4
+    return False
 
 
 def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[str]]:
@@ -662,7 +679,7 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
     if whole and not has_c2pa:
         has_c2pa = True
         findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
-    elif C2PA_BMFF_UUID in data and not has_c2pa:
+    elif _contains_c2pa_prov_box(data) and not has_c2pa:
         # A C2PA content-provenance uuid box whose manifest bytes carry no
         # ASCII 'c2pa'/'jumb' marker (e.g. an auxiliary "merkle" box, or a
         # truncated manifest) is still a manifest box; catch it by user type.
