@@ -5,7 +5,8 @@ provcheck runs TrustMark-B per frame and votes across frames, so a single-frame
 purification is not enough: enough frames must be cleared that the temporal vote
 collapses. This module demuxes a video to frames, routes each selected frame
 through the same pixel-domain remover used for images (CtrlRegen or
-DiffusionPurification), and remuxes the purified frames with the original audio.
+DiffusionPurification), and remuxes the purified frames with the original audio,
+preserving source frame timing.
 
 ffmpeg is a runtime dependency of the service image (installed in the
 Dockerfile); the purification backend is still an optional external GPU checkout.
@@ -25,6 +26,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from common import (  # noqa: E402
+    safe_arg,
     subprocess_creationflags,
     subprocess_preexec_fn,
     which,
@@ -43,13 +45,18 @@ def _ffmpeg_available() -> bool:
     return which("ffmpeg") is not None and which("ffprobe") is not None
 
 
-def _backend_configured(remove_pixel: str) -> tuple[bool, str]:
+def _backend_configured(remove_pixel: str, explicit_dir: str | None = None) -> tuple[bool, str]:
+    """Validate that the requested pixel backend is configured.
+
+    *explicit_dir* (when supplied) overrides the environment variable; otherwise
+    the matching env var is consulted, mirroring the per-frame remover helpers.
+    """
     env_var, label = _BACKEND_ENV.get(remove_pixel, (None, None))
     if env_var is None:
         return False, f"unknown pixel remover: {remove_pixel}"
-    raw = os.environ.get(env_var)
+    raw = explicit_dir or os.environ.get(env_var)
     if not raw:
-        return False, f"{label} not configured (set {env_var})"
+        return False, f"{label} not configured (set {env_var} or pass the explicit dir)"
     d = Path(raw).expanduser()
     if not d.is_dir():
         return False, f"{label} dir not found: {d}"
@@ -62,6 +69,8 @@ def _spread_indices(total: int, k: int) -> list[int]:
         return []
     if k >= total:
         return list(range(total))
+    if k == 1:
+        return [0]
     indices: list[int] = []
     for i in range(k):
         indices.append(round(i * (total - 1) / (k - 1)))
@@ -80,17 +89,21 @@ def plan_frame_purge(
     """Decide which frames to purify so the temporal vote collapses.
 
     A frame we do not purify is assumed to still carry the mark, so to push the
-    vote below the winning threshold we must leave fewer than ``vote_threshold``
-    of the frames un-purified -- i.e. purify more than ``1 - vote_threshold`` of
-    them. ``frame_fraction`` defaults to ``1.0`` (purify every frame), which
-    collapses the vote whenever a single purification pass defeats TrustMark per
-    frame. Selected indices are spread evenly so any temporal vote window sees
-    enough purified frames regardless of window alignment.
+    vote below the winning threshold we must leave strictly fewer than
+    ``vote_threshold`` of the frames marked -- i.e. purify more than
+    ``1 - vote_threshold`` of them. ``frame_fraction`` defaults to ``1.0``
+    (purify every frame). If an explicit ``frame_fraction`` is too small to
+    cross the threshold, the plan raises the purge count to the minimum that
+    does (it never returns a plan that would leave the vote intact). Selected
+    indices are spread evenly so any temporal vote window sees enough purified
+    frames regardless of window alignment.
     """
     if frame_count < 0:
         raise ValueError("frame_count must be >= 0")
-    if not 0 <= vote_threshold <= 1:
-        raise ValueError("vote_threshold must be in [0, 1]")
+    if not 0 < vote_threshold <= 1:
+        raise ValueError("vote_threshold must be in (0, 1]")
+    if vote_threshold == 0:
+        raise ValueError("vote_threshold=0 is unattainable: no finite purge leaves 0 frames marked")
     if frame_count == 0:
         return {
             "frames_total": 0,
@@ -107,6 +120,12 @@ def plan_frame_purge(
         fraction = 1.0
 
     to_purge = max(0, min(frame_count, round(fraction * frame_count)))
+    # Minimum purge that leaves the residual marked fraction strictly below the
+    # threshold: to_purge > frame_count * (1 - vote_threshold).
+    min_to_purge = min(frame_count, int(frame_count * (1 - vote_threshold)) + 1)
+    raised = to_purge < min_to_purge
+    to_purge = max(to_purge, min_to_purge)
+
     if to_purge == 0:
         return {
             "frames_total": frame_count,
@@ -122,10 +141,16 @@ def plan_frame_purge(
     else:
         indices = _spread_indices(frame_count, to_purge)
         fraction = to_purge / frame_count
-        note = (
-            f"purified {to_purge}/{frame_count} frames ({fraction:.3f}); "
-            f"{frame_count - to_purge} frames left marked, below vote threshold {vote_threshold}"
-        )
+        if raised:
+            note = (
+                f"raised to {to_purge}/{frame_count} frames ({fraction:.3f}) so that the "
+                f"{frame_count - to_purge} un-purified frames stay below vote threshold {vote_threshold}"
+            )
+        else:
+            note = (
+                f"purified {to_purge}/{frame_count} frames ({fraction:.3f}); "
+                f"{frame_count - to_purge} frames left marked, below vote threshold {vote_threshold}"
+            )
     return {
         "frames_total": frame_count,
         "frames_to_purge": to_purge,
@@ -154,6 +179,7 @@ def _run_ffmpeg(cmd: list[str], timeout: int, what: str) -> tuple[int, str]:
 
 
 def _probe_fps(path: Path) -> float:
+    """Probe the average source frame rate, falling back to a sane default."""
     ffprobe = which("ffprobe")
     if not ffprobe:
         return 25.0
@@ -169,7 +195,7 @@ def _probe_fps(path: Path) -> float:
                 "stream=r_frame_rate",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(path),
+                safe_arg(str(path)),
             ],
             capture_output=True,
             text=True,
@@ -187,6 +213,73 @@ def _probe_fps(path: Path) -> float:
         return f if f > 0 else 25.0
     except Exception:  # take the default when ffprobe is missing or odd
         return 25.0
+
+
+def _frame_durations(path: Path, frame_count: int) -> list[float]:
+    """Per-frame presentation durations (seconds) from the source PTS.
+
+    Returns an empty list when durations are unavailable, so the caller falls
+    back to a constant frame rate rather than silently mangling the timing.
+    """
+    if frame_count <= 0:
+        return []
+    ffprobe = which("ffprobe")
+    if not ffprobe:
+        return []
+    try:
+        r = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time",
+                "-of",
+                "csv=p=0",
+                safe_arg(str(path)),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            preexec_fn=subprocess_preexec_fn,
+            creationflags=subprocess_creationflags,
+        )
+    except Exception:  # probe failures fall back to uniform timing
+        return []
+    pts: list[float] = []
+    for tok in (r.stdout or "").split():
+        try:
+            pts.append(float(tok))
+        except ValueError:
+            return []
+    if len(pts) < frame_count:
+        return []
+    durations = [pts[i + 1] - pts[i] for i in range(frame_count - 1)]
+    if any(d <= 0 for d in durations):
+        return []
+    durations.append(durations[-1])  # stable duration for the final frame
+    return durations
+
+
+def _write_frame_list(frames_dir: Path, durations: list[float]) -> Path:
+    """Write a concat-demuxer list that preserves per-frame durations.
+
+    The final frame is listed once more without a duration because the concat
+    demuxer otherwise drops it.
+    """
+    list_path = frames_dir / "frames.txt"
+    lines: list[str] = []
+    last = len(durations) - 1
+    for i, dur in enumerate(durations):
+        lines.append(f"file '{frames_dir / f'frame_{i:06d}.png'}'")
+        if i != last:
+            lines.append(f"duration {dur:.6f}")
+    lines.append(f"file '{frames_dir / f'frame_{last:06d}.png'}'")
+    list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return list_path
 
 
 def video_purify(
@@ -211,18 +304,21 @@ def video_purify(
 ) -> dict[str, object]:
     """Purify video frames so provcheck's per-frame TrustMark temporal vote drops.
 
-    Returns ``{"available": False, "error": ...}`` without side effects when ffmpeg
-    or the backend is unavailable or a frame cannot be purified; a successful run
-    returns ``{"available": True, ...}``.
+    Returns ``{"available": False, "error": ...}`` without side effects when the
+    backend or ffmpeg is unavailable or a frame cannot be purified; a successful
+    run returns ``{"available": True, ...}``.
     """
+    ok, err = _backend_configured(
+        remove_pixel,
+        explicit_dir=ctrlregen_dir if remove_pixel == "ctrlregen" else markdiffusion_dir,
+    )
+    if not ok:
+        return {"available": False, "error": err}
     if not _ffmpeg_available():
         return {
             "available": False,
             "error": "ffmpeg/ffprobe not available (install ffmpeg or use the service image)",
         }
-    ok, err = _backend_configured(remove_pixel)
-    if not ok:
-        return {"available": False, "error": err}
 
     input_path = Path(path)
     output_path = Path(dest)
@@ -242,14 +338,14 @@ def video_purify(
                 ffmpeg,
                 "-y",
                 "-i",
-                str(input_path),
+                safe_arg(str(input_path)),
                 "-fps_mode",
                 "vfr",  # decode every frame (modern replacement for -vsync 0)
                 "-start_number",
                 "0",
                 "-f",
                 "image2",
-                str(frames_dir / "frame_%06d.png"),
+                safe_arg(str(frames_dir / "frame_%06d.png")),
                 "-nostdin",
             ],
             timeout,
@@ -259,7 +355,11 @@ def video_purify(
             return {"available": False, "error": (stderr or "").strip()[-2000:]}
 
         frames = sorted(frames_dir.glob("frame_*.png"))
-        plan = plan_frame_purge(len(frames), vote_threshold=vote_threshold, frame_fraction=frame_fraction)
+        if not frames:
+            return {"available": False, "error": "no video frames extracted (not a valid video?)"}
+        plan = plan_frame_purge(
+            len(frames), vote_threshold=vote_threshold, frame_fraction=frame_fraction
+        )
         indices = plan["indices"]
         assert isinstance(indices, list)
 
@@ -297,7 +397,11 @@ def video_purify(
                 }
             frames_purified += 1
 
-        fps = _probe_fps(input_path)
+        durations = _frame_durations(input_path, len(frames))
+        if not durations:
+            durations = [1.0 / _probe_fps(input_path)] * len(frames)
+        frame_list = _write_frame_list(frames_dir, durations)
+
         fd, tmp_out = tempfile.mkstemp(dir=output_path.parent, suffix=f".remux{output_path.suffix}")
         os.close(fd)
         try:
@@ -305,12 +409,14 @@ def video_purify(
                 [
                     ffmpeg,
                     "-y",
-                    "-framerate",
-                    str(fps),
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
                     "-i",
-                    str(frames_dir / "frame_%06d.png"),
+                    safe_arg(str(frame_list)),
                     "-i",
-                    str(input_path),
+                    safe_arg(str(input_path)),
                     "-map",
                     "0:v:0",
                     "-map",
@@ -320,11 +426,8 @@ def video_purify(
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-shortest",
-                    str(tmp_out),
+                    "copy",
+                    safe_arg(str(tmp_out)),
                     "-nostdin",
                 ],
                 timeout,
@@ -357,8 +460,15 @@ def main() -> int:
     p.add_argument("path", type=Path, help="Input video (MP4/MOV)")
     p.add_argument("-o", "--output", type=Path, help="Output path (default: *.video.*)")
     p.add_argument("--remove-pixel", choices=["ctrlregen", "diffusion"], required=True)
-    p.add_argument("--vote-threshold", type=float, default=0.5, help="Temporal-vote threshold (default: 0.5)")
-    p.add_argument("--frame-fraction", type=float, default=None, help="Fraction of frames to purify (default: 1.0)")
+    p.add_argument(
+        "--vote-threshold", type=float, default=0.5, help="Temporal-vote threshold (default: 0.5)"
+    )
+    p.add_argument(
+        "--frame-fraction",
+        type=float,
+        default=None,
+        help="Fraction of frames to purify (default: 1.0)",
+    )
     p.add_argument("--json", action="store_true", help="Emit JSON on stdout")
     args = p.parse_args()
 

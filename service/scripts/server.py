@@ -842,6 +842,14 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                         f"{engine} per-frame video purification "
                         f"({pix.get('frames_purified')}/{pix.get('frames_total')} frames)"
                     )
+                    # The remux re-encodes the video, so the metadata-clean
+                    # report fields are stale; recompute them from the final file.
+                    after = inspect_av(dest)
+                    result["bytes_out"] = dest.stat().st_size
+                    result["changed"] = True
+                    result["still_has_c2pa"] = after.has_c2pa
+                    result["still_has_ai_metadata"] = after.has_ai_metadata
+                    result["post_findings"] = after.findings
                 else:
                     result["actions"].append(
                         f"per-frame video purification skipped: {pix.get('error', 'unknown error')}"

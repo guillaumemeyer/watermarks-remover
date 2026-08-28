@@ -203,6 +203,8 @@ def test_clean_av_honors_remove_pixel(conn, monkeypatch):
     assert body["kind"] == "av"
     assert body["report"]["pixel_removal"]["available"] is False
     assert any("video purification" in a for a in body["report"]["actions"])
+    # The cleaned payload length must match the reported bytes_out.
+    assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
 
 
 def test_clean_av_rejects_invalid_remove_pixel(conn):
