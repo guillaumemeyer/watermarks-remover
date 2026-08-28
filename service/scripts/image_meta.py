@@ -613,7 +613,8 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
             elif _is_c2pa_bmff_prov_box(payload):
                 has_c2pa = True
                 findings.append(
-                    f"{fmt.upper()} uuid box (C2PA content-provenance manifest, user type d8fec3d6...)"
+                    f"{fmt.upper()} uuid box "
+                    "(C2PA content-provenance manifest, user type d8fec3d6...)"
                 )
             else:
                 hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
