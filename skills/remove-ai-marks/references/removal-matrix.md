@@ -19,7 +19,8 @@
 | Markdown AI frontmatter keys / embedded data URIs | Drop keys; clean embedded data URIs | `clean_file.py` | Loses YAML keys; cleans embedded rasters | Yes |
 | Pixel image watermark (SynthID-media / StegaStamp / Tree-Ring / StableSignature) | CtrlRegen regeneration (external backend) | `clean_ctrlregen.py` / `clean_image.py --remove-pixel ctrlregen` | Regenerates pixels; heavy compute; detail drift at higher strength | No without official detector; reverse-SynthID score is a local surrogate; **MarkDiffusion same-scheme harness** (`markdiffusion_harness.py detect`) verifies a Tree-Ring-class scheme config before/after |
 | Pixel image watermark (Tree-Ring-class) | DiffusionPurification regeneration (external MarkDiffusion backend) | `clean_image.py --remove-pixel diffusion` | Blind regeneration; more drift than CtrlRegen; heavy compute | Same-scheme only via the MarkDiffusion harness (not a vendor-detector oracle) |
-| Audio / video watermarks (SynthID-media) | — | Out of scope | — | — |
+| TrustMark image watermark (video, per-frame + temporal vote) | Per-frame pixel purification (CtrlRegen / DiffusionPurification) + ffmpeg demux/remux, guided by a vote-collapse frame planner | `clean_video.py` (`remove_pixel` on the AV path) | Re-encodes video (lossy); heavy compute; needs ffmpeg + a pixel backend | Model-based (`vote_threshold`); not vendor-detector-verified |
+| Audio watermarks (silentcipher / AudioSeal / WavMark) | — | Out of scope | — | — |
 | C2PA soft binding (in-content link to manifest) | — | Out of scope (survives our metadata strip) | — | Vendor detector only |
 | Data-driven model backdoors | — | Out of scope | — | — |
 

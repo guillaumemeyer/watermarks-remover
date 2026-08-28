@@ -53,6 +53,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from av_meta import clean_av, inspect_av
+from clean_video import video_purify
 from common import (
     MAX_INPUT_BYTES,
     eprint,
@@ -170,6 +171,7 @@ def capabilities() -> dict[str, Any]:
             "exiftool": _tool_usable("exiftool"),
             "qpdf": _tool_usable("qpdf"),
             "ghostscript": _ghostscript_usable(),
+            "ffmpeg": _tool_usable("ffmpeg"),
         },
         "pixel_backends": {
             "ctrlregen": bool(os.environ.get("NOAI_WATERMARK_DIR")),
@@ -260,7 +262,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             type="object",
                             properties={
                                 k: _schema(type="boolean")
-                                for k in ("c2patool", "exiftool", "qpdf", "ghostscript")
+                                for k in ("c2patool", "exiftool", "qpdf", "ghostscript", "ffmpeg")
                             },
                         ),
                         "pixel_backends": _schema(
@@ -827,7 +829,23 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             strip_all = not bool(options.get("keep_non_ai_metadata"))
             if "strip_all_metadata" in options:
                 strip_all = bool(options["strip_all_metadata"])
+            remove_pixel = options.get("remove_pixel")
+            if remove_pixel not in (None, "ctrlregen", "diffusion"):
+                raise ValueError("remove_pixel must be one of: ctrlregen, diffusion")
             result = clean_av(src, dest, strip_all_metadata=strip_all)
+            if remove_pixel:
+                pix = video_purify(dest, dest, remove_pixel=remove_pixel)
+                result["pixel_removal"] = pix
+                engine = "CtrlRegen" if remove_pixel == "ctrlregen" else "DiffusionPurification"
+                if pix.get("available"):
+                    result["actions"].append(
+                        f"{engine} per-frame video purification "
+                        f"({pix.get('frames_purified')}/{pix.get('frames_total')} frames)"
+                    )
+                else:
+                    result["actions"].append(
+                        f"per-frame video purification skipped: {pix.get('error', 'unknown error')}"
+                    )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "av", **result}
         else:

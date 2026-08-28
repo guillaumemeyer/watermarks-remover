@@ -43,6 +43,17 @@ def _watermarked_png() -> bytes:
     )
 
 
+def _isobmff_box(fourcc: bytes, payload: bytes) -> bytes:
+    return struct.pack(">I", len(payload) + 8) + fourcc + payload
+
+
+def _minimal_mp4() -> bytes:
+    """A minimal structurally-valid MP4: ftyp + mdat (classifies as AV)."""
+    ftyp = _isobmff_box(b"ftyp", b"isom" + struct.pack(">I", 0) + b"isomiso2mp41")
+    mdat = _isobmff_box(b"mdat", b"\x00" * 24)
+    return ftyp + mdat
+
+
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -89,7 +100,7 @@ def test_health(conn):
 def test_capabilities(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ghostscript"}
+    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ghostscript", "ffmpeg"}
     assert "pixel_backends" in body
     assert "scorers" in body
     assert "harnesses" in body
@@ -174,6 +185,35 @@ def test_clean_markdown_container(conn):
     cleaned = base64.b64decode(body["cleaned"]).decode("utf-8")
     assert "generator: Claude" not in cleaned
     assert body["report"]["format"] == "markdown"
+
+
+def test_clean_av_honors_remove_pixel(conn, monkeypatch):
+    # No purification backend is configured in the test env, so remove_pixel on
+    # the AV path must be accepted and reported as unavailable (not silently
+    # ignored), while the metadata strip still runs.
+    for var in ("NOAI_WATERMARK_DIR", "MARKDIFFUSION_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    data = _minimal_mp4()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.mp4", "options": {"remove_pixel": "ctrlregen"}},
+    )
+    assert status == 200
+    assert body["kind"] == "av"
+    assert body["report"]["pixel_removal"]["available"] is False
+    assert any("video purification" in a for a in body["report"]["actions"])
+
+
+def test_clean_av_rejects_invalid_remove_pixel(conn):
+    data = _minimal_mp4()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.mp4", "options": {"remove_pixel": "bogus"}},
+    )
+    assert status == 400
+    assert "remove_pixel" in body["error"]
 
 
 def test_unknown_option_rejected(conn):
