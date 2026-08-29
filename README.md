@@ -424,6 +424,11 @@ curl -s -X POST http://127.0.0.1:8765/clean -H 'Content-Type: application/json' 
   -d "{\"file\": \"$(base64 < /tmp/sample.txt | tr -d '\n')\", \"name\": \"sample.txt\"}"
 ```
 
+Languages whose typography relies on a non-breaking space (French `« … »`, the
+space before `; : ! ?`) should pass `"options": {"normalize_spaces": false}`, the
+HTTP equivalent of `clean_text.py --no-normalize-spaces`. Invisible carriers are
+still removed; only the space rewrite is skipped.
+
 Everything else is optional and lives in a `.env` file at the repo root. `docker compose` **auto-loads `.env`** and interpolates the `${VAR}` references in `compose.yaml` from it (shell exports win over `.env` if both are set).
 
 ```bash

@@ -88,6 +88,7 @@ MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
 ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
     "aggressive_homoglyphs": bool,
+    "normalize_spaces": bool,
     "keep_non_ai_metadata": bool,
     "also_layer_a_text": bool,
     "remove_pixel": str,
@@ -793,6 +794,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 text,
                 nfkc=bool(options.get("nfkc")),
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
+                normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
