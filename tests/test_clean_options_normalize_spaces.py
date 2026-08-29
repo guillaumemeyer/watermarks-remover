@@ -83,11 +83,13 @@ def test_ooxml_and_odt_runs_honour_the_option():
     kept, _, _ = container_meta._scrub_docx_text(docx_run, normalize_spaces=False)
     assert NBSP in kept and ZWSP not in kept
     flattened, _, _ = container_meta._scrub_docx_text(docx_run)
-    assert NBSP not in flattened
+    assert NBSP not in flattened and ZWSP not in flattened
 
     odt_run = f"<text:p>Le doute{NBSP}: entier{ZWSP}</text:p>"
     kept_odt, _, _ = container_meta._scrub_odt_text(odt_run, normalize_spaces=False)
     assert NBSP in kept_odt and ZWSP not in kept_odt
+    flattened_odt, _, _ = container_meta._scrub_odt_text(odt_run)
+    assert NBSP not in flattened_odt and ZWSP not in flattened_odt
 
 
 def test_xlsx_and_pptx_runs_honour_the_option():
@@ -102,7 +104,7 @@ def test_xlsx_and_pptx_runs_honour_the_option():
         kept, _, _ = scrub(run, normalize_spaces=False)
         assert NBSP in kept and ZWSP not in kept
         flattened, _, _ = scrub(run)
-        assert NBSP not in flattened
+        assert NBSP not in flattened and ZWSP not in flattened
 
 
 def _minimal_epub() -> bytes:
@@ -128,4 +130,4 @@ def test_epub_body_honours_the_option():
     flattened, _ = container_meta.clean_epub(data)
     with zipfile.ZipFile(io.BytesIO(flattened)) as zf:
         text2 = zf.read("OEBPS/chapter.xhtml").decode("utf-8")
-    assert NBSP not in text2
+    assert NBSP not in text2 and ZWSP not in text2
