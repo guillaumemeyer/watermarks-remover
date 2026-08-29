@@ -12,7 +12,9 @@ Default stays True: existing callers see no change.
 from __future__ import annotations
 
 import base64
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,3 +88,44 @@ def test_ooxml_and_odt_runs_honour_the_option():
     odt_run = f"<text:p>Le doute{NBSP}: entier{ZWSP}</text:p>"
     kept_odt, _, _ = container_meta._scrub_odt_text(odt_run, normalize_spaces=False)
     assert NBSP in kept_odt and ZWSP not in kept_odt
+
+
+def test_xlsx_and_pptx_runs_honour_the_option():
+    """XLSX and PPTX go through the same run scrubber under different tags."""
+    import container_meta
+
+    cases = [
+        (container_meta._scrub_xlsx_text, "<t>Le doute : entier​</t>"),
+        (container_meta._scrub_pptx_text, "<a:t>Le doute : entier​</a:t>"),
+    ]
+    for scrub, run in cases:
+        kept, _, _ = scrub(run, normalize_spaces=False)
+        assert NBSP in kept and ZWSP not in kept
+        flattened, _, _ = scrub(run)
+        assert NBSP not in flattened
+
+
+def _minimal_epub() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr(
+            "OEBPS/chapter.xhtml",
+            "<html><body><p>Le doute : entier​</p></body></html>",
+        )
+    return buf.getvalue()
+
+
+def test_epub_body_honours_the_option():
+    import container_meta
+
+    data = _minimal_epub()
+    kept, _ = container_meta.clean_epub(data, normalize_spaces=False)
+    with zipfile.ZipFile(io.BytesIO(kept)) as zf:
+        text = zf.read("OEBPS/chapter.xhtml").decode("utf-8")
+    assert NBSP in text and ZWSP not in text
+
+    flattened, _ = container_meta.clean_epub(data)
+    with zipfile.ZipFile(io.BytesIO(flattened)) as zf:
+        text2 = zf.read("OEBPS/chapter.xhtml").decode("utf-8")
+    assert NBSP not in text2
