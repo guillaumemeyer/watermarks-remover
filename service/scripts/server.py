@@ -920,6 +920,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 fmt=container_fmt,
                 also_layer_a_text=bool(options.get("also_layer_a_text", True)),
                 deep_images=str(options.get("deep_images", "auto")),
+                normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "container", **result}
