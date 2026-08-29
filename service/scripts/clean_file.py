@@ -181,9 +181,14 @@ def main() -> int:
                 print(json.dumps(result, indent=2))
         else:
             if should_report:
-                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-                for a in result["actions"]:
-                    eprint(f"  - {a}")
+                if result["changed"]:
+                    eprint(
+                        f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})"
+                    )
+                    for a in result["actions"]:
+                        eprint(f"  - {a}")
+                else:
+                    eprint(f"already clean: {result['output']}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -212,9 +217,14 @@ def main() -> int:
                 print(json.dumps(result, indent=2))
         else:
             if should_report:
-                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-                for a in result["actions"]:
-                    eprint(f"  - {a}")
+                if result["changed"]:
+                    eprint(
+                        f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})"
+                    )
+                    for a in result["actions"]:
+                        eprint(f"  - {a}")
+                else:
+                    eprint(f"already clean: {result['output']}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -239,9 +249,12 @@ def main() -> int:
             print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         if should_report:
-            eprint(f"wrote {result['output']} format={result['format']}")
-            for a in result["actions"]:
-                eprint(f"  - {a}")
+            if result["changed"]:
+                eprint(f"wrote {result['output']} format={result['format']}")
+                for a in result["actions"]:
+                    eprint(f"  - {a}")
+            else:
+                eprint(f"already clean: {result['output']}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")
             for f in result.get("post_findings") or []:
