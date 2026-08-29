@@ -41,3 +41,6 @@ def test_core_image_installs_every_advertised_tool():
     dockerfile = (ROOT / "service" / "Dockerfile").read_text(encoding="utf-8")
     for pkg in ("ffmpeg", "ghostscript", "qpdf", "libimage-exiftool-perl"):
         assert pkg in dockerfile, f"{pkg} is advertised by /capabilities but not installed"
+    # c2patool is not an apt package: it is fetched and installed separately, so
+    # the loop above would keep passing if that step disappeared.
+    assert "/usr/local/bin/c2patool" in dockerfile
