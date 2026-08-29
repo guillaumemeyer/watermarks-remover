@@ -54,7 +54,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from common import eprint, subprocess_creationflags  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
-from rewrite_text import _lexical_divergence  # noqa: E402
+from rewrite_text import _default_base_url, _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
 
 _RESOLVED_SCRIPT = Path(__file__).resolve()
@@ -1749,13 +1749,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--rewrite-backend",
-        choices=("ollama", "openai-compatible"),
+        choices=("ollama", "openai-compatible", "orcarouter"),
         default=os.environ.get("WATERMARKS_REWRITE_BACKEND", "ollama"),
     )
     p.add_argument("--rewrite-model", default=os.environ.get("WATERMARKS_REWRITE_MODEL"))
     p.add_argument(
         "--rewrite-base-url",
-        default=os.environ.get("WATERMARKS_REWRITE_BASE_URL", "http://127.0.0.1:11434"),
+        default=None,
+        help="Rewrite endpoint root; defaults to the Ollama loopback URL, or "
+        "to the OrcaRouter gateway for --rewrite-backend orcarouter",
     )
     p.add_argument(
         "--rewrite-api-key", default=None, help="API key (env-only in child; never argv)"
@@ -1862,6 +1864,10 @@ def _semantic_startup_probe(bench: Benchmark, semantic_model: str, require: bool
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.rewrite_base_url is None:
+        args.rewrite_base_url = os.environ.get("WATERMARKS_REWRITE_BASE_URL") or _default_base_url(
+            args.rewrite_backend
+        )
 
     if not args.markllm_dir:
         eprint("error: --markllm-dir (or MARKLLM_DIR) is required")

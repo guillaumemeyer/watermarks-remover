@@ -41,8 +41,9 @@ Prerequisites (all external, matching the repo's optional-harness model):
 
 1. A MarkLLM checkout: run service/scripts/setup_markllm.sh (clones
    THU-BPM/MarkLLM at a pinned commit and creates ~/MarkLLM/.venv).
-2. A rewrite backend: Ollama (default, loopback) or any
-   OpenAI-compatible endpoint. The rewrite model must be a real model.
+2. A rewrite backend: Ollama (default, loopback), any
+   OpenAI-compatible endpoint, or the named OrcaRouter gateway. The rewrite
+   model must be a real model.
 
     # minimal: 3 docs, 1 seed, paraphrase with up to 3 attempts (default, Ollama)
     MARKLLM_DIR=~/MarkLLM \
@@ -63,6 +64,15 @@ Prerequisites (all external, matching the repo's optional-harness model):
       --rewrite-allow-remote \
       --out-dir out/bench-deepseek \
       --tag deepseek-v4-flash
+
+    # OrcaRouter (named backend; base URL defaults to its gateway)
+    WATERMARKS_REWRITE_API_KEY=sk-orca-... python3 service/scripts/bench_synthid_text.py \
+      --markllm-dir ~/MarkLLM \
+      --rewrite-backend orcarouter \
+      --rewrite-model deepseek-v4-flash \
+      --rewrite-allow-remote \
+      --out-dir out/bench-orcarouter \
+      --tag orcarouter
 
 API keys are read from the environment only (WATERMARKS_REWRITE_API_KEY),
 never argv. Non-loopback rewrite endpoints require --rewrite-allow-remote.

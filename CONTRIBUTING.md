@@ -49,8 +49,8 @@ issue.
    `service/scripts/` (`text_unicode.py`, `clean_text.py`, `inspect_text.py`). Prefer
    tests with fixtures in `tests/fixtures/`.
 2. **Layer B (statistical rewrite)** — guidance in `SKILL.md` plus optional
-   `rewrite_text.py` (print-prompt default; ollama / openai-compatible). No
-   bundled model. Keep ethics-aware.
+   `rewrite_text.py` (print-prompt default; ollama / openai-compatible /
+   orcarouter). No bundled model. Keep ethics-aware.
 3. **Files (C2PA / EXIF / XMP / props)** — `image_meta.py` (PNG/JPEG/AVIF/HEIC/...),
    `container_meta.py` (SVG/PDF/DOCX/ODT/HTML/MD), `av_meta.py` (MP4/MOV/WAV/MP3),
    unified `inspect_file.py` / `clean_file.py`. Preserve document body / pixels /

@@ -5,6 +5,7 @@ Backends:
   print-prompt       — emit prompt only (default; CI-safe, no model)
   ollama             — POST to Ollama /api/chat
   openai-compatible  — POST to OpenAI-style /v1/chat/completions
+  orcarouter         — POST to OrcaRouter's OpenAI-compatible gateway
 
 Env (optional):
   WATERMARKS_REWRITE_BACKEND
@@ -63,6 +64,24 @@ from text_unicode import clean_text
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 DEFAULT_CANDIDATES = 1
 DEFAULT_MAX_LOOPS = 1
+
+# OrcaRouter's OpenAI-compatible gateway root; call_orcarouter appends
+# /v1/chat/completions, matching the project's base-url convention (a provider
+# root, not the /v1 suffix).
+DEFAULT_ORCAROUTER_BASE_URL = "https://api.orcarouter.ai"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+
+
+def _default_base_url(backend: str) -> str:
+    """Backend-aware rewrite endpoint root used when none is configured.
+
+    Ollama stays on its loopback default; the named OrcaRouter backend points
+    at its gateway. Env (WATERMARKS_REWRITE_BASE_URL) still wins over both.
+    """
+    if backend == "orcarouter":
+        return DEFAULT_ORCAROUTER_BASE_URL
+    return DEFAULT_OLLAMA_BASE_URL
+
 
 PROMPTS = {
     "paraphrase": (
@@ -263,6 +282,10 @@ def _generate_once(
     """Generate a single rewrite variant through the configured backend."""
     if backend == "ollama":
         return call_ollama(base_url, model, prompt, timeout, temperature)
+    if backend == "orcarouter":
+        return call_orcarouter(
+            base_url, model, prompt, api_key, timeout, temperature, reasoning_effort
+        )
     if backend == "openai-compatible":
         return call_openai_compatible(
             base_url, model, prompt, api_key, timeout, temperature, reasoning_effort
@@ -396,6 +419,27 @@ def call_openai_compatible(
     if not content:
         raise RuntimeError(f"openai-compatible empty content: {data!r}"[:500])
     return str(content).strip()
+
+
+def call_orcarouter(
+    base_url: str,
+    model: str,
+    prompt: str,
+    api_key: str | None,
+    timeout: float,
+    temperature: float,
+    reasoning_effort: str | None = None,
+) -> str:
+    """Generate one rewrite variant through the named OrcaRouter backend.
+
+    OrcaRouter is an OpenAI-compatible AI gateway (base URL defaults to
+    DEFAULT_ORCAROUTER_BASE_URL), so the wire call is identical to
+    call_openai_compatible. The named wrapper keeps the backend explicit in
+    telemetry and lets the default base URL stay backend-aware.
+    """
+    return call_openai_compatible(
+        base_url, model, prompt, api_key, timeout, temperature, reasoning_effort
+    )
 
 
 def _candidate_pass(
@@ -534,9 +578,11 @@ def rewrite(
         return prompt, info
 
     if not model:
-        raise SystemExit("error: --model required for ollama/openai-compatible backends")
+        raise SystemExit("error: --model required for ollama/openai-compatible/orcarouter backends")
     if not base_url:
-        raise SystemExit("error: --base-url required for ollama/openai-compatible backends")
+        raise SystemExit(
+            "error: --base-url required for ollama/openai-compatible/orcarouter backends"
+        )
 
     _check_remote(base_url, allow_remote)
 
@@ -766,13 +812,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", help="Output path (default: stdout or *.rewritten.*)")
     p.add_argument(
         "--backend",
-        choices=("print-prompt", "ollama", "openai-compatible"),
+        choices=("print-prompt", "ollama", "openai-compatible", "orcarouter"),
         default=_env("WATERMARKS_REWRITE_BACKEND", "print-prompt"),
     )
     p.add_argument("--model", default=_env("WATERMARKS_REWRITE_MODEL"))
     p.add_argument(
         "--base-url",
-        default=_env("WATERMARKS_REWRITE_BASE_URL", "http://127.0.0.1:11434"),
+        default=_env("WATERMARKS_REWRITE_BASE_URL"),
+        help="Rewrite endpoint root; defaults to the Ollama loopback URL, or "
+        "to the OrcaRouter gateway for --backend orcarouter, when unset",
     )
     p.add_argument(
         "--allow-remote",
@@ -905,6 +953,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.base_url is None:
+        # Backend-aware default: Ollama stays loopback, the named OrcaRouter
+        # backend points at its gateway. Env still wins over both.
+        args.base_url = _env("WATERMARKS_REWRITE_BASE_URL") or _default_base_url(args.backend)
 
     if args.rewrite_level is not None and not (0 < args.rewrite_level <= 1):
         eprint(f"error: --rewrite-level must be in (0,1], got {args.rewrite_level}")

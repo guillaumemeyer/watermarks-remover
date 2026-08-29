@@ -283,6 +283,10 @@ python3 "$SCRIPTS/rewrite_text.py" draft.md --backend print-prompt --strength pa
 # WATERMARKS_REWRITE_ALLOW_REMOTE=1 or --allow-remote):
 # WATERMARKS_REWRITE_BACKEND=ollama WATERMARKS_REWRITE_MODEL=llama3.2 \
 #   python3 "$SCRIPTS/rewrite_text.py" draft.md -o draft.rewritten.md
+# Named OrcaRouter gateway (OpenAI-compatible; base URL defaults to its API):
+# WATERMARKS_REWRITE_BACKEND=orcarouter WATERMARKS_REWRITE_MODEL=deepseek-v4-flash \
+#   WATERMARKS_REWRITE_API_KEY=sk-orca-... \
+#   python3 "$SCRIPTS/rewrite_text.py" draft.md -o draft.rewritten.md --allow-remote
 # API keys are read from WATERMARKS_REWRITE_API_KEY only (never argv).
 
 # Images
@@ -446,7 +450,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_MARKLLM_SCHEME` | `text_detectors.py` (host) | MarkLLM scheme for `/detect`: `kgw` (default) / `synthid` |
 | `HF_TOKEN` | harness/heavy services | Hugging Face token for gated models |
 | `WATERMARKS_SERVICE_URL` | client only (skill / curl) | Where to reach the service; default `http://127.0.0.1:8765` |
-| `WATERMARKS_REWRITE_BACKEND` | `rewrite_text.py` hook | `print-prompt` (default) / `ollama` / `openai-compatible` |
+| `WATERMARKS_REWRITE_BACKEND` | `rewrite_text.py` hook | `print-prompt` (default) / `ollama` / `openai-compatible` / `orcarouter` |
 | `WATERMARKS_REWRITE_MODEL` | `rewrite_text.py` hook | Model name (e.g. `deepseek-v4-flash`) |
 | `WATERMARKS_REWRITE_BASE_URL` | `rewrite_text.py` hook | API base (e.g. `https://api.deepseek.com`) |
 | `WATERMARKS_REWRITE_API_KEY` | `rewrite_text.py` hook | API key — env only, never on argv |
@@ -819,11 +823,9 @@ vars or benchmark flags (they mirror the
 
 | Env var | Benchmark flag | Default | Meaning |
 | --- | --- | --- | --- |
-| `WATERMARKS_REWRITE_BACKEND` | `--rewrite-backend` | `ollama` | `ollama` or `openai-compatible` |
+| `WATERMARKS_REWRITE_BACKEND` | `--rewrite-backend` | `ollama` | `ollama`, `openai-compatible`, or `orcarouter` |
 | `WATERMARKS_REWRITE_MODEL` | `--rewrite-model` | *(required)* | The LLM that performs the rewrite (e.g. `llama3.2`, `deepseek-v4-flash`) |
-| `WATERMARKS_REWRITE_BASE_URL` | `--rewrite-base-url` | `http://127.0.0.1:11434` | Endpoint; the Ollama default is loopback |
-| `WATERMARKS_REWRITE_API_KEY` | `--rewrite-api-key` | — | API key (env-only in the child process, never argv) |
-| `WATERMARKS_REWRITE_ALLOW_REMOTE=1` | `--rewrite-allow-remote` | off | Required to send content to non-loopback endpoints |
+| `WATERMARKS_REWRITE_BASE_URL` | `--rewrite-base-url` | `http://127.0.0.1:11434` | Endpoint; the Ollama default is loopback, the OrcaRouter default is its gateway |
 
 ```bash
 # Ollama (loopback):
@@ -834,6 +836,12 @@ python3 service/scripts/bench_synthid_text.py --markllm-dir ~/MarkLLM \
 WATERMARKS_REWRITE_API_KEY=... python3 service/scripts/bench_synthid_text.py \
   --markllm-dir ~/MarkLLM --rewrite-backend openai-compatible \
   --rewrite-model deepseek-v4-flash --rewrite-base-url https://api.deepseek.com \
+  --rewrite-allow-remote
+
+# OrcaRouter (remote, named backend; base URL defaults to its gateway):
+WATERMARKS_REWRITE_API_KEY=sk-orca-... python3 service/scripts/bench_synthid_text.py \
+  --markllm-dir ~/MarkLLM --rewrite-backend orcarouter \
+  --rewrite-model deepseek-v4-flash \
   --rewrite-allow-remote
 ```
 
@@ -1200,6 +1208,7 @@ make smoke                          # quick CLI smoke on fixtures
 ### Unreleased
 
 - Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
+- **Layer B**: `rewrite_text.py` and `bench_synthid_text.py` gain a named `orcarouter` rewrite backend (OpenAI-compatible gateway; base URL defaults to `https://api.orcarouter.ai`, model/API key via the same `WATERMARKS_REWRITE_*` env vars)
 
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 

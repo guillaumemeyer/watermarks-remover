@@ -744,6 +744,55 @@ def test_rewrite_denies_remote_host_without_opt_in():
         rewrite("secret text", **_rewrite_http_kwargs("http://example.com:11434"))
 
 
+def test_orcarouter_backend_posts_to_gateway_with_api_key():
+    """The named orcarouter backend hits OpenAI-style /v1/chat/completions and
+    sends the API key, mirroring openai-compatible on the wire."""
+    captured = {}
+
+    class OrcaRouter(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["path"] = self.path
+            captured["auth"] = self.headers.get("Authorization")
+            captured["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"choices": [{"message": {"content": "rewritten by orca"}}]}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OrcaRouter)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result, info = rewrite(
+            "hello",
+            **_rewrite_http_kwargs(
+                f"http://127.0.0.1:{server.server_address[1]}",
+                backend="orcarouter",
+                api_key="sk-orca-test-123",
+                model="deepseek-v4-flash",
+            ),
+        )
+        assert result == "rewritten by orca"
+        assert captured["path"] == "/v1/chat/completions"
+        assert captured["auth"] == "Bearer sk-orca-test-123"
+        assert captured["body"]["model"] == "deepseek-v4-flash"
+        assert info["backend"] == "orcarouter"
+    finally:
+        server.shutdown()
+
+
+def test_orcarouter_default_base_url_is_gateway():
+    """The default rewrite base URL for --backend orcarouter is the OrcaRouter
+    gateway (a provider root; /v1/chat/completions is appended on the wire)."""
+    p = rewrite_text.build_parser()
+    args = p.parse_args(["--backend", "orcarouter", "--model", "deepseek-v4-flash"])
+    assert args.base_url is None  # resolved in main(), not the parser
+    assert rewrite_text._default_base_url("orcarouter") == "https://api.orcarouter.ai"
+    assert rewrite_text._default_base_url("ollama") == "http://127.0.0.1:11434"
+
+
 def test_rewrite_blocks_redirect_and_never_sends_key():
     """A 302 from the (loopback) endpoint must not re-send the API key to the
     redirect target — the request must fail instead."""
