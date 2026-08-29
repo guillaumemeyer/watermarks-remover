@@ -395,6 +395,14 @@ def classify_finding_confidence(finding: str) -> str:
     """
     t = finding.lower()
 
+    # Layer A space homoglyphs are weaker context than invisible carriers, and
+    # text_hit_confidence() already says so on the text path. Container formats
+    # (markdown/HTML) are classified here instead, so without this the very same
+    # non-breaking space reads "informational" in a .txt and "probable" in a .md,
+    # and only the .md makes the file actionable.
+    if t.startswith("layer-a") and t.endswith("(space)"):
+        return "informational"
+
     if any(
         s in t
         for s in (
