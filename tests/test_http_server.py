@@ -165,8 +165,12 @@ def test_inspect_text_finds_watermark(conn):
     status, body = _post(conn, "/inspect", {"file": _b64(data), "name": "note.txt"})
     assert status == 200
     assert body["kind"] == "text"
-    assert body["suspicious"] is True
+    assert body["suspicious"]["verdict"] is True
     assert body["report"]["suspicious_total"] == 2
+    layer_a = body["suspicious"]["classes"]["layer_a_unicode"]
+    assert layer_a["present"] is True
+    assert layer_a["strength"] == "deterministic"
+    assert layer_a["description"]
 
 
 def test_clean_text_roundtrip(conn):
@@ -322,7 +326,7 @@ def test_inspect_unknown_format_reports_kind(conn):
     status, body = _post(conn, "/inspect", {"file": _b64(data), "name": "input"})
     assert status == 200
     assert body["kind"] == "unknown"
-    assert body["suspicious"] is False
+    assert body["suspicious"]["verdict"] is False
     assert "note" in body["report"]
 
 
@@ -401,9 +405,9 @@ def test_inspect_batch_mixed_results(conn):
     assert body["ok"] is True
     results = {r["name"]: r for r in body["results"]}
     assert results["a.txt"]["ok"] is True
-    assert results["a.txt"]["suspicious"] is True
+    assert results["a.txt"]["suspicious"]["verdict"] is True
     assert results["b.txt"]["ok"] is True
-    assert results["b.txt"]["suspicious"] is False
+    assert results["b.txt"]["suspicious"]["verdict"] is False
 
 
 def test_clean_batch_mixed_results(conn):
