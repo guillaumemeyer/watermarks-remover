@@ -36,6 +36,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         ffmpeg \
+        ghostscript \
         libarchive-zip-perl \
         libimage-exiftool-perl \
         passwd \

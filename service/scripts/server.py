@@ -132,7 +132,13 @@ def _json_ok(payload: dict[str, Any]) -> bytes:
 
 # Flag that makes each tool print its version and exit 0. They disagree:
 # exiftool treats `--version` as an unknown option and prints usage instead.
-_VERSION_FLAG = {"c2patool": "--version", "exiftool": "-ver", "qpdf": "--version"}
+_VERSION_FLAG = {
+    "c2patool": "--version",
+    "exiftool": "-ver",
+    "qpdf": "--version",
+    # ffmpeg has no --version; it exits 8 and the probe read that as unusable.
+    "ffmpeg": "-version",
+}
 
 
 @cache
