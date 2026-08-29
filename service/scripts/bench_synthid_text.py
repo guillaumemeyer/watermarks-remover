@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import hashlib
 import json
 import math
 import os
@@ -496,6 +497,13 @@ class SemanticEmbedder:
     def available(self) -> bool:
         return self._load() is not None
 
+    def reason(self) -> str | None:
+        """Why the backend is unavailable (missing package, download/encode
+        error), or None once a model is loaded. Triggers the lazy load, so a
+        startup probe reports the real cause instead of a silent '—' report."""
+        self._load()
+        return self._failed
+
     def score(self, original: str, candidate: str) -> float | None:
         model = self._load()
         if model is None:
@@ -799,6 +807,10 @@ class Benchmark:
         for doc_id, prompt in self.corpus:
             prompt_path = workdir / f"prompt_{doc_id}.txt"
             prompt_path.write_text(prompt, encoding="utf-8", errors="surrogateescape")
+            # Sanity guard: seeds must produce distinct watermarked texts. An
+            # identical generation across seeds means the seed is not applied
+            # (MarkLLM may use its own RNG), which collapses per-seed variance.
+            seen_hashes: dict[str, int] = {}
             for seed in range(self.args.seed_base, self.args.seed_base + self.args.seeds):
                 sample: dict[str, Any] = {
                     "doc": doc_id,
@@ -815,6 +827,17 @@ class Benchmark:
                     continue
                 wm_text = gen["watermarked"]
                 plain_text = gen["unwatermarked"]
+                wm_hash = hashlib.sha256(
+                    wm_text.encode("utf-8", errors="surrogateescape")
+                ).hexdigest()
+                prev_seed = seen_hashes.get(wm_hash)
+                if prev_seed is not None:
+                    sample["notes"].append(
+                        f"identical watermarked generation as seed {prev_seed} "
+                        "(seed may not be applied; sanity risk)"
+                    )
+                else:
+                    seen_hashes[wm_hash] = seed
                 if len(wm_text.strip()) < 50:
                     sample.update(
                         {"excluded": True, "excluded_reason": "watermarked sample too short"}
@@ -1131,7 +1154,10 @@ class Benchmark:
                         "semantic_divergence": None,
                         "attempts": 0,
                         "seconds": 0.0,
-                        "notes": [sample.get("excluded_reason", "excluded")],
+                        "notes": [
+                            sample.get("excluded_reason", "excluded"),
+                            *list(sample.get("notes") or []),
+                        ],
                     }
                 )
                 continue
@@ -1211,7 +1237,10 @@ class Benchmark:
                         "level": lvl,
                         "lexical_divergence": None,
                         "semantic_divergence": None,
-                        "notes": [f"rewrite failed: {failed}"],
+                        "notes": [
+                            f"rewrite failed: {failed}",
+                            *list(sample.get("notes") or []),
+                        ],
                     }
                 )
             elif chosen is None:
@@ -1222,7 +1251,10 @@ class Benchmark:
                             "level": levels[-1],
                             "lexical_divergence": None,
                             "semantic_divergence": None,
-                            "notes": ["detection unavailable; not verified"],
+                            "notes": [
+                                "detection unavailable; not verified",
+                                *list(sample.get("notes") or []),
+                            ],
                         }
                     )
                 else:
@@ -1232,7 +1264,10 @@ class Benchmark:
                             "level": levels[-1],
                             "lexical_divergence": None,
                             "semantic_divergence": None,
-                            "notes": ["not cleared at any level"],
+                            "notes": [
+                                "not cleared at any level",
+                                *list(sample.get("notes") or []),
+                            ],
                         }
                     )
             else:
@@ -1244,7 +1279,7 @@ class Benchmark:
                         "semantic_divergence": chosen["sem"],
                         "margin": chosen["margin"],
                         "score_after": chosen["score_after"],
-                        "notes": [],
+                        "notes": list(sample.get("notes") or []),
                     }
                 )
             rows.append(row)
@@ -1360,10 +1395,27 @@ def aggregate_minimal(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if r.get("level") is not None:
             usage[r["level"]] = usage.get(r["level"], 0) + 1
     n = len(evaluated)
+    # Excluded samples arrive as rows with no verdict and zero attempts; their
+    # notes carry the excluded_reason (plus any sample-level notes such as
+    # duplicate-generation warnings).
+    excluded = [r for r in rows if r.get("cleared") is None and (r.get("attempts") or 0) == 0]
+    excluded_reasons: dict[str, int] = {}
+    for r in excluded:
+        for note in r.get("notes") or []:
+            excluded_reasons[str(note)] = excluded_reasons.get(str(note), 0) + 1
+    n_duplicate_generations = sum(
+        1
+        for r in rows
+        for note in (r.get("notes") or [])
+        if str(note).startswith("identical watermarked generation")
+    )
     return {
         "n_samples": n,
         "n_cleared": len(cleared),
         "clear_rate": round(len(cleared) / n, 4) if n else None,
+        "n_excluded": len(excluded),
+        "excluded_reasons": excluded_reasons or None,
+        "n_duplicate_generations": n_duplicate_generations,
         "mean_min_level": round(_mean(levels), 4) if levels else None,
         "median_min_level": round(statistics.median(levels), 4) if levels else None,
         "mean_min_semantic_divergence": round(_mean(sems), 4) if sems else None,
@@ -1500,7 +1552,13 @@ def render_markdown_minimal(
         f"- Rewrite level range: {config['rewrite_level_start']} → {config['rewrite_level_max']} "
         f"by {config['rewrite_level_step']} ({config['level_attempts']} attempts/level)"
     )
-    L.append(f"- Semantic model: {config.get('semantic_model') or 'not configured'}")
+    sem_config = config.get("semantic_model") or "not configured"
+    sem_seen = any(r.get("semantic_divergence") is not None for r in rows)
+    if config.get("semantic_available"):
+        sem_status = "available" if sem_seen else "loaded; no semantic divergences recorded"
+    else:
+        sem_status = f"UNAVAILABLE -- {config.get('semantic_reason') or 'unknown'}"
+    L.append(f"- Semantic model: {sem_config} ({sem_status})")
     L.append("")
     L.append("## Methodology")
     L.append("")
@@ -1514,12 +1572,21 @@ def render_markdown_minimal(
         "divergence are recorded. Samples that never clear are excluded from the "
         "divergence average but counted in the clear rate."
     )
+    if config.get("target_margin"):
+        L.append("")
+        L.append(
+            f"A rewrite only counts as cleared when its after-score sits at least "
+            f"{config['target_margin']:.4f} points below the detection threshold "
+            "(--target-margin), so a hair-thin crossing is not a robust removal."
+        )
     L.append("")
     L.append("## Results (across samples)")
     L.append("")
     L.append("| Metric | Value |")
     L.append("| --- | --- |")
     L.append(f"| Samples evaluated | {agg['n_samples']} |")
+    L.append(f"| Samples excluded (sanity gate / generation) | {agg.get('n_excluded', 0)} |")
+    L.append(f"| Identical generations across seeds | {agg.get('n_duplicate_generations', 0)} |")
     L.append(f"| Cleared | {agg['n_cleared']} |")
     L.append(f"| Clear rate | {_fmt(agg['clear_rate'])} |")
     L.append(f"| Mean minimal level | {_fmt(agg['mean_min_level'])} |")
@@ -1752,6 +1819,12 @@ def build_parser() -> argparse.ArgumentParser:
         "None and the report renders '—').",
     )
     p.add_argument(
+        "--require-semantic",
+        action="store_true",
+        help="Fail fast (exit 2) when the semantic backend is unavailable "
+        "instead of running a lexical-only benchmark.",
+    )
+    p.add_argument(
         "--cost-per-mtok-in", type=float, default=0.0, help="USD per million input tokens"
     )
     p.add_argument(
@@ -1763,6 +1836,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not use the persistent MarkLLM serve worker (one-shot subprocesses)",
     )
     return p
+
+
+def _semantic_startup_probe(bench: Benchmark, semantic_model: str, require: bool) -> int | None:
+    """Probe the semantic backend at startup; return an exit code or None.
+
+    Semantic divergence is the quality axis of a default-level decision, so a
+    missing backend must be loud: report the real cause immediately instead of
+    emitting hours of '—' rows, and fail fast under --require-semantic.
+    """
+    if not semantic_model:
+        return None
+    if bench.semantic.available():
+        eprint(f"semantic backend: ready ({semantic_model})")
+        return None
+    eprint(
+        f"warning: semantic backend unavailable ({semantic_model}): "
+        f"{bench.semantic.reason() or 'unknown'} - all semantic divergences will be None"
+    )
+    if require:
+        eprint("error: --require-semantic passed but the semantic backend is unavailable")
+        return 2
+    return None
 
 
 def main() -> int:
@@ -1789,6 +1884,9 @@ def main() -> int:
     if not bench.corpus:
         eprint("error: empty corpus")
         return 2
+    probe = _semantic_startup_probe(bench, args.semantic_model, args.require_semantic)
+    if probe is not None:
+        return probe
 
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1825,6 +1923,8 @@ def main() -> int:
         "level_attempts": args.level_attempts,
         "target_margin": args.target_margin,
         "semantic_model": args.semantic_model,
+        "semantic_available": bool(bench.semantic.available()),
+        "semantic_reason": bench.semantic.reason(),
         "command": " ".join(
             [
                 "python3 service/scripts/bench_synthid_text.py",
@@ -1970,6 +2070,8 @@ def main() -> int:
         print("minimal rewrite level (across samples)")
         print("-" * 40)
         print(f"  samples evaluated : {agg['n_samples']}")
+        print(f"  excluded          : {agg.get('n_excluded', 0)}")
+        print(f"  duplicate gen     : {agg.get('n_duplicate_generations', 0)}")
         print(f"  cleared           : {agg['n_cleared']}")
         print(f"  clear rate        : {_fmt(agg['clear_rate'])}")
         print(f"  mean minimal level: {_fmt(agg['mean_min_level'])}")

@@ -85,6 +85,7 @@ def test_lightweight_skill_has_no_template_placeholders():
 def test_lightweight_skill_includes_required_references():
     assert (SKILL / "references" / "watermark-notes.md").is_file()
     assert (SKILL / "references" / "writing-in-your-voice.md").is_file()
+    assert (SKILL / "references" / "detectors.md").is_file()
 
 
 def _run_installer(home: Path, *args: str, check: bool = True):
@@ -132,13 +133,20 @@ def test_installer_force_creates_backup_and_replaces(tmp_path):
     assert (destination / "SKILL.md").is_file()
 
 
-def test_vendored_text_unicode_is_identical_to_service_engine():
-    # The Layer A engine is vendored byte-for-byte; only the CLI wrappers
-    # (clean_text.py, inspect_text.py, common.py) may differ. Any engine
-    # change must be applied to both copies in the same commit.
-    service = (ROOT / "service" / "scripts" / "text_unicode.py").read_bytes()
-    vendored = (SKILL / "scripts" / "text_unicode.py").read_bytes()
-    assert service == vendored
+def test_vendored_scripts_are_identical_to_service():
+    # The Layer A engine, its CLI wrappers, and the stylometry estimator are
+    # vendored byte-for-byte from service/scripts. Any change to one side must
+    # be applied to both copies in the same commit.
+    for name in (
+        "common.py",
+        "clean_text.py",
+        "inspect_text.py",
+        "score_stylometry.py",
+        "text_unicode.py",
+    ):
+        service = (ROOT / "service" / "scripts" / name).read_bytes()
+        vendored = (SKILL / "scripts" / name).read_bytes()
+        assert service == vendored, name
 
 
 def test_lightweight_preserves_legitimate_bidi_and_emoji_glue():
@@ -180,3 +188,69 @@ def test_lightweight_preserves_egyptian_format_controls():
         check=True,
     )
     assert result.stdout.rstrip("\n") == "ab"
+
+
+_AI_FLAVORED_TEXT = (
+    "Moreover, the team delves into the complexities of the current landscape. "
+    "Furthermore, the report underscores the importance of the proposal. "
+    "The book serves as a testament to the author's vision. "
+    "This rich tapestry highlights the most important details. "
+    "A myriad of options are available to the users. "
+    "In conclusion, the project harnesses the power of the data. "
+    "It navigates the intricacies of the issue. "
+    "Ultimately, the results are promising and clear. "
+    "Seamlessly integrating the new features improves the product. "
+    "It fosters a sense of purpose among the team. "
+    "The result plays a crucial role in the outcome. "
+    "A paradigm shift reshapes the industry today. "
+    "A holistic approach guides the whole process. "
+    "We delve into each aspect with care. "
+    "It is important to note that the data is useful."
+)
+
+_HUMAN_LIKE_TEXT = (
+    "The cat sat by the window. "
+    "Our street got quiet after the bakery closed in 2019. "
+    "When my grandmother was young she moved to the city and worked at the "
+    "hospital for thirty years, then came home to run the garden with her sister. "
+    "Birds eat seeds from the feeder. "
+    "The bus stops twice each morning."
+)
+
+
+def test_lightweight_stylometry_flags_ai_cadence():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SKILL / "scripts" / "inspect_text.py"),
+            "-",
+            "--stylometry",
+            "--json",
+        ],
+        input=_AI_FLAVORED_TEXT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1  # score at or above the default 0.65 threshold
+    styl = json.loads(result.stdout)["stylometry"]
+    assert styl["score"] >= 0.65
+    assert styl["confidence_level"] in {"MEDIUM", "HIGH"}
+    assert any("AI cadence phrase" in finding for finding in styl["findings"])
+
+
+def test_lightweight_stylometry_passes_plain_varied_prose():
+    result = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "score_stylometry.py"), "-", "--json"],
+        input=_HUMAN_LIKE_TEXT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    )
+    report = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert report["score"] < 0.65
+    assert report["ai_ngram_density"] == 0.0
+    assert report["status"] == "ok"

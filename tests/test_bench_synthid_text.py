@@ -33,6 +33,18 @@ DETECT_POS = {"available": True, "is_watermarked": True, "score": 2.0}
 DETECT_NEG = {"available": True, "is_watermarked": False, "score": -1.0}
 
 
+@pytest.fixture(autouse=True)
+def _clean_rewrite_env(monkeypatch):
+    """Parser defaults read ambient WATERMARKS_* vars; keep the suite hermetic."""
+    for var in (
+        "WATERMARKS_REWRITE_BASE_URL",
+        "WATERMARKS_REWRITE_MODEL",
+        "WATERMARKS_REWRITE_ALLOW_REMOTE",
+        "WATERMARKS_REWRITE_REASONING_EFFORT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _args(**overrides):
     values = dict(
         markllm_dir="fake-markllm",
@@ -1038,3 +1050,138 @@ def test_aggregate_minimal_means_and_usage():
     assert agg["mean_min_lexical_divergence"] == pytest.approx(0.4, rel=1e-4)
     assert agg["mean_min_margin"] == pytest.approx(1.2, rel=1e-4)  # (0.9 + 1.5) / 2
     assert agg["level_usage"] == [(0.2, 1), (0.6, 1)]
+
+
+def test_aggregate_minimal_reports_exclusions_and_duplicates():
+    rows = [
+        {
+            "cleared": True,
+            "level": 0.2,
+            "semantic_divergence": 0.1,
+            "lexical_divergence": 0.3,
+            "margin": 0.9,
+            "attempts": 3,
+            "notes": [
+                "identical watermarked generation as seed 1 (seed may not be applied; sanity risk)"
+            ],
+        },
+        {
+            "cleared": None,
+            "level": None,
+            "semantic_divergence": None,
+            "lexical_divergence": None,
+            "attempts": 0,
+            "notes": ["watermarked sample not detected (sanity gate)"],
+        },
+        {
+            "cleared": None,
+            "level": 1.0,
+            "semantic_divergence": None,
+            "lexical_divergence": None,
+            "attempts": 12,
+            "notes": ["detection unavailable; not verified"],
+        },
+    ]
+    agg = bench.aggregate_minimal(rows)
+    assert agg["n_excluded"] == 1
+    assert agg["excluded_reasons"] == {"watermarked sample not detected (sanity gate)": 1}
+    assert agg["n_duplicate_generations"] == 1
+
+
+def test_generate_samples_flags_identical_generations(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, seeds=2)
+    same_text = (
+        "watermarked identical sample text for every seed, long enough to pass "
+        "the fifty character gate and also fully detected as watermarked"
+    )
+
+    def _same(prompt_path, seed, out_dir):
+        return {
+            "watermarked": same_text,
+            "unwatermarked": "plain sample text",
+            "watermarked_chars": len(same_text),
+            "unwatermarked_chars": 18,
+            "payload": {},
+        }
+
+    monkeypatch.setattr(b, "watermark_sample", _same)
+    samples = b.generate_samples(tmp_path / "work")
+    assert len(samples) == 2
+    dup_notes = [n for s in samples for n in s["notes"] if "identical watermarked generation" in n]
+    assert len(dup_notes) == 1
+
+
+class _StubSemantic:
+    def __init__(self, available=False, reason="sentence-transformers unavailable: no module"):
+        self._available = available
+        self._reason = reason
+
+    def available(self):
+        return self._available
+
+    def reason(self):
+        return self._reason
+
+
+class _StubBench:
+    def __init__(self, available=False):
+        self.semantic = _StubSemantic(available=available)
+        self.corpus = [("d1", "prompt")]
+
+
+def test_semantic_probe_fails_fast_on_unavailable(capsys):
+    code = bench._semantic_startup_probe(_StubBench(), "all-MiniLM-L6-v2", require=True)
+    assert code == 2
+    assert "semantic backend unavailable" in capsys.readouterr().err
+
+
+def test_semantic_probe_warns_but_continues(capsys):
+    code = bench._semantic_startup_probe(_StubBench(), "all-MiniLM-L6-v2", require=False)
+    assert code is None
+    assert "semantic backend unavailable" in capsys.readouterr().err
+
+
+def test_semantic_probe_ready(capsys):
+    code = bench._semantic_startup_probe(_StubBench(available=True), "all-MiniLM-L6-v2", False)
+    assert code is None
+    assert "semantic backend: ready" in capsys.readouterr().err
+
+
+def test_render_minimal_reports_semantic_status_and_exclusions():
+    config = {
+        "tag": "t",
+        "timestamp": "now",
+        "repo_commit": "abc",
+        "markllm_commit": "def",
+        "markllm_model": "opt-1.3b",
+        "corpus": "corpus",
+        "docs": 1,
+        "seeds": 1,
+        "rewrite_level_start": 0.1,
+        "rewrite_level_step": 0.1,
+        "rewrite_level_max": 1.0,
+        "level_attempts": 3,
+        "target_margin": 0.05,
+        "semantic_model": "all-MiniLM-L6-v2",
+        "semantic_available": False,
+        "semantic_reason": "sentence-transformers unavailable: no module",
+        "command": "cmd",
+    }
+    rows = [
+        {
+            "doc": "d1",
+            "seed": 1,
+            "cleared": None,
+            "level": None,
+            "semantic_divergence": None,
+            "lexical_divergence": None,
+            "attempts": 0,
+            "notes": ["watermarked sample not detected (sanity gate)"],
+        }
+    ]
+    agg = bench.aggregate_minimal(rows)
+    md = bench.render_markdown_minimal(config, [], rows, agg)
+    assert "UNAVAILABLE -- sentence-transformers unavailable: no module" in md
+    assert "| Samples excluded (sanity gate / generation) | 1 |" in md
+    assert "| Identical generations across seeds | 0 |" in md
+    assert "0.0500 points below the detection threshold" in md

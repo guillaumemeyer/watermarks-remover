@@ -72,7 +72,7 @@ def scan_file(
         if check_stylometry and text:
             s_rep = score_text_stylometry(text, path=name)
             item["stylometry"] = s_rep.to_dict()
-            if s_rep.score >= 0.65:
+            if s_rep.status == "ok" and (s_rep.score or 0.0) >= 0.65:
                 item["findings"].append(
                     f"stylometry [high_probability] score {s_rep.score:.2f} ({s_rep.confidence_level})"
                 )
@@ -134,7 +134,7 @@ def scan_file(
         if text:
             s_rep = score_text_stylometry(text, path=name)
             stylometry_dict = s_rep.to_dict()
-            if s_rep.score >= 0.65:
+            if s_rep.status == "ok" and (s_rep.score or 0.0) >= 0.65:
                 findings.append(
                     f"stylometry [high_probability] score {s_rep.score:.2f} ({s_rep.confidence_level})"
                 )
@@ -292,6 +292,10 @@ def format_sarif(report: dict[str, Any]) -> dict[str, Any]:
             elif conf == "informational":
                 level = "note"
 
+            artifact_loc: dict[str, str] = {"uri": rel_uri}
+            if not rel_uri.lower().startswith(("http://", "https://")):
+                artifact_loc["uriBaseId"] = "%SRCROOT%"
+
             results.append(
                 {
                     "ruleId": rule_id,
@@ -300,10 +304,7 @@ def format_sarif(report: dict[str, Any]) -> dict[str, Any]:
                     "locations": [
                         {
                             "physicalLocation": {
-                                "artifactLocation": {
-                                    "uri": rel_uri,
-                                    "uriBaseId": "%SRCROOT%",
-                                }
+                                "artifactLocation": artifact_loc,
                             }
                         }
                     ],

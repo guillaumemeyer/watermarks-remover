@@ -24,6 +24,7 @@ commit, with its traceback invisible outside pre-commit's verbose mode.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -31,12 +32,41 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import EXIT_PARTIAL, eprint, result_has_changes, subprocess_creationflags
+from common import (
+    EXIT_PARTIAL,
+    MAX_INPUT_BYTES,
+    eprint,
+    result_has_changes,
+    subprocess_creationflags,
+)
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
 
+def _file_digest(path: Path) -> bytes | None:
+    """Compute the SHA-256 digest of *path* incrementally in 64 KiB chunks."""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.digest()
+    except OSError:
+        return None
+
+
+def _is_modifying_action(action: str) -> bool:
+    """Return True if an action message indicates a real modification rather than filler/warning."""
+    a = action.strip().lower()
+    if a.startswith("no ") or a.startswith("warning:") or a.startswith("c2patool available"):
+        return False
+    if a.startswith("deep image pass not needed") or a.startswith("kept "):
+        return False
+    return not (" skipped" in a or " failed" in a)
+
+
 def _changed(result: dict) -> bool:
+    """Determine whether a clean_file.py JSON report indicates content was modified."""
     return result_has_changes(result)
 
 
@@ -56,10 +86,20 @@ def _failure_detail(proc: subprocess.CompletedProcess[str], summary: str) -> str
 
 
 def _clean_one(path: Path) -> tuple[str, str]:
-    """Returns ('changed' | 'unchanged' | 'skipped' | 'failed', detail).
+    """Clean a single file in place and report its outcome.
 
+    Returns ('changed' | 'unchanged' | 'skipped' | 'failed', detail).
     *detail* explains a 'failed' status and is empty for every other status.
     """
+    try:
+        if path.stat().st_size > MAX_INPUT_BYTES:
+            eprint(f"skipping {path}: larger than {MAX_INPUT_BYTES} bytes")
+            return "skipped", ""
+    except OSError:
+        pass
+
+    before_digest = _file_digest(path)
+
     proc = subprocess.run(
         [sys.executable, str(CLEAN_FILE_PY), str(path), "--in-place", "--json"],
         capture_output=True,
@@ -82,11 +122,18 @@ def _clean_one(path: Path) -> tuple[str, str]:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return "failed", _failure_detail(proc, "clean_file.py wrote an unparsable report")
-    status = "changed" if _changed(result) else "unchanged"
+
+    after_digest = _file_digest(path)
+
+    if before_digest is not None and after_digest is not None:
+        status = "changed" if before_digest != after_digest else "unchanged"
+    else:
+        status = "changed" if _changed(result) else "unchanged"
     return status, ""
 
 
 def main() -> int:
+    """Run in-place cleaning across all given staged file paths."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "paths", nargs="+", type=Path, help="Files to clean in place (e.g. staged files)"

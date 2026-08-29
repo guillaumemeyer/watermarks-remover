@@ -424,6 +424,11 @@ curl -s -X POST http://127.0.0.1:8765/clean -H 'Content-Type: application/json' 
   -d "{\"file\": \"$(base64 < /tmp/sample.txt | tr -d '\n')\", \"name\": \"sample.txt\"}"
 ```
 
+Languages whose typography relies on a non-breaking space (French `« … »`, the
+space before `; : ! ?`) should pass `"options": {"normalize_spaces": false}`, the
+HTTP equivalent of `clean_text.py --no-normalize-spaces`. Invisible carriers are
+still removed; only the space rewrite is skipped.
+
 Everything else is optional and lives in a `.env` file at the repo root. `docker compose` **auto-loads `.env`** and interpolates the `${VAR}` references in `compose.yaml` from it (shell exports win over `.env` if both are set).
 
 ```bash
@@ -1198,6 +1203,8 @@ make smoke                          # quick CLI smoke on fixtures
 - Docs: voice-preserving rewrite guidance and protecting voice/accessibility choices; Ecosystem additions (ClaudeWatermarks, unmark-web) and a note discouraging look-alike names; arXiv 2402.14904 reference; Windows auto-start guide via Task Scheduler; portable base64 in curl examples; pin the vendored Cursor-skill text engine to the service copy (#96)
 
 ### Unreleased
+
+- Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
 
 ### [v0.5.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.5.0) — service & Docker distribution, HTTP API, and verification harnesses
 

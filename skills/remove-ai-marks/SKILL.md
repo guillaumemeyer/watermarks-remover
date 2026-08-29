@@ -89,7 +89,7 @@ clients.
 
 `options` accepted by `/clean`: `nfkc`, `aggressive_homoglyphs` (text),
 `keep_non_ai_metadata`, `strip_all_metadata`, `remove_pixel` (`ctrlregen` |
-`diffusion`) (images), `also_layer_a_text` (containers), `deep_images`
+`diffusion`) (images and video), `also_layer_a_text` (containers), `deep_images`
 (`auto` | `always` | `lossless` | `never`, PDF: how hard to chase metadata
 carried inside embedded images; anything else is rejected), `detect_before` / `detect_after` (text and
 images: run watermark detection on the input and on the cleaned output,
@@ -301,7 +301,7 @@ Always state:
 
 - What Layer A / container clean **verifiably** removed (counts, actions) — from `report`.
 - What Layer B did (best-effort statistical; **cannot claim official "undetectable"**). Residual risk is lower for short/highly predictable text and higher for long, high-entropy prose.
-- Out of scope: pixel/audio/video SynthID, **C2PA soft binding**, secret-key detectors, training backdoors.
+- Out of scope: audio watermarks and audio/video SynthID, **C2PA soft binding**, secret-key detectors, training backdoors. Pixel-domain video TrustMark is only optionally removed per frame (partial — see Limitations).
 - Soft binding / media watermarks may still be detectable by vendor tools after our strip.
 - Prefer writing `*.cleaned.*` unless user asked in-place.
 - Ethics one-liner: own content / no compliance theater.
@@ -326,7 +326,7 @@ Always state:
   is lossless in practice for those codecs but not byte-for-byte. Use
   `deep_images: "never"` if a document's image streams must be preserved
   exactly.
-- Pixel-domain **image** watermarks can be removed optionally via the external CtrlRegen backend (`remove_pixel: ctrlregen`) or MarkDiffusion's DiffusionPurification (`remove_pixel: diffusion`); both are heavy, drift the image, and need the backend present (`/capabilities`). Audio/video watermarks remain out of scope.
+- Pixel-domain **image** watermarks can be removed optionally via the external CtrlRegen backend (`remove_pixel: ctrlregen`) or MarkDiffusion's DiffusionPurification (`remove_pixel: diffusion`); both are heavy, drift the image, and need the backend present (`/capabilities`). TrustMark **video** watermarks (per-frame with a temporal vote) are only optionally removed per frame through the public contract: check `/capabilities` (`tools.ffmpeg` and `pixel_backends.ctrlregen`/`diffusion`), then POST `/clean` on an `.mp4`/`.mov` with `options.remove_pixel` = `ctrlregen`\|`diffusion`. It is partial, re-encodes the video, and is not vendor-detector-verified. **Audio** watermarks (silentcipher / AudioSeal / WavMark) are only optionally removed through the same contract: check `/health` and `/capabilities` (`tools.ffmpeg`), then POST `/clean` on an audio name (`.wav`/`.mp3`/`.flac`) with `options.remove_audio_watermark` = true. This applies a destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) that changes the audio's pitch/tempo/quality/duration, returns bytes in an **M4A (AAC)** container regardless of the input container, and is not vendor-detector-verified.
 - The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; not an official Google detector. Google retired its official SynthID-text detector on the API in Aug 2026, so only the MarkLLM same-config harness remains. Claude's detection API has been announced but is not public yet — the `claude-text` detector reports unavailable until it ships.
 - **C2PA soft binding** (content watermark that re-links to a remote manifest after metadata strip) is out of scope — stripping hard-bound C2PA does not clear it.
 - Data-driven / backdoor model marks (trigger phrases) are out of scope.

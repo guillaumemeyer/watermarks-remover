@@ -6,6 +6,7 @@
 | Stylometric AI cadence / burstiness / n-grams (zero-LLM) | Statistical variance & cadence scoring | `score_stylometry.py`, `inspect_text.py --stylometry`, `audit_dir.py --check-stylometry` | None (detection only) | Yes (calibrated score + phrase spans) |
 | Statistical text watermark (SynthID-class / Kirchenbauer) | Multi-pass paraphrase / humanize / back-translate / structural | Agent Layer B + optional `rewrite_text.py` | Meaning/style drift | No without vendor key/detector; **MarkLLM harness** (`detect_text_watermark.py`) verifies a specific scheme config before/after |
 | C2PA on PNG/JPEG/WebP/AVIF/HEIC | Drop APP11 / PNG `caBX` / RIFF `C2PA` / ISOBMFF `jumb` & `uuid` / exiftool | `clean_image.py` | Loses provenance metadata | Yes |
+| C2PA on WAV/MP3/MP4/MOV (ISOBMFF `jumb`/`c2pa`/`uuid` incl. the C2PA content-provenance `uuid` box, RIFF `C2PA`, ID3v2) | Drop the C2PA box/chunk/frame (offset-preserving `free` box in ISOBMFF) | `av_meta.py` (`clean_av`) | Loses provenance metadata | Yes (re-inspect) |
 | GIF comment/XMP extensions | Drop 0xFE / XMP application extensions (keep `NETSCAPE2.0`) | `clean_image.py` | Loses GIF comments/XMP | Yes (re-inspect) |
 | TIFF XMP/EXIF/GPS/IPTC/MakerNote (classic + BigTIFF) | Drop IFD tags, zero payloads, keep strip offsets | `clean_image.py` | Loses TIFF metadata | Yes (re-inspect) |
 | BMP trailing metadata | Truncate non-image trailing bytes, fix file-size field | `clean_image.py` | Removes appended metadata | Yes (re-inspect) |
@@ -18,7 +19,9 @@
 | Markdown AI frontmatter keys / embedded data URIs | Drop keys; clean embedded data URIs | `clean_file.py` | Loses YAML keys; cleans embedded rasters | Yes |
 | Pixel image watermark (SynthID-media / StegaStamp / Tree-Ring / StableSignature) | CtrlRegen regeneration (external backend) | `clean_ctrlregen.py` / `clean_image.py --remove-pixel ctrlregen` | Regenerates pixels; heavy compute; detail drift at higher strength | No without official detector; reverse-SynthID score is a local surrogate; **MarkDiffusion same-scheme harness** (`markdiffusion_harness.py detect`) verifies a Tree-Ring-class scheme config before/after |
 | Pixel image watermark (Tree-Ring-class) | DiffusionPurification regeneration (external MarkDiffusion backend) | `clean_image.py --remove-pixel diffusion` | Blind regeneration; more drift than CtrlRegen; heavy compute | Same-scheme only via the MarkDiffusion harness (not a vendor-detector oracle) |
-| Audio / video watermarks (SynthID-media) | — | Out of scope | — | — |
+| TrustMark video watermark (per-frame + temporal vote) | Per-frame pixel purification (CtrlRegen / DiffusionPurification) + ffmpeg demux/remux, guided by a vote-collapse frame planner | `/clean` (kind=av, `options.remove_pixel` = `ctrlregen`\|`diffusion`) | Re-encodes video (lossy); heavy compute; needs `tools.ffmpeg` + `pixel_backends` present; raises the purge count to the minimum that crosses `vote_threshold` | Model-based (`vote_threshold`); not vendor-detector-verified |
+| SynthID audio/video watermark | — | Out of scope | — | — |
+| Audio watermarks (silentcipher / AudioSeal / WavMark) | Destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) | `/clean` (kind=av, `options.remove_audio_watermark` = true) | Alters pitch/tempo/quality/duration; returns M4A/AAC; needs `tools.ffmpeg` | Not vendor-detector-verified (we do not ship silentcipher/AudioSeal/WavMark decoders) |
 | C2PA soft binding (in-content link to manifest) | — | Out of scope (survives our metadata strip) | — | Vendor detector only |
 | Data-driven model backdoors | — | Out of scope | — | — |
 

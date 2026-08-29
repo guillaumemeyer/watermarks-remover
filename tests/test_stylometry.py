@@ -13,6 +13,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from audit_lib import scan_file
 from score_stylometry import (
+    classify_density,
     compute_burstiness,
     compute_mattr,
     extract_sentences,
@@ -89,12 +90,20 @@ def test_ai_phrase_scanner():
     assert "a testament to" in matched_labels
 
 
+def test_density_tier_classification():
+    assert classify_density(None) == "uncalibrated"
+    assert classify_density(0.0) == "low"
+    assert classify_density(0.40) == "medium"
+    assert classify_density(0.65) == "high"
+    assert classify_density(0.9) == "high"
+
+
 def test_short_text_floor():
     short_text = "This is a very short text with only nine words."
     report = score_text_stylometry(short_text)
     assert report.status == "insufficient_length"
-    assert report.score == 0.0
-    assert report.confidence_level == "CLEAN"
+    assert report.score is None
+    assert report.confidence_level is None
     assert any("uncalibrated" in n for n in report.notes)
 
 
@@ -171,6 +180,33 @@ def test_inspect_text_stylometry_flag():
     data = json.loads(res.stdout)
     assert "stylometry" in data
     assert data["stylometry"]["score"] >= 0.65
+
+
+def test_report_includes_density_tier():
+    ai_sample = (FIXTURES_DIR / "stylometry_ai_sample.txt").read_text(encoding="utf-8")
+    report = score_text_stylometry(ai_sample)
+    assert report.density_tier in ("low", "medium", "high")
+    assert "density_tier" in report.to_dict()
+    assert report.to_dict()["density_tier"] == report.density_tier
+
+
+def test_inspect_text_audit_mode():
+    ai_path = FIXTURES_DIR / "stylometry_ai_sample.txt"
+    script = SCRIPTS_DIR / "inspect_text.py"
+
+    res = subprocess.run(
+        [sys.executable, str(script), str(ai_path), "--audit"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 1
+    data = json.loads(res.stdout)
+    assert data["density_tier"] == "high"
+    assert data["flagged_count"] > 0
+    stylometry_flags = [f for f in data["flagged"] if f["detector"] == "stylometry"]
+    assert stylometry_flags
+    assert all(f.get("spans") for f in stylometry_flags)
 
 
 def test_audit_lib_check_stylometry():

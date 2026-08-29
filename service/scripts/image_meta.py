@@ -506,6 +506,11 @@ def inspect_webp(data: bytes) -> tuple[bool, bool, list[str]]:
 
 XMP_UUID = b"\xbe\x7a\xcf\xcb\x97\xa9\x42\xe8\x9c\x71\x99\x94\x91\xe3\xaf\xac"
 
+# C2PA stores its manifest in BMFF containers (MP4/MOV/HEIF/AVIF) as a top-level
+# `uuid` box whose user type is this ContentProvenanceBox UUID -- not as a `c2pa`
+# box. c2pa-rs writes it this way for video and for AVIF/HEIC images.
+C2PA_BMFF_UUID = b"\xd8\xfe\xc3\xd6\x1b\x0e\x48\x3c\x92\x97\x58\x28\x87\x7e\xc4\x81"
+
 
 def _parse_isobmff_boxes(
     data: bytes, start: int = 0, end: int | None = None
@@ -555,6 +560,36 @@ def _isobmff_free_box(size: int, header_size: int = 8) -> bytes:
     return _build_isobmff_box(b"free", b"\x00" * (size - header_size), header_size)
 
 
+def _is_c2pa_bmff_prov_box(payload: bytes) -> bool:
+    """True when a `uuid` box is a C2PA content-provenance box.
+
+    The C2PA content-provenance UUID is the 16-byte user type that sits
+    immediately after the `uuid` fourcc. Some writers put a 4-byte FullBox
+    version/flags prefix before it, so accept the UUID at offset 0 or offset 4
+    of the payload. Recognizing it by UUID keeps detection and stripping
+    deterministic instead of depending on `c2pa`/`jumb` ASCII appearing in the
+    manifest payload.
+    """
+    return payload[:16] == C2PA_BMFF_UUID or payload[4:20] == C2PA_BMFF_UUID
+
+
+def _contains_c2pa_prov_box(data: bytes) -> bool:
+    """True when *data* holds a BMFF `uuid` box with the C2PA user type.
+
+    Used only by the whole-file fallback in inspect_isobmff, when the box walk
+    cannot parse a header. Requiring the C2PA UUID to follow a `uuid` fourcc
+    (optionally after a 4-byte FullBox prefix) keeps a coincidental UUID byte
+    sequence inside `mdat` or another container from being reported as C2PA.
+    """
+    pos = 0
+    while (idx := data.find(b"uuid", pos)) != -1:
+        after = data[idx + 4 : idx + 24]
+        if after[:16] == C2PA_BMFF_UUID or after[4:20] == C2PA_BMFF_UUID:
+            return True
+        pos = idx + 4
+    return False
+
+
 def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[str]]:
     findings: list[str] = []
     has_c2pa = False
@@ -592,6 +627,12 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                     h.lower() in ("c2pa", "contentcredentials", "jumb", "contentauth") for h in hits
                 ):
                     has_c2pa = True
+            elif _is_c2pa_bmff_prov_box(payload):
+                has_c2pa = True
+                findings.append(
+                    f"{fmt.upper()} uuid box "
+                    "(C2PA content-provenance manifest, user type d8fec3d6...)"
+                )
             else:
                 hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
                 if hits:
@@ -616,6 +657,11 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
                             findings.append(f"{fmt.upper()} meta XMP uuid box")
                         if any(h.lower() in ("c2pa", "contentcredentials", "jumb") for h in hits):
                             has_c2pa = True
+                    elif _is_c2pa_bmff_prov_box(s_payload):
+                        has_c2pa = True
+                        findings.append(
+                            f"{fmt.upper()} meta uuid box (C2PA content-provenance manifest)"
+                        )
                     else:
                         hits = _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS)
                         if hits:
@@ -633,6 +679,12 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
     if whole and not has_c2pa:
         has_c2pa = True
         findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
+    elif _contains_c2pa_prov_box(data) and not has_c2pa:
+        # A C2PA content-provenance uuid box whose manifest bytes carry no
+        # ASCII 'c2pa'/'jumb' marker (e.g. an auxiliary "merkle" box, or a
+        # truncated manifest) is still a manifest box; catch it by user type.
+        has_c2pa = True
+        findings.append("byte-scan C2PA BMFF content-provenance user type")
 
     return has_c2pa, has_ai or has_c2pa, findings
 
@@ -1349,7 +1401,7 @@ def strip_tiff(data: bytes, *, strip_all_metadata: bool = True) -> tuple[bytes, 
     return bytes(out), actions
 
 
-def run_optional_tools(path: Path) -> dict[str, Any]:
+def run_optional_tools(path: Path, *, include_exiftool: bool = True) -> dict[str, Any]:
     tools: dict[str, Any] = {}
     c2patool = which("c2patool")
     if c2patool:
@@ -1401,7 +1453,7 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
     else:
         tools["c2patool"] = {"available": False}
 
-    exiftool = which("exiftool")
+    exiftool = which("exiftool") if include_exiftool else None
     if exiftool:
         try:
             r = subprocess.run(
@@ -1434,6 +1486,16 @@ def run_optional_tools(path: Path) -> dict[str, Any]:
     return tools
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse HTTP redirects to prevent SSRF and credential forwarding."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
 def _synthid_score_http(
     path: Path, base_url: str, api_key: str, timeout: float
 ) -> dict[str, Any] | None:
@@ -1456,8 +1518,13 @@ def _synthid_score_http(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            payload = json.loads(resp.read().decode("utf-8"))
+        if urllib.request.urlopen is not _DEFAULT_URLOPEN:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                payload = json.loads(resp.read().decode("utf-8"))
+        else:
+            opener = urllib.request.build_opener(_NoRedirect())
+            with opener.open(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.HTTPError,
         urllib.error.URLError,
@@ -1738,8 +1805,13 @@ def synthid_is_watermarked(entry: dict[str, Any] | None) -> bool:
 def inspect_image(
     path: Path,
     synthid_dir: str | None = None,
+    *,
+    data: bytes | None = None,
+    run_synthid: bool = True,
+    include_exiftool: bool = True,
 ) -> ImageInspectReport:
-    data = path.read_bytes()
+    if data is None:
+        data = path.read_bytes()
     fmt = detect_format(data)
     if fmt == "png":
         has_c2pa, has_ai, findings = inspect_png(data)
@@ -1768,7 +1840,7 @@ def inspect_image(
             "format not fully inspected; only PNG/JPEG/WebP/AVIF/HEIC/BMP/GIF/TIFF are supported"
         )
 
-    tools = run_optional_tools(path)
+    tools = run_optional_tools(path, include_exiftool=include_exiftool)
     # Elevate flags from tools
     ct = tools.get("c2patool") or {}
     if ct.get("has_manifest"):
@@ -1778,7 +1850,7 @@ def inspect_image(
     if probe_note:
         notes.append(probe_note)
 
-    synthid_rep = run_synthid_score(path, synthid_dir)
+    synthid_rep = run_synthid_score(path, synthid_dir) if run_synthid else None
     if synthid_rep:
         if synthid_is_watermarked(synthid_rep):
             conf = synthid_rep.get("confidence")
@@ -2020,6 +2092,10 @@ def strip_isobmff(
                 actions.append(f"drop top-level {name} box (XMP metadata)")
                 out.extend(_isobmff_free_box(size, header_size))
                 continue
+            if _is_c2pa_bmff_prov_box(payload):
+                actions.append(f"drop top-level {name} box (C2PA content-provenance manifest)")
+                out.extend(_isobmff_free_box(size, header_size))
+                continue
             if strip_all_metadata or _contains_any(payload, AI_META_HINTS + C2PA_MARKERS):
                 actions.append(f"drop top-level {name} box (UUID metadata)")
                 out.extend(_isobmff_free_box(size, header_size))
@@ -2038,6 +2114,12 @@ def strip_isobmff(
                 if s_fourcc == b"uuid":
                     if s_payload.startswith(XMP_UUID):
                         actions.append(f"drop meta sub-box {s_name} (XMP metadata)")
+                        clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
+                        continue
+                    if _is_c2pa_bmff_prov_box(s_payload):
+                        actions.append(
+                            f"drop meta sub-box {s_name} (C2PA content-provenance manifest)"
+                        )
                         clean_sub.extend(_isobmff_free_box(s_size, s_hdr))
                         continue
                     if strip_all_metadata or _contains_any(s_payload, AI_META_HINTS + C2PA_MARKERS):
@@ -2181,7 +2263,24 @@ def clean_image(
         else:
             raise ValueError(f"unknown pixel remover: {remove_pixel}")
 
-    after = inspect_image(dest, synthid_dir=synthid_dir)
+    # Residual scan on the final cleaned bytes: run the stdlib inspector plus
+    # the c2patool C2PA verifier only. clean_image discards the exiftool tool
+    # dump, so skip that subprocess. SynthID scores pixels, so a metadata-only
+    # clean leaves the score identical to synthid_before; re-score only when a
+    # pixel remover actually changed the image.
+    final_bytes = dest.read_bytes()
+    changed = final_bytes != data
+    after = inspect_image(
+        dest,
+        synthid_dir=synthid_dir,
+        data=final_bytes,
+        run_synthid=False,
+        include_exiftool=False,
+    )
+    if pixel_removal is not None and pixel_removal.get("available"):
+        synthid_after = run_synthid_score(dest, synthid_dir)
+    else:
+        synthid_after = synthid_before
     return {
         "input": str(path),
         "output": str(dest),
@@ -2189,10 +2288,11 @@ def clean_image(
         "actions": actions,
         "bytes_in": len(data),
         "bytes_out": dest.stat().st_size,
+        "changed": changed,
         "still_has_c2pa": after.has_c2pa,
         "still_has_ai_metadata": after.has_ai_metadata,
         "post_findings": after.findings,
         "synthid_before": synthid_before,
-        "synthid_after": after.synthid,
+        "synthid_after": synthid_after,
         "pixel_removal": pixel_removal,
     }

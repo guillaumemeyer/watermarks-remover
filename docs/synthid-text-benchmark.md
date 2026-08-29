@@ -26,6 +26,11 @@ to enable the column:
 
     ~/MarkLLM/.venv/bin/pip install -r service/scripts/requirements-semantic.txt
 
+Model caches must be writable: set HF_HOME to a repo-local cache (e.g.
+`$ROOT/.hf-cache`, as benchmarks/benchmark-full.sh does) - a root-owned
+`~/.cache/huggingface` silently breaks both the MarkLLM model and the
+embedding model.
+
 It is `1 - cosine`, so it measures meaning drift independently of surface
 wording: lexical divergence can be high (many different words) while semantic
 divergence is low (same meaning), and vice versa.
@@ -147,6 +152,44 @@ Cost warning: with MarkLLM as the evaluator, each attempt also costs one
 MarkLLM detection — up to (candidates x loops) detections per input. The
 persistent serve worker (default) keeps the model loaded so detections are
 cheap; the --no-worker one-shot path re-loads the model per detection.
+
+Slow machines: MarkLLM SynthID generation on CPU can take ~40 min per
+sample (opt-1.3b, 2x300 tokens). The default generation timeout is 900s
+(WATERMARKS_BENCH_WATERMARK_TIMEOUT) and the resident worker's op timeout is
+600s (--markllm-timeout); on such a box raise both (e.g. 5400 / 7200) or
+samples are excluded as "watermark generation timed out" and each failed
+worker op falls back to slow one-shot subprocesses.
+
+## Choosing a default rewrite level
+
+The minimal mode measures, per sample, the smallest level whose rewrite clears
+the mark. A default rewrite level should then be chosen by how the pipeline
+uses it:
+
+- **Adaptive pipeline (recommended):** default the *starting* level to the
+  typical minimal level and escalate by 0.1 on failure. Use the median
+  (commonly 0.3) as the start, cap escalation at your content-churn budget,
+  and require a margin floor (--target-margin, e.g. 0.02-0.05) so a
+  hair-thin threshold crossing does not count as a robust removal. Escalation
+  is what makes the tail (samples needing 0.7-0.8) reachable at all.
+- **Fixed single-shot level:** pick a coverage quantile, not the mean of
+  minimal levels. In the 10-doc/3-seed deepseek-v4-flash run the coverage
+  curve was roughly 62% at 0.3 (median), 71% at 0.4, 81% at 0.5 and 100% at
+  0.8, while measured lexical divergence stayed ~0.5-0.7 across levels (the
+  level is a prompt, not a contract). 0.5 is the usual compromise: it covers
+  the bulk at near-equal measured churn; the remaining ~20% needs 0.7-0.8 and
+  should go through the adaptive path instead of being the default.
+- **Never default to 0.8+:** it buys only the last ~20% of samples at the
+  highest measured divergence.
+- **Quality claims need semantic divergence.** Lexical divergence reacts
+  mostly to the rewrite model, not the level. Install
+  sentence-transformers (above), and rerun with a margin arm if a report
+  shows all '—' in the sem div column: a semantic-less minimal run cannot
+  rank levels by meaning drift.
+- **Report admission, not just clears.** Sanity-gate exclusions
+  (watermarked sample not detected) can silently eat 10-15% of the sample
+  set; the report now shows exclusion counts and duplicate-generation
+  warnings so a default is not tuned on a biased subset.
 
 Cost modeling: --cost-per-mtok-in 0.30 --cost-per-mtok-out 1.20 (example
 prices) attaches an estimated USD figure per row; token counts are

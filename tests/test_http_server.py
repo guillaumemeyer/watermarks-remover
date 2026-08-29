@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import re
 import struct
 import sys
 import threading
@@ -40,6 +41,30 @@ def _watermarked_png() -> bytes:
         + _png_chunk(b"IDAT", idat)
         + _png_chunk(b"IEND", b"")
     )
+
+
+def _isobmff_box(fourcc: bytes, payload: bytes) -> bytes:
+    return struct.pack(">I", len(payload) + 8) + fourcc + payload
+
+
+def _minimal_mp4() -> bytes:
+    """A minimal structurally-valid MP4: ftyp + mdat (classifies as AV)."""
+    ftyp = _isobmff_box(b"ftyp", b"isom" + struct.pack(">I", 0) + b"isomiso2mp41")
+    mdat = _isobmff_box(b"mdat", b"\x00" * 24)
+    return ftyp + mdat
+
+
+def _riff_chunk(cid: bytes, payload: bytes) -> bytes:
+    pad = b"\x00" if len(payload) & 1 else b""
+    return cid + struct.pack("<I", len(payload)) + payload + pad
+
+
+def _minimal_wav() -> bytes:
+    """A minimal mono 8-bit PCM WAV (classifies as AV/audio)."""
+    samples = bytes([128] * 200)
+    fmt = struct.pack("<HHIIHH", 1, 1, 8000, 8000, 1, 8)
+    body = b"WAVE" + _riff_chunk(b"fmt ", fmt) + _riff_chunk(b"data", samples)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def _b64(data: bytes) -> str:
@@ -88,7 +113,7 @@ def test_health(conn):
 def test_capabilities(conn):
     status, body = _get(conn, "/capabilities")
     assert status == 200
-    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ghostscript"}
+    assert set(body["tools"]) == {"c2patool", "exiftool", "qpdf", "ghostscript", "ffmpeg"}
     assert "pixel_backends" in body
     assert "scorers" in body
     assert "harnesses" in body
@@ -175,6 +200,51 @@ def test_clean_markdown_container(conn):
     assert body["report"]["format"] == "markdown"
 
 
+def test_clean_av_honors_remove_pixel(conn, monkeypatch):
+    # No purification backend is configured in the test env, so remove_pixel on
+    # the AV path must be accepted and reported as unavailable (not silently
+    # ignored), while the metadata strip still runs.
+    for var in ("NOAI_WATERMARK_DIR", "MARKDIFFUSION_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    data = _minimal_mp4()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.mp4", "options": {"remove_pixel": "ctrlregen"}},
+    )
+    assert status == 200
+    assert body["kind"] == "av"
+    assert body["report"]["pixel_removal"]["available"] is False
+    assert any("video purification" in a for a in body["report"]["actions"])
+    # The cleaned payload length must match the reported bytes_out.
+    assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
+
+
+def test_clean_av_honors_remove_audio_watermark(conn):
+    data = _minimal_wav()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.wav", "options": {"remove_audio_watermark": True}},
+    )
+    assert status == 200
+    assert body["kind"] == "av"
+    assert "audio_mark_removal" in body["report"]
+    assert "available" in body["report"]["audio_mark_removal"]
+    assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
+
+
+def test_clean_av_rejects_invalid_remove_pixel(conn):
+    data = _minimal_mp4()
+    status, body = _post(
+        conn,
+        "/clean",
+        {"file": _b64(data), "name": "clip.mp4", "options": {"remove_pixel": "bogus"}},
+    )
+    assert status == 400
+    assert "remove_pixel" in body["error"]
+
+
 def test_unknown_option_rejected(conn):
     status, body = _post(
         conn, "/clean", {"file": _b64(b"x"), "name": "x.txt", "options": {"nope": 1}}
@@ -219,6 +289,7 @@ def test_known_deep_images_modes_accepted(conn):
         ("also_layer_a_text", {}, "boolean"),
         ("strip_all_metadata", [], "boolean"),
         ("remove_pixel", False, "string"),
+        ("remove_audio_watermark", "false", "boolean"),
     ],
 )
 def test_option_wrong_type_rejected(conn, key, value, type_name):
@@ -428,3 +499,20 @@ def test_clean_extensionless_svg_container_post_inspection(conn):
     assert body["kind"] == "container"
     assert body["report"]["format"] == "svg"
     assert body["report"]["still_has_c2pa"] is False
+
+
+def test_log_message_includes_readable_timestamp(monkeypatch):
+    """Request logs are prefixed with local time plus UTC offset."""
+    lines: list[str] = []
+    monkeypatch.setattr(server, "eprint", lines.append)
+    monkeypatch.setattr(server.Handler, "address_string", lambda self: "127.0.0.1")
+
+    handler = server.Handler.__new__(server.Handler)
+    handler.log_message('"%s" %s -', "GET /health HTTP/1.1", 200)
+
+    assert len(lines) == 1
+    assert re.match(
+        r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}\] 127\.0\.0\.1 - ",
+        lines[0],
+    )
+    assert lines[0].endswith('"GET /health HTTP/1.1" 200 -')

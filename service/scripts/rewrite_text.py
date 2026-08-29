@@ -398,15 +398,19 @@ def call_openai_compatible(
     return str(content).strip()
 
 
-def _candidate_pass(evaluation: dict, target_margin: float) -> tuple[bool | None, float | None]:
+def _candidate_pass(
+    evaluation: dict, target_margin: float
+) -> tuple[bool | None, float | None, float | None]:
     """Judge a detection report against a score-margin objective.
 
-    Returns (passed, margin). ``passed`` is True when the detector reports the
-    text not-watermarked AND its score sits at least ``target_margin`` below the
-    threshold; False when still watermarked; None when no verdict is available
-    (fail-soft) or when the margin floor is not met. ``margin`` = threshold -
-    score, or None when either field is missing OR the threshold is not a
-    score-scale cutoff.
+    Returns (passed, margin, raw_margin). ``passed`` is True when the detector
+    reports the text not-watermarked AND its score sits at least ``target_margin``
+    below the threshold; False when still watermarked; None when no verdict is
+    available (fail-soft) or when the margin floor is not met. ``margin`` =
+    round(threshold - score, 4), or None when either field is missing OR the
+    threshold is not a score-scale cutoff. ``raw_margin`` is the unrounded
+    margin, or None in the same cases where ``margin`` is None; it lets ranking
+    compare candidates without the loss from rounding to four decimals.
 
     Some detectors (keyed-Gumbel) report a *p-value* threshold that does not
     scale with their ``score``, so ``threshold - score`` is meaningless; a
@@ -415,27 +419,41 @@ def _candidate_pass(evaluation: dict, target_margin: float) -> tuple[bool | None
     """
     verdict = evaluation.get("is_watermarked")
     if verdict is None:
-        return None, None
+        return None, None, None
     score = evaluation.get("score")
     threshold = evaluation.get("threshold")
     margin = None
+    raw_margin = None
     if isinstance(score, (int, float)) and isinstance(threshold, (int, float)):
-        margin = round(float(threshold) - float(score), 4)
+        raw_margin = float(threshold) - float(score)
+        margin = round(raw_margin, 4)
     if verdict is True:
-        return False, margin
+        return False, margin, raw_margin
     # Not watermarked. If the threshold is not a score-scale cutoff it cannot
     # express a margin, so fall back to a clean pass (no margin floor).
-    if margin is not None and margin < 0:
+    if raw_margin is not None and raw_margin < 0:
         margin = None
-    met = margin is not None and margin >= target_margin - 1e-9
-    if margin is None or met:
-        return True, margin
-    return None, margin
+        raw_margin = None
+    met = raw_margin is not None and raw_margin >= target_margin - 1e-9
+    if raw_margin is None or met:
+        return True, margin, raw_margin
+    return None, margin, raw_margin
 
 
-def _margin_of(rec: dict) -> float:
-    m = rec.get("margin")
-    return m if m is not None else -float("inf")
+def _margin_of(rec: dict) -> tuple[float, float, float]:
+    # Rank by the unrounded margin first: the telemetry margin is rounded to
+    # four decimals, so two candidates can share that rounded value while
+    # differing in the raw margin (e.g. 0.12343 vs 0.12344 both round to
+    # 0.1234). Preserve the p-value and lexical-divergence tie-breakers.
+    raw = rec.get("raw_margin")
+    raw_val = float(raw) if raw is not None else -float("inf")
+    # For evaluators that report p_value (e.g. Keyed-Gumbel), lower p_value indicates a safer pass
+    eval_rec = rec.get("evaluation") or {}
+    pval = eval_rec.get("p_value")
+    neg_pval = -float(pval) if isinstance(pval, (int, float)) else -float("inf")
+    # Secondary tiebreaker: prefer less divergence
+    div = -float(rec.get("lexical_divergence", 0.0))
+    return (raw_val, neg_pval, div)
 
 
 def rewrite(
@@ -472,6 +490,8 @@ def rewrite(
         "backend": backend,
         "strength": strength,
         "rewrite_level": rewrite_level,
+        "target_margin": target_margin,
+        "selection": selection,
         "model": model,
         "base_url": base_url,
         "temperature": temperature,
@@ -588,7 +608,7 @@ def rewrite(
                 }
             else:
                 evaluation = _safe_detect(evaluator, cand)
-            passed_i, margin = _candidate_pass(evaluation, target_margin)
+            passed_i, margin, raw_margin = _candidate_pass(evaluation, target_margin)
             score = evaluation.get("score")
             threshold = evaluation.get("threshold")
             attempts.append(
@@ -605,6 +625,7 @@ def rewrite(
                         if isinstance(threshold, (int, float))
                         else None,
                         "margin": margin,
+                        "raw_margin": raw_margin,
                         "selected": False,
                         "passed": passed_i,
                         "evaluation": evaluation,
