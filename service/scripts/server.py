@@ -778,10 +778,7 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
     treating one boolean as a unified provenance judgment.
     """
     detectors = report.get("text_detectors") or []
-    detected_wm = any(
-        entry.get("available") and entry.get("is_watermarked")
-        for entry in detectors
-    )
+    detected_wm = any(entry.get("available") and entry.get("is_watermarked") for entry in detectors)
     stylometry = report.get("stylometry") or {}
     styl_score = stylometry.get("score") or 0.0
     styl_present = stylometry.get("status") == "ok" and styl_score >= 0.65
