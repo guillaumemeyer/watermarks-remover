@@ -238,6 +238,39 @@ def test_clean_av_honors_remove_audio_watermark(conn):
     assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
 
 
+def test_clean_av_m4a_reencode_dest_distinct_from_container_clean(conn, monkeypatch):
+    """An .m4a input must not reuse the container-clean dest for the re-encode.
+
+    The AV branch derives the container-clean dest as ``out<ext>`` (so ``.m4a``
+    gives ``out.m4a``). If the audio chain re-used the same name, ffmpeg would
+    refuse to edit its input in place and silently skip the chain. This stubs
+    ``audio_purify`` so the regression is independent of whether ffmpeg is on
+    the runner.
+    """
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_purify(src: Path, dest: Path) -> dict:
+        calls.append((src, dest))
+        return {"available": False, "error": "spy: ffmpeg unavailable"}
+
+    monkeypatch.setattr(server, "audio_purify", fake_purify)
+    monkeypatch.setattr(server, "media_has_video", lambda path: False)
+
+    status, _ = _post(
+        conn,
+        "/clean",
+        {
+            "file": _b64(_minimal_mp4()),
+            "name": "audio.m4a",
+            "options": {"remove_audio_watermark": True},
+        },
+    )
+    assert status == 200
+    assert len(calls) == 1, "audio_purify should run once for an .m4a audio item"
+    src, dest = calls[0]
+    assert src != dest, "re-encode dest must be distinct from the container-clean dest"
+
+
 def test_clean_av_rejects_invalid_remove_pixel(conn):
     data = _minimal_mp4()
     status, body = _post(

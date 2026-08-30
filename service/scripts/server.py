@@ -987,7 +987,12 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             definitely_audio = is_audio_format(result.get("format", ""))
             is_audio = definitely_audio or (is_audio_name(name) and media_has_video(src) is False)
             if is_audio and options.get("remove_audio_watermark"):
-                audio_dest = _tmp_path(tmpdir, "out.m4a")
+                # The container-clean dest above is "out" + the input suffix, so an
+                # .m4a input made both paths "out.m4a". ffmpeg refuses to edit a file
+                # in place, which silently skipped the chain while /clean still 200'd,
+                # so keep the re-encode dest literally distinct (an input suffix can
+                # never be "-audio.m4a").
+                audio_dest = _tmp_path(tmpdir, "out-audio.m4a")
                 audio_res = audio_purify(dest, audio_dest)
                 result["audio_mark_removal"] = audio_res
                 if audio_res.get("available"):
