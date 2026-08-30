@@ -95,6 +95,26 @@ bench-synthid-text:
 	  echo "run: $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --rewrite-model <model> --rewrite-backend <backend>"; \
 	fi
 
+# Full recipe-search benchmark: all strengths, robust margin, re-stamp control,
+# semantic axis required. Use a non-watermarked rewrite backend.
+bench-full:
+	@if [ -z "$(MARKLLM_DIR)" ]; then \
+	  echo "bench-full skipped (set MARKLLM_DIR; see docs/synthid-text-benchmark.md)"; \
+	else \
+	  echo "run: $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode recipe --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL)"; \
+	fi
+
+# Install the semantic-divergence dependency into the MarkLLM venv and run with a
+# writable HF cache, so the sem-div column is never a silent '—'.
+bench-semantic:
+	@if [ -z "$(MARKLLM_DIR)" ]; then \
+	  echo "bench-semantic skipped (set MARKLLM_DIR)"; \
+	else \
+	  mkdir -p $(CURDIR)/.hf-cache && \
+	  $$HOME/MarkLLM/.venv/bin/pip install -r $(SCRIPTS)/requirements-semantic.txt && \
+	  HF_HOME=$(CURDIR)/.hf-cache $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --require-semantic --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL); \
+	fi
+
 bootstrap-markdiffusion:
 	./service/scripts/setup_markdiffusion.sh
 
