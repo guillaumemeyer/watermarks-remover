@@ -327,6 +327,11 @@ def test_inspect_unknown_format_reports_kind(conn):
     assert status == 200
     assert body["kind"] == "unknown"
     assert body["suspicious"]["verdict"] is False
+    # No stylometry is computed for a non-text asset, so its signals are null
+    # rather than omitted; the OpenAPI schema must permit that.
+    styl = body["suspicious"]["classes"]["stylometry"]
+    assert styl["signals"]["score"] is None
+    assert styl["signals"]["density_tier"] is None
     assert "note" in body["report"]
 
 

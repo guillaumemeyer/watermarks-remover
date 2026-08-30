@@ -235,6 +235,7 @@ def _suspicious_schema() -> dict[str, Any]:
     """OpenAPI schema for the structured `suspicious` evidence object."""
 
     def cls(name: str, strength: str, signals: dict[str, Any]) -> dict[str, Any]:
+        """Build the schema for one evidence class."""
         return _schema(
             type="object",
             properties={
@@ -285,8 +286,9 @@ def _suspicious_schema() -> dict[str, Any]:
                         "stylometry",
                         "heuristic",
                         {
-                            "score": _schema(type="number"),
-                            "density_tier": _schema(type="string"),
+                            # Non-text assets have no stylometry, so these are null.
+                            "score": _schema(type="number", nullable=True),
+                            "density_tier": _schema(type="string", nullable=True),
                         },
                     ),
                 },
@@ -829,6 +831,7 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]:
+    """Inspect a file and return findings plus a structured suspicious report."""
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
         return {
