@@ -11,6 +11,7 @@ import sys
 import threading
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -269,6 +270,40 @@ def test_clean_av_m4a_reencode_dest_distinct_from_container_clean(conn, monkeypa
     assert len(calls) == 1, "audio_purify should run once for an .m4a audio item"
     src, dest = calls[0]
     assert src != dest, "re-encode dest must be distinct from the container-clean dest"
+
+
+def test_clean_av_m4a_success_uses_reencode_dest_output(conn, monkeypatch):
+    """A successful purify run must become the returned report and cleaned bytes.
+
+    The success path re-points the handler at the re-encode dest: after the
+    chain writes its output there, `bytes_out`/`cleaned` must reflect that file,
+    not the earlier container-clean output.
+    """
+    out_bytes = _minimal_mp4()
+
+    def fake_purify(src: Path, dest: Path) -> dict:
+        dest.write_bytes(out_bytes)
+        return {"available": True, "tempo": 1.08, "pitch_semitones": 2.0, "codec": "aac"}
+
+    after = SimpleNamespace(has_c2pa=False, has_ai_metadata=False, findings=[], format="mp4")
+    monkeypatch.setattr(server, "audio_purify", fake_purify)
+    monkeypatch.setattr(server, "media_has_video", lambda path: False)
+    monkeypatch.setattr(server, "inspect_av", lambda path: after)
+
+    status, body = _post(
+        conn,
+        "/clean",
+        {
+            "file": _b64(_minimal_mp4()),
+            "name": "audio.m4a",
+            "options": {"remove_audio_watermark": True},
+        },
+    )
+    assert status == 200
+    assert body["report"]["audio_mark_removal"]["available"] is True
+    assert any("destructive audio watermark chain" in a for a in body["report"]["actions"])
+    assert body["report"]["bytes_out"] == len(out_bytes)
+    assert base64.b64decode(body["cleaned"]) == out_bytes
 
 
 def test_clean_av_rejects_invalid_remove_pixel(conn):
