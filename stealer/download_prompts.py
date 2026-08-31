@@ -91,6 +91,8 @@ def fetch_rows_retrying(
             last = exc
             if exc.code in (400, 401, 403, 404):
                 raise
+            if attempt + 1 >= attempts:
+                break
             delay = _retry_after(exc.headers.get("Retry-After")) if exc.headers else 0.0
             if delay <= 0:
                 delay = min(max_delay, base_delay * (2.0**attempt) + random.uniform(0, 0.5))  # noqa: S311
@@ -98,6 +100,8 @@ def fetch_rows_retrying(
             time.sleep(delay)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             last = exc
+            if attempt + 1 >= attempts:
+                break
             delay = min(max_delay, base_delay * (2.0**attempt) + random.uniform(0, 0.5))  # noqa: S311
             print(f"  {exc}; retry in {delay:.1f}s", file=sys.stderr)
             time.sleep(delay)
@@ -105,6 +109,8 @@ def fetch_rows_retrying(
 
 
 def load_state(state_path):
+    """Return the persisted resume cursor ``(next_offset, written)``, or ``(0, 0)``."""
+
     if state_path.exists():
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
@@ -115,12 +121,15 @@ def load_state(state_path):
 
 
 def save_state(state_path, next_offset, written):
+    """Persist the resume cursor as JSON."""
+
     state_path.write_text(
         json.dumps({"next_offset": next_offset, "written": written}), encoding="utf-8"
     )
 
 
 def main(argv=None) -> int:
+    """Fetch pages and append prompts until ``--count`` is reached, checkpointing per page."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", default=DEFAULT_DATASET, help="HF dataset id")
     p.add_argument("--config", default=DEFAULT_CONFIG, help="dataset config (subset)")
@@ -165,8 +174,11 @@ def main(argv=None) -> int:
         f"({args.count} prompts) -> {prompts_path}"
     )
 
+    committed_offset, committed_written = offset, written
+    committed_bytes = 0
     try:
         with prompts_path.open("a", encoding="utf-8") as fh:
+            committed_bytes = fh.tell()
             while written < args.count:
                 rows = fetch_rows_retrying(
                     args.base_url,
@@ -181,6 +193,7 @@ def main(argv=None) -> int:
                 if not items:
                     print("  no more rows", file=sys.stderr)
                     break
+                batch: list[str] = []
                 for item in items:
                     if written >= args.count:
                         break
@@ -191,17 +204,32 @@ def main(argv=None) -> int:
                         continue
                     if args.max_chars and len(text) > args.max_chars:
                         text = text[: args.max_chars]
-                    fh.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+                    batch.append(json.dumps({"text": text}, ensure_ascii=False) + "\n")
                     written += 1
+                for line in batch:
+                    fh.write(line)
                 fh.flush()
                 offset += len(items)
                 save_state(state_path, offset, written)
+                committed_offset, committed_written, committed_bytes = offset, written, fh.tell()
                 if written % 1000 < page_size or written >= args.count:
                     print(f"  {written}/{args.count} prompts")
                 time.sleep(args.delay)
     except KeyboardInterrupt:
-        print("\ninterrupted; state saved, resume with --start-over off", file=sys.stderr)
+        # Roll back any page written this round so a resume cannot duplicate rows
+        # while the persisted cursor still points at the previous page boundary.
+        if committed_bytes:
+            try:
+                with prompts_path.open("r+b") as rf:
+                    rf.truncate(committed_bytes)
+            except OSError:
+                pass
+        offset, written = committed_offset, committed_written
         save_state(state_path, offset, written)
+        print(
+            "\ninterrupted; rolled back to the last complete page; resume with --start-over off",
+            file=sys.stderr,
+        )
         return 130
 
     if written >= args.count:

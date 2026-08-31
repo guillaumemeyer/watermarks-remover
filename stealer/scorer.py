@@ -20,6 +20,17 @@ def _prob(count: int, total: int, vocab: int, alpha: float) -> float:
     return (count + alpha) / max(total + alpha * max(vocab, 1), 1.0)
 
 
+def context_key(context) -> str:
+    """Collision-free key for a context token tuple.
+
+    A JSON array keeps token boundaries unambiguous even when a tokenizer emits
+    whitespace-containing tokens: ``("a b", "c")`` and ``("a", "b c")`` no longer
+    serialize to the same key.
+    """
+
+    return json.dumps(list(context), ensure_ascii=False, separators=(",", ":"))
+
+
 def build_scorer(
     wm,
     base,
@@ -45,6 +56,7 @@ def build_scorer(
     base_map, base_totals, base_unis = base
     wm_vocab = max(len(wm_unis), 1)
     base_vocab = max(len(base_unis), 1)
+    base_uni_total = sum(base_unis.values()) or 1
     eps = 1e-6
 
     scorer: dict[str, list[dict[str, float]]] = {}
@@ -54,7 +66,6 @@ def build_scorer(
         context_total = wm_totals[context]
         base_total = base_totals.get(context, 0)
         base_bucket = base_map.get(context)
-        base_uni_total = sum(base_unis.values()) or 1
         scored: list[tuple[str, float]] = []
         for tok, cnt in bucket.items():
             p_wm = _prob(cnt, context_total, wm_vocab, alpha)
@@ -66,7 +77,7 @@ def build_scorer(
         scored.sort(key=lambda item: item[1], reverse=True)
         top = scored[:topk]
         if top:
-            scorer[" ".join(context)] = [
+            scorer[context_key(context)] = [
                 {"token": tok, "score": round(score, 5)} for tok, score in top
             ]
 
@@ -83,6 +94,8 @@ def build_scorer(
 
 
 def load_scorer(path) -> dict:
+    """Load a saved ``s*`` JSON table from disk."""
+
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
@@ -98,7 +111,7 @@ def score_sequence(scorer: dict, tokens: list[str], context_len: int) -> dict:
     total = 0.0
     applied = 0
     for i in range(context_len, len(tokens)):
-        context = " ".join(tokens[i - context_len : i])
+        context = context_key(tokens[i - context_len : i])
         tok = tokens[i]
         entry = table.get(context)
         if not entry:
@@ -121,7 +134,7 @@ def apply_delta(
     in the context's stored top-k have a nonzero ``s*``; the rest are unchanged.
     """
 
-    entry = scorer.get("scorer", {}).get(" ".join(context), [])
+    entry = scorer.get("scorer", {}).get(context_key(context), [])
     by_token = {item["token"]: item["score"] for item in entry}
     adjusted = dict(logits)
     for tok in adjusted:

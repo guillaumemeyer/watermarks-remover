@@ -15,7 +15,7 @@ estimator, not the true green set — see [the honest-use caveats](#honest-use).
 
 ## Layout
 
-```
+```text
 stealer/
   download_prompts.py   fetch a prompt corpus (default 30k C4 RealNewsLike)
   tokens.py             tokenizer + (context, next-token) counting
@@ -103,13 +103,14 @@ WATERMARKS_STEAL_BASE_URL=<url> WATERMARKS_STEAL_MODEL=<baseline-model> \
   --out stealer/baseline.jsonl
 ```
 
-`query` reads the same env vars the rest of the repo uses for the rewrite
-backend (`WATERMARKS_REWRITE_*`) and mirrors them:
+`query` reads these vars from the environment.  They mirror the repo's
+`WATERMARKS_REWRITE_*` naming under their own `WATERMARKS_STEAL_*` prefix, so the
+rewrite backend's settings never leak into a steal run:
 
 | Env var | Flag | Meaning |
 | --- | --- | --- |
 | `WATERMARKS_STEAL_BASE_URL` | `--base-url` | OpenAI-compatible base (default `https://api.openai.com/v1`) |
-| `WATERMARKS_STEAL_API_KEY` | `--api-key` | Key — env only, never on argv; empty = disable remote |
+| `WATERMARKS_STEAL_API_KEY` | — | Key — read from the environment only, never on argv |
 | `WATERMARKS_STEAL_MODEL` | `--model` | Model this run queries (target on run 1, baseline on run 2) |
 | `WATERMARKS_STEAL_ALLOW_REMOTE=1` | `--allow-remote` | Required to hit a non-loopback endpoint |
 
@@ -123,8 +124,9 @@ unigram statistics.
 `download_prompts.py` uses the Hugging Face datasets-server `rows` API
 (`allenai/c4`, config `realnewslike`), so it needs only the stdlib.  It applies
 `--min-chars` / `--max-chars` filtering, writes `prompts.jsonl` line-buffered,
-and checkpoints its offset in `prompts/.download-state.json` so a big run can be
-paused and resumed without re-fetching pages.
+and checkpoints after each complete page in `prompts/.download-state.json`, so a
+big run can be paused and resumed without duplicating or dropping rows — an
+interrupted page is rolled back to the last committed boundary.
 
 C4 RealNewsLike is news-article prose, not literally prompts; the module treats
 each passage as a query you send to the model.

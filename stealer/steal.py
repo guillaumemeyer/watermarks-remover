@@ -47,20 +47,27 @@ def read_corpus(path: Path, field: str = "text") -> list[str]:
 
 
 def read_replies(path: Path) -> list[str]:
+    """Read a JSONL reply corpus (the ``reply`` field of each row)."""
+
     return read_corpus(path, field="reply")
 
 
 def write_replies(path: Path, rows: list[dict]):
+    """Append prompt/reply rows to a JSONL file."""
+
     with path.open("a", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _dry_reply(prompt: str) -> str:
+    """Deterministic placeholder reply so the pipeline runs without a model."""
+
     return DRY_REPLY_HEAD + prompt[:200]
 
 
 def _openai_reply(prompt: str, base_url: str, api_key: str, model: str, max_new_tokens: int) -> str:
+    """Send one prompt to an OpenAI-compatible chat endpoint and return the text."""
     url = base_url.rstrip("/") + "/chat/completions"
     payload = json.dumps(
         {
@@ -86,12 +93,14 @@ def _openai_reply(prompt: str, base_url: str, api_key: str, model: str, max_new_
 
 
 def cmd_query(args) -> int:
+    """Query the configured target (or baseline) model and collect replies."""
+
     prompts = read_corpus(Path(args.prompts))
     if args.backend == "dry-run":
         reply_fn = _dry_reply
     else:
         base_url = os.environ.get("WATERMARKS_STEAL_BASE_URL", args.base_url) or args.base_url
-        api_key = os.environ.get("WATERMARKS_STEAL_API_KEY", args.api_key) or args.api_key
+        api_key = os.environ.get("WATERMARKS_STEAL_API_KEY")
         model = os.environ.get("WATERMARKS_STEAL_MODEL", args.model) or args.model
         allow_remote = (
             os.environ.get("WATERMARKS_STEAL_ALLOW_REMOTE", "0") == "1" or args.allow_remote
@@ -131,6 +140,8 @@ def cmd_query(args) -> int:
 
 
 def cmd_build(args) -> int:
+    """Derive the stolen scorer ``s*`` from replies and an optional baseline."""
+
     replies = read_replies(Path(args.replies))
     baseline = read_replies(Path(args.baseline)) if args.baseline else []
     if not replies:
@@ -155,8 +166,10 @@ def cmd_build(args) -> int:
 
 
 def cmd_detect(args) -> int:
+    """Score a candidate text against a saved ``s*`` table."""
+
     scorer = scorer_mod.load_scorer(Path(args.s_star))
-    ctx = int(scorer.get("config", {}).get("context_len", args.ctx))
+    ctx = int(args.ctx) if args.ctx else int(scorer.get("config", {}).get("context_len") or 8)
     text = args.text if args.text is not None else Path(args.file).read_text(encoding="utf-8")
     tokens = default_tokenize(text)
     result = scorer_mod.score_sequence(scorer, tokens, ctx)
@@ -167,6 +180,8 @@ def cmd_detect(args) -> int:
 
 
 def main(argv=None) -> int:
+    """CLI entry point: dispatch query / build / detect subcommands."""
+
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -175,7 +190,6 @@ def main(argv=None) -> int:
     q.add_argument("--out", required=True, help="JSONL of prompt/reply rows")
     q.add_argument("--backend", default="dry-run", choices=["dry-run", "openai-compatible"])
     q.add_argument("--base-url", default="https://api.openai.com/v1")
-    q.add_argument("--api-key", default=None, help="key (env WATERMARKS_STEAL_API_KEY preferred)")
     q.add_argument("--model", default=None, help="model (env WATERMARKS_STEAL_MODEL preferred)")
     q.add_argument("--max-new-tokens", type=int, default=512)
     q.add_argument("--concurrency", type=int, default=1)
