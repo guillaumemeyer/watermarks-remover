@@ -2208,8 +2208,15 @@ def render_markdown(
     )
     L.append("")
     L.append(
-        "**Human ↓:** AI-likeness under the configured human-likeness backend "
-        f"({config.get('human_backend', 'stylometry')}); lower = more human. "
+        "**AI-likeness ↓:** the configured human-likeness backend "
+        f"({config.get('human_backend', 'stylometry')}"
+        + (
+            f", using {config.get('human_backend_used')}"
+            if config.get("human_backend_used")
+            else ""
+        )
+        + (f" - {config.get('human_backend_reason')}" if config.get("human_backend_reason") else "")
+        + "); lower = more human. "
         "**AUROC ↓:** post-removal AUROC (rewritten-watermarked vs rewritten-plain "
         "scores); closer to 0.5 = the rewritten population is less separable "
         "(more removal). **noop:** rewrites that returned ≈ their input (see "
@@ -2410,6 +2417,7 @@ def render_markdown_recipe(
             if config.get("human_backend_used")
             else ""
         )
+        + (f" - {config.get('human_backend_reason')}" if config.get("human_backend_reason") else "")
     )
     L.append(f"- Semantic model: {config.get('semantic_model') or 'not configured'}")
     L.append("")
@@ -3059,6 +3067,11 @@ def main() -> int:
             rows = bench.run_variants(samples, workdir)
     finally:
         bench.close_worker()
+
+    # Scoring is done; reflect any backend fallback (e.g. Pangram -> stylometry)
+    # that happened while measuring, so the report labels the scores correctly.
+    config["human_backend_used"] = bench.human.backend_used
+    config["human_backend_reason"] = bench.human.reason()
 
     if args.mode == "minimal":
         agg = aggregate_minimal(rows)

@@ -1681,6 +1681,7 @@ def test_human_likeness_pangram_bulk_failed_falls_back(monkeypatch):
     # A job-level "failed" raises, so score_many degrades to stylometry.
     assert h.backend_used == "stylometry"
     assert scores == [None]  # short text -> stylometry uncalibrated
+    assert h.reason() and "failed" in h.reason()  # reason persisted for the report
 
 
 def test_human_likeness_pangram_model_fallback_resolved(monkeypatch):
