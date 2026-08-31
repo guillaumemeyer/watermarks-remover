@@ -1909,7 +1909,7 @@ class Benchmark:
                         {
                             "doc": doc,
                             "seed": seed,
-                            "input": str(in_path.relative_to(workdir.parent)),
+                            "input": in_path.relative_to(workdir.parent).as_posix(),
                             "output": None,
                             "robust": entry.get("robust"),
                             "margin": entry.get("margin"),
@@ -1925,7 +1925,7 @@ class Benchmark:
                             "doc": doc,
                             "seed": seed,
                             "input": None,
-                            "output": str(out_path.relative_to(workdir.parent)),
+                            "output": out_path.relative_to(workdir.parent).as_posix(),
                             "robust": entry.get("robust"),
                             "margin": entry.get("margin"),
                             "sem": entry.get("sem"),
@@ -1933,7 +1933,7 @@ class Benchmark:
                         }
                     )
             cand["outputs"] = None
-            cand["output_dir"] = str(cand_dir.relative_to(workdir.parent))
+            cand["output_dir"] = cand_dir.relative_to(workdir.parent).as_posix()
             cand["output_files"] = files
             written += 1
         return written
