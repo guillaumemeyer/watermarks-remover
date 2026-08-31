@@ -2524,7 +2524,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.05,
         help="Treat a rewrite that changed fewer than this fraction of bigrams as "
-        "a no-op (excluded from the clear-rate denominator, reported as noop; "
+        "a no-op (cleared=None, so it never counts as a clear; reported as noop; "
         "default 0.05, 0 disables). Forwarded to rewrite_text.py. Mirrors the "
         "backtranslate no-op fix that keeps a near-verbatim output from being "
         "read as '0%% clear'.",
