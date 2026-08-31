@@ -7,7 +7,7 @@ benchmark:
   1. Generate a watermarked + unwatermarked corpus with a chosen MarkLLM
      scheme (same-config generation and detection; --scheme/--config).
   2. Run removal variants (Layer A only, Layer B rewrites at chosen
-     strength x max-attempt counts; the rewrite loop stops early when an
+     tactic x max-attempt counts; the rewrite loop stops early when an
      attempt passes evaluation) and control rows (no removal, optional
      re-stamp control on unwatermarked text).
   3. Measure removal efficiency and cost:
@@ -80,7 +80,7 @@ REWRITE_TIMEOUT = float(os.environ.get("WATERMARKS_REWRITE_TIMEOUT", "300"))
 def parse_variants(spec: str) -> list[tuple[str, int]]:
     """Parse a variant spec like 'paraphrase:3,backtranslate:3'.
 
-    Each item is <strength>:<candidates>; strengths come from rewrite_text.py
+    Each item is <tactic>:<candidates>; tactics come from rewrite_text.py
     (paraphrase, backtranslate, structural, humanize, code, chunk). candidates
     is the max rewrite attempts per input — the Layer B loop stops early as
     soon as an attempt passes evaluation.
@@ -92,24 +92,24 @@ def parse_variants(spec: str) -> list[tuple[str, int]]:
             continue
         parts = item.split(":")
         if len(parts) != 2:
-            raise SystemExit(f"error: bad variant {item!r}; expected <strength>:<candidates>")
-        strength, raw_c = parts
+            raise SystemExit(f"error: bad variant {item!r}; expected <tactic>:<candidates>")
+        tactic, raw_c = parts
         try:
             c = int(raw_c)
         except ValueError:
             raise SystemExit(f"error: bad candidate count in variant {item!r}") from None
         if c < 1:
             raise SystemExit(f"error: candidate count must be >= 1 in variant {item!r}")
-        variants.append((strength, c))
+        variants.append((tactic, c))
     if not variants:
         raise SystemExit("error: --variants must name at least one variant")
     return variants
 
 
-def parse_recipe(spec: str) -> list[tuple[str, float]]:
-    """Parse a recipe spec like 'chunk@0.6,paraphrase@0.3,humanize@1.0'.
+def parse_strategy(spec: str) -> list[tuple[str, float]]:
+    """Parse a strategy spec like 'chunk@0.6,paraphrase@0.3,humanize@1.0'.
 
-    Returns an ordered list of (strength, intensity) steps. Validates strength
+    Returns an ordered list of (tactic, intensity) steps. Validates tactic
     names and that intensity lies in (0,1].
     """
     steps: list[tuple[str, float]] = []
@@ -119,25 +119,30 @@ def parse_recipe(spec: str) -> list[tuple[str, float]]:
         if not item:
             continue
         if "@" not in item:
-            raise SystemExit(f"error: bad recipe step {item!r}; expected strength@intensity")
-        strength, raw_level = item.rsplit("@", 1)
-        strength = strength.strip()
+            raise SystemExit(f"error: bad strategy step {item!r}; expected tactic@intensity")
+        tactic, raw_level = item.rsplit("@", 1)
+        tactic = tactic.strip()
         try:
             level = float(raw_level)
         except ValueError:
-            raise SystemExit(f"error: bad intensity in recipe step {item!r}") from None
-        if strength not in known:
-            raise SystemExit(f"error: unknown recipe strength {strength!r}")
+            raise SystemExit(f"error: bad intensity in strategy step {item!r}") from None
+        if tactic not in known:
+            raise SystemExit(f"error: unknown strategy tactic {tactic!r}")
         if not (0 < level <= 1):
-            raise SystemExit(f"error: recipe intensity must be in (0,1], got {level} in {item!r}")
-        steps.append((strength, level))
+            raise SystemExit(f"error: strategy intensity must be in (0,1], got {level} in {item!r}")
+        steps.append((tactic, level))
     if not steps:
-        raise SystemExit("error: empty recipe")
-    if all(strength == "humanize" for strength, _ in steps):
+        raise SystemExit("error: empty strategy")
+    if all(tactic == "humanize" for tactic, _ in steps):
         raise SystemExit(
-            "error: recipe has only humanize steps; style polish is not a removal attempt"
+            "error: strategy has only humanize steps; style polish is not a removal attempt"
         )
     return steps
+
+
+def _strategy_slug(steps: list[tuple[str, float]]) -> str:
+    """Filesystem-safe slug for an ordered strategy, e.g. 'chunk@0.6+paraphrase@0.3'."""
+    return "+".join(f"{tactic}@{level:g}" for tactic, level in steps)
 
 
 def parse_float_grid(spec: str) -> list[float]:
@@ -407,7 +412,7 @@ def run_rewrite(
     backend: str,
     model: str,
     base_url: str,
-    strength: str,
+    tactic: str,
     candidates: int,
     max_loops: int,
     temperature: float,
@@ -449,8 +454,8 @@ def run_rewrite(
         model,
         "--base-url",
         base_url,
-        "--strength",
-        strength,
+        "--tactic",
+        tactic,
         "--candidates",
         str(candidates),
         "--max-loops",
@@ -1081,7 +1086,7 @@ class Benchmark:
     def rewrite(
         self,
         text: str,
-        strength: str,
+        tactic: str,
         candidates: int,
         max_loops: int = 1,
         rewrite_level: float | None = None,
@@ -1097,7 +1102,7 @@ class Benchmark:
             backend=a.rewrite_backend,
             model=a.rewrite_model,
             base_url=a.rewrite_base_url,
-            strength=strength,
+            tactic=tactic,
             candidates=candidates,
             max_loops=max_loops,
             temperature=a.rewrite_temperature,
@@ -1220,12 +1225,12 @@ class Benchmark:
             )
 
             # Layer B rewrites.
-            for strength, candidates in self.variants:
-                variant = f"rewrite-{strength}:{candidates}"
+            for tactic, candidates in self.variants:
+                variant = f"rewrite-{tactic}:{candidates}"
                 started = time.monotonic()
                 try:
                     out_text, stats = self.rewrite(
-                        wm_text, strength, candidates, target_margin=self.args.target_margin
+                        wm_text, tactic, candidates, target_margin=self.args.target_margin
                     )
                     rewrite_seconds = round(time.monotonic() - started, 3)
                 except RuntimeError as e:
@@ -1318,12 +1323,12 @@ class Benchmark:
             # positive after-detection means the backend re-stamped it (or the
             # detector false-positives post-rewrite).
             if self.args.restamp_control:
-                for strength, candidates in self.variants:
-                    variant = f"restamp-{strength}:{candidates}"
+                for tactic, candidates in self.variants:
+                    variant = f"restamp-{tactic}:{candidates}"
                     try:
                         out_text, _stats = self.rewrite(
                             sample["unwatermarked"],
-                            strength,
+                            tactic,
                             candidates,
                             target_margin=self.args.target_margin,
                         )
@@ -1640,48 +1645,67 @@ class Benchmark:
             rows.append(row)
         return rows
 
-    # -- recipe mode --------------------------------------------------------
+    # -- strategy mode --------------------------------------------------------
 
-    def compose_recipe(
+    def compose_strategy(
         self, text: str, steps: list[tuple[str, float]], target_margin: float
     ) -> tuple[str, dict[str, Any]]:
-        """Apply an ordered recipe: each (strength, intensity) step is one rewrite,
+        """Apply an ordered strategy: each (tactic, intensity) step is one rewrite,
         feeding the previous output as the next input. Returns (final_text, stats)
         where stats is the last step's rewrite stats (carrying markllm before/after)."""
         current = text
         stats: dict[str, Any] = {}
-        for _i, (strength, level) in enumerate(steps):
+        for _i, (tactic, level) in enumerate(steps):
             current, stats = self.rewrite(
-                current, strength, 1, rewrite_level=level, target_margin=target_margin
+                current, tactic, 1, rewrite_level=level, target_margin=target_margin
             )
         if self.args.layer_a_after:
             current, _layer = clean_text(current)
         return current, stats
 
-    def _eval_recipe(self, recipe: list[tuple[str, float]], samples: list[dict[str, Any]]) -> dict:
-        """Score one recipe across all non-excluded watermarked samples.
+    def _eval_strategy(self, strategy: list[tuple[str, float]], samples: list[dict[str, Any]]) -> dict:
+        """Score one strategy across all non-excluded watermarked samples.
 
         Axes: robust_clear_rate (↑), sem_div (↓), human_like (↑). A sample
-        counts only if it was detected positive before, and only if the recipe's
-        final markllm after-report is available.
+        counts only if it was detected positive before, and only if the strategy's
+        final markllm after-report is available. The return also carries
+        ``outputs``: one entry per evaluated sample with the per-sample input and
+        output text (persisted for inspection) plus that sample's doc/seed,
+        robust verdict, margin and semantic divergence.
         """
         rows_in: list[dict[str, Any]] = []
         outs: list[str] = []
         score_at: list[int] = []
+        per_sample: list[dict[str, Any]] = []
         for s in samples:
             if s.get("excluded"):
                 continue
             orig = s["watermarked"]
             if not _detect_positive(s.get("before")):
                 continue
+            entry: dict[str, Any] = {
+                "doc": s.get("doc"),
+                "seed": s.get("seed"),
+                "input": orig,
+                "output": None,
+                "robust": None,
+                "margin": None,
+                "sem": None,
+                "note": None,
+            }
             try:
-                out, stats = self.compose_recipe(orig, recipe, self.args.target_margin)
+                out, stats = self.compose_strategy(orig, strategy, self.args.target_margin)
             except RuntimeError as e:
                 rows_in.append({"robust": None, "sem": None, "human": None, "err": str(e)})
+                entry["note"] = f"rewrite failed: {e}"
+                per_sample.append(entry)
                 continue
             mk = (stats.get("markllm") or {}).get("after") if stats else None
+            entry["output"] = out
             if not (mk or {}).get("available"):
                 rows_in.append({"robust": None, "sem": None, "human": None})
+                entry["note"] = "detection unavailable"
+                per_sample.append(entry)
                 continue
             cleared = (stats.get("markllm") or {}).get("cleared")
             if cleared is None:
@@ -1692,10 +1716,14 @@ class Benchmark:
             )
             sem = self.semantic.score(orig, out) if self.semantic is not None else None
             rows_in.append({"robust": robust, "sem": sem, "human": None})
+            entry["robust"] = robust
+            entry["margin"] = margin
+            entry["sem"] = sem
+            per_sample.append(entry)
             outs.append(out)
             score_at.append(len(rows_in) - 1)
         if outs:
-            # Batch the human-likeness scoring (one Pangram bulk job per recipe).
+            # Batch the human-likeness scoring (one Pangram bulk job per strategy).
             scored = self.human.score_many(outs)
             for idx, val in zip(score_at, scored, strict=True):
                 rows_in[idx]["human"] = val
@@ -1709,6 +1737,7 @@ class Benchmark:
                 "human_like": None,
                 "n": 0,
                 "unverified": unverified,
+                "outputs": per_sample,
             }
         rob = sum(1 for r in verified if r["robust"]) / n
         sem_vals = [r["sem"] for r in verified if r.get("sem") is not None]
@@ -1719,25 +1748,26 @@ class Benchmark:
             "human_like": round(1.0 - _mean(hum_vals), 4) if hum_vals else None,
             "n": n,
             "unverified": unverified,
+            "outputs": per_sample,
         }
 
     def _scalarize(self, axis: dict, w: tuple[float, float, float]) -> float | None:
         """Scalarize an axis dict under weight vector w."""
         return _weighted_score(axis, w)
 
-    def recipe_search(self, samples: list[dict[str, Any]], workdir: Path) -> dict[str, Any]:
-        """Recipe search.
+    def strategy_search(self, samples: list[dict[str, Any]], workdir: Path) -> dict[str, Any]:
+        """Strategy search.
 
-        Phase 1 sweeps each strength's intensity grid as a single-step recipe.
+        Phase 1 sweeps each tactic's intensity grid as a single-step strategy.
         Phase 2 runs a per-weight-vector beam search that combines an *order* of
-        strengths with the top `--phase2-levels-per-strength` intensities for that
+        tactics with the top `--phase2-levels-per-tactic` intensities for that
         weight vector, so both step order and intensity are explored. The
-        recommended recipe is the point on the weight-independent Pareto frontier
+        recommended strategy is the point on the weight-independent Pareto frontier
         that best matches `--recommend-weight`; the frontier itself is unaffected
         by weights.
         """
         a = self.args
-        strengths: tuple[str, ...] = (
+        tactics: tuple[str, ...] = (
             "paraphrase",
             "backtranslate",
             "structural",
@@ -1747,55 +1777,55 @@ class Benchmark:
         grid = parse_float_grid(a.intensity_grid)
         weights = parse_weight_grid(a.weight_grid)
         recommend_w = parse_weight_vec(getattr(a, "recommend_weight", "0.5/0.3/0.2"))
-        k = max(1, int(getattr(a, "phase2_levels_per_strength", 3)))
+        k = max(1, int(getattr(a, "phase2_levels_per_tactic", 3)))
         evaluated: dict[tuple[tuple[str, float], ...], dict] = {}
         cands: list[dict] = []
 
-        def _eval(recipe: list[tuple[str, float]]) -> dict | None:
+        def _eval(strategy: list[tuple[str, float]]) -> dict | None:
             """eval."""
-            key = tuple(recipe)
+            key = tuple(strategy)
             if key in evaluated:
                 return evaluated[key]
-            axis = self._eval_recipe(recipe, samples)
-            axis["steps"] = list(recipe)
+            axis = self._eval_strategy(strategy, samples)
+            axis["steps"] = list(strategy)
             cands.append(axis)
             evaluated[key] = axis
             return axis
 
-        # Phase 1: per-strength intensity sweep (single-step recipes).
+        # Phase 1: per-tactic intensity sweep (single-step strategies).
         step_axes: dict[tuple[str, float], dict] = {}
-        for strength in strengths:
+        for tactic in tactics:
             for level in grid:
-                axis = _eval([(strength, level)])
+                axis = _eval([(tactic, level)])
                 if axis is not None:
-                    step_axes[(strength, level)] = axis
+                    step_axes[(tactic, level)] = axis
 
         # Phase 2: per-weight top-k intensity ranking + intensity x order beam search.
         for w in weights:
             topk: dict[str, list[float]] = {}
-            for strength in strengths:
+            for tactic in tactics:
                 ranked: list[tuple[float, float]] = []
                 for (s, level), axis in step_axes.items():
-                    if s != strength:
+                    if s != tactic:
                         continue
                     sc = self._scalarize(axis, w)
                     if sc is not None:
                         ranked.append((sc, level))
                 ranked.sort(key=lambda t: t[0], reverse=True)
-                topk[strength] = [level for _sc, level in ranked[:k]]
+                topk[tactic] = [level for _sc, level in ranked[:k]]
 
             beams: list[list[tuple[str, float]]] = [
-                [(s, level)] for s in strengths for level in topk[s]
+                [(s, level)] for s in tactics for level in topk[s]
             ]
             for _depth in range(1, max(1, a.max_passes)):
                 candidates_beam: list[tuple[float, list]] = []
-                for recipe in beams:
-                    used = {s for s, _lv in recipe}
-                    for strength in strengths:
-                        if strength in used:
+                for strategy in beams:
+                    used = {s for s, _lv in strategy}
+                    for tactic in tactics:
+                        if tactic in used:
                             continue
-                        for level in topk[strength]:
-                            cand = [*recipe, (strength, level)]
+                        for level in topk[tactic]:
+                            cand = [*strategy, (tactic, level)]
                             axis = _eval(cand)
                             if axis is None:
                                 continue
@@ -1811,12 +1841,12 @@ class Benchmark:
         frontier = _pareto_frontier(cands)
         recommended = _best_on_frontier(frontier, cands, recommend_w)
 
-        # Intensity curves per strength (from Phase 1 single-step recipes).
+        # Intensity curves per tactic (from Phase 1 single-step strategies).
         curves: dict[str, list] = {}
-        for strength in strengths:
+        for tactic in tactics:
             curve = []
             for c in cands:
-                if len(c.get("steps") or []) == 1 and c["steps"][0][0] == strength:
+                if len(c.get("steps") or []) == 1 and c["steps"][0][0] == tactic:
                     curve.append(
                         {
                             "level": c["steps"][0][1],
@@ -1825,15 +1855,90 @@ class Benchmark:
                             "human_like": c["human_like"],
                         }
                     )
-            curves[strength] = sorted(curve, key=lambda r: r["level"])
+            curves[tactic] = sorted(curve, key=lambda r: r["level"])
+
+        strategy_outputs_written = self._persist_strategy_outputs(cands, workdir)
 
         return {
             "candidates": cands,
             "recommended": recommended,
             "frontier": frontier,
             "intensity_curves": curves,
-            "verdict": _recipe_verdict(cands),
+            "verdict": _strategy_verdict(cands),
+            "strategy_outputs_written": strategy_outputs_written,
         }
+
+
+# --- Strategy output persistence -------------------------------------------
+
+
+    def _persist_strategy_outputs(
+        self, cands: list[dict[str, Any]], workdir: Path | None
+    ) -> int:
+        """Write each candidate's per-sample input/output text to disk for inspection.
+
+        One directory per strategy (``<workdir>/strategies/<slug>/``) holding
+        ``input_<doc>_seed<seed>.txt`` and ``output_<doc>_seed<seed>.txt``, so a
+        rewritten result sits alongside its watermarked input. Returns the number
+        of candidate directories written. After writing, the heavy per-sample
+        text is stripped from each candidate and replaced with ``output_dir`` and a
+        list of ``output_files`` ({doc, seed, path, robust, margin, sem, note}) so
+        results.json stays slim while the text stays inspectable on disk.
+        """
+        if not getattr(self.args, "write_strategy_outputs", True) or workdir is None:
+            return 0
+        strategies_dir = workdir / "strategies"
+        written = 0
+        for cand in cands:
+            steps = cand.get("steps")
+            outputs = cand.get("outputs")
+            if not steps or not outputs:
+                continue
+            slug = _strategy_slug(steps)
+            cand_dir = strategies_dir / slug
+            cand_dir.mkdir(parents=True, exist_ok=True)
+            files: list[dict[str, Any]] = []
+            for entry in outputs:
+                doc = entry.get("doc")
+                seed = entry.get("seed")
+                stem = f"{doc}_seed{seed}"
+                if entry.get("input") is not None:
+                    in_path = cand_dir / f"input_{stem}.txt"
+                    in_path.write_text(entry["input"], encoding="utf-8", errors="surrogateescape")
+                    files.append(
+                        {
+                            "doc": doc,
+                            "seed": seed,
+                            "input": str(in_path.relative_to(workdir.parent)),
+                            "output": None,
+                            "robust": entry.get("robust"),
+                            "margin": entry.get("margin"),
+                            "sem": entry.get("sem"),
+                            "note": entry.get("note"),
+                        }
+                    )
+                if entry.get("output") is not None:
+                    out_path = cand_dir / f"output_{stem}.txt"
+                    out_path.write_text(
+                        entry["output"], encoding="utf-8", errors="surrogateescape"
+                    )
+                    files.append(
+                        {
+                            "doc": doc,
+                            "seed": seed,
+                            "input": None,
+                            "output": str(out_path.relative_to(workdir.parent)),
+                            "robust": entry.get("robust"),
+                            "margin": entry.get("margin"),
+                            "sem": entry.get("sem"),
+                            "note": entry.get("note"),
+                        }
+                    )
+            cand["outputs"] = None
+            cand["output_dir"] = str(cand_dir.relative_to(workdir.parent))
+            cand["output_files"] = files
+            written += 1
+        return written
 
 
 # ---------------------------------------------------------------------------
@@ -1891,9 +1996,9 @@ def compute_auroc(
     base_neg = [_score_of(s.get("plain_detect")) for s in ok]
     base_neg = [v for v in base_neg if v is not None]
     out: dict[str, Any] = {"baseline_auroc": _auc(base_pos, base_neg), "post": {}}
-    for strength, _c in variants:
-        key = f"rewrite-{strength}:{_c}"
-        restamp_key = f"restamp-{strength}:{_c}"
+    for tactic, _c in variants:
+        key = f"rewrite-{tactic}:{_c}"
+        restamp_key = f"restamp-{tactic}:{_c}"
         pos = [
             r["score_after"]
             for r in rows
@@ -1909,10 +2014,10 @@ def compute_auroc(
 
 
 def _pareto_frontier(cands: list[dict]) -> list[dict]:
-    """Non-dominated recipes over (robust_clear_rate ↑, sem_div ↓, human_like ↑).
+    """Non-dominated strategies over (robust_clear_rate ↑, sem_div ↓, human_like ↑).
 
-    Recipes missing any of the three axes are dropped (they cannot be ranked by
-    dominance). A recipe is dominated if another is at least as good on all three
+    Strategys missing any of the three axes are dropped (they cannot be ranked by
+    dominance). A strategy is dominated if another is at least as good on all three
     and strictly better on at least one.
     """
     valid = [
@@ -1948,7 +2053,7 @@ def _pareto_frontier(cands: list[dict]) -> list[dict]:
 def _weighted_score(axis: dict[str, Any], w: tuple[float, float, float]) -> float | None:
     """Scalarize an axis dict into a single score under weight vector w.
 
-    A recipe is only scalarizable when all three axes are available; otherwise it
+    A strategy is only scalarizable when all three axes are available; otherwise it
     cannot be ranked and None is returned.
     """
     removal = axis.get("robust_clear_rate")
@@ -1962,10 +2067,10 @@ def _weighted_score(axis: dict[str, Any], w: tuple[float, float, float]) -> floa
 def _best_on_frontier(
     frontier: list[dict], cands: list[dict], w: tuple[float, float, float]
 ) -> dict | None:
-    """Pick the Pareto-frontier recipe best under weight w.
+    """Pick the Pareto-frontier strategy best under weight w.
 
     Falls back to the best candidate under w if the frontier is empty (which can
-    happen when no recipe has all three axes available).
+    happen when no strategy has all three axes available).
     """
     pool = frontier or cands
     best: dict | None = None
@@ -1979,13 +2084,13 @@ def _best_on_frontier(
     return best
 
 
-def _recipe_verdict(cands: list[dict]) -> str:
-    """Honest verdict on whether the searched recipes clear the mark.
+def _strategy_verdict(cands: list[dict]) -> str:
+    """Honest verdict on whether the searched strategies clear the mark.
 
-    'removable'    -> some recipe robustly cleared (best robust % == 1.0).
-    'partial'      -> recipes cleared partially (0 < best robust % < 1.0).
+    'removable'    -> some strategy robustly cleared (best robust % == 1.0).
+    'partial'      -> strategies cleared partially (0 < best robust % < 1.0).
     'resists'      -> nothing cleared (best robust % == 0.0).
-    'undetermined' -> no recipe was evaluable (all three axes missing).
+    'undetermined' -> no strategy was evaluable (all three axes missing).
     """
     rates = [c.get("robust_clear_rate") for c in cands if c.get("robust_clear_rate") is not None]
     if not rates:
@@ -2180,7 +2285,7 @@ def render_markdown(
         f"{config['scheme']} scheme (same config for generation and detection). "
         "Each sample must pass a sanity gate (watermarked detected, non-empty) before it "
         "counts. Rows: control (no removal), layer-a (Unicode scrub only), "
-        "rewrite-<strength>:<candidates> (Layer B rewrite), optional restamp-* "
+        "rewrite-<tactic>:<candidates> (Layer B rewrite), optional restamp-* "
         "(rewrite of the unwatermarked control to detect re-stamping)."
     )
     L.append("")
@@ -2393,16 +2498,16 @@ def render_markdown_minimal(
 
 
 def _steps_str(steps: list[tuple[str, float]]) -> str:
-    """Format recipe steps into human-readable string."""
+    """Format strategy steps into human-readable string."""
     return " → ".join(f"{s}@{level:g}" for s, level in steps)
 
 
-def render_markdown_recipe(
+def render_markdown_strategy(
     config: dict[str, Any], samples: list[dict[str, Any]], res: dict[str, Any]
 ) -> str:
-    """Render recipe search results as markdown report."""
+    """Render strategy search results as markdown report."""
     L: list[str] = []
-    L.append(f"# SynthID-text recipe search — {config['tag']}")
+    L.append(f"# SynthID-text strategy search — {config['tag']}")
     L.append("")
     L.append(f"- Date: {config['timestamp']}")
     L.append(f"- watermarks-remover commit: {config.get('repo_commit') or 'unknown'}")
@@ -2424,21 +2529,21 @@ def render_markdown_recipe(
     L.append("## Methodology")
     L.append("")
     L.append(
-        "Same-config MarkLLM SynthID samples. A recipe is an ordered list of "
-        "`strength@intensity` steps, each a Layer B rewrite with a numeric intensity "
-        "modulating that strength's prompt, applied sequentially (output feeds the "
+        "Same-config MarkLLM SynthID samples. A strategy is an ordered list of "
+        "`tactic@intensity` steps, each a Layer B rewrite with a numeric intensity "
+        "modulating that tactic's prompt, applied sequentially (output feeds the "
         "next step). "
         + (
-            "This run searched the recipe space: Phase 1 sweeps each strength's "
+            "This run searched the strategy space: Phase 1 sweeps each tactic's "
             "intensity grid; Phase 2 runs a per-weight-vector beam search that "
-            "combines an order of strengths with that weight's top intensities "
-            "(`--phase2-levels-per-strength`), so both step order and intensity are "
-            "explored. The recommended recipe is the point on the weight-independent "
+            "combines an order of tactics with that weight's top intensities "
+            "(`--phase2-levels-per-tactic`), so both step order and intensity are "
+            "explored. The recommended strategy is the point on the weight-independent "
             "Pareto frontier that best matches the configured recommend weight "
             f"(`--recommend-weight`, default {config.get('recommend_weight', '0.5/0.3/0.2')}); "
             "the frontier below is unaffected by weights."
-            if not config.get("recipes")
-            else "This run composed and scored the explicitly requested recipe."
+            if not config.get("strategies")
+            else "This run composed and scored the explicitly requested strategy."
         )
     )
     L.append("")
@@ -2449,11 +2554,11 @@ def render_markdown_recipe(
     )
     L.append("")
     rec = res.get("recommended")
-    L.append("## Recommended recipe")
+    L.append("## Recommended strategy")
     L.append("")
     if not rec:
         L.append(
-            "No single recipe had all three axes available (add `--require-semantic` / a detector)."
+            "No single strategy had all three axes available (add `--require-semantic` / a detector)."
         )
     else:
         L.append(f"- **{_steps_str(rec['steps'])}**")
@@ -2463,15 +2568,15 @@ def render_markdown_recipe(
     L.append("")
     L.append("## Verdict")
     L.append("")
-    L.append(_render_recipe_verdict(res))
+    L.append(_render_strategy_verdict(res))
     L.append("")
     L.append("## Pareto frontier (weight-independent)")
     L.append("")
     front = res.get("frontier") or []
     if not front:
-        L.append("No recipe had all three axes available; the frontier is empty.")
+        L.append("No strategy had all three axes available; the frontier is empty.")
     else:
-        L.append("| recipe | robust % | sem div | human_like ↑ |")
+        L.append("| strategy | robust % | sem div | human_like ↑ |")
         L.append("| --- | ---: | ---: | ---: |")
         for c in front:
             L.append(
@@ -2479,14 +2584,14 @@ def render_markdown_recipe(
                 f"{_fmt(c.get('sem_div'))} | {_fmt(c.get('human_like'))} |"
             )
     L.append("")
-    L.append("## Per-strength intensity curves (single-pass)")
+    L.append("## Per-tactic intensity curves (single-pass)")
     L.append("")
     curves = res.get("intensity_curves") or {}
     if not curves:
         L.append("Not produced (compose-run mode, or search did not sweep).")
     else:
-        for strength, rows in curves.items():
-            L.append(f"### {strength}")
+        for tactic, rows in curves.items():
+            L.append(f"### {tactic}")
             L.append("")
             L.append("| level | robust % | sem div | human_like ↑ |")
             L.append("| ---: | ---: | ---: | ---: |")
@@ -2501,7 +2606,7 @@ def render_markdown_recipe(
     L.append(
         "Same-config MarkLLM detection only; not Google's production SynthID-Text "
         "keying (retired from the API Aug 2026). Human-likeness and semantic "
-        "divergence are gauges, not proof of human authorship. Recipes are "
+        "divergence are gauges, not proof of human authorship. Strategys are "
         "search results on this corpus/backend; re-confirm on a larger powered run."
     )
     L.append("")
@@ -2512,38 +2617,38 @@ def render_markdown_recipe(
     return "\n".join(L) + "\n"
 
 
-def _render_recipe_verdict(res: dict[str, Any]) -> str:
+def _render_strategy_verdict(res: dict[str, Any]) -> str:
     """Render the honest 'can the mark be removed?' verdict for the report."""
     cands = res.get("candidates") or []
-    verdict = res.get("verdict") or _recipe_verdict(cands)
+    verdict = res.get("verdict") or _strategy_verdict(cands)
     rates = [c.get("robust_clear_rate") for c in cands if c.get("robust_clear_rate") is not None]
     best = _fmt(max(rates)) if rates else "n/a"
     if verdict == "removable":
         return (
-            "The searched space contains a recipe that robustly clears the mark "
-            f"(best robust % = {best}); treat the recommended recipe as the answer "
+            "The searched space contains a strategy that robustly clears the mark "
+            f"(best robust % = {best}); treat the recommended strategy as the answer "
             "to whether the mark is removable."
         )
     if verdict == "partial":
         return (
-            f"Recipes in the searched space partially clear the mark (best robust % = {best}), "
+            f"Strategys in the searched space partially clear the mark (best robust % = {best}), "
             "but none robustly clears every sample at the configured `--target-margin`."
         )
     if verdict == "resists":
         return (
-            f"No recipe in the searched space cleared the mark (best robust % = {best}). "
+            f"No strategy in the searched space cleared the mark (best robust % = {best}). "
             "At this token length the mark resists the searched attacks; a lower "
-            "`--target-margin` or a higher-aggression recipe set (more steps / higher "
-            "intensities via `--phase2-levels-per-strength`) is the next lever."
+            "`--target-margin` or a higher-aggression strategy set (more steps / higher "
+            "intensities via `--phase2-levels-per-tactic`) is the next lever."
         )
     return (
-        "Verdict undetermined: no candidate recipe had all three axes evaluated "
+        "Verdict undetermined: no candidate strategy had all three axes evaluated "
         "(add `--require-semantic` / a detector)."
     )
 
 
-def _recipe_csv(res: dict[str, Any]) -> list[str]:
-    """Export recipe search results to CSV format."""
+def _strategy_csv(res: dict[str, Any]) -> list[str]:
+    """Export strategy search results to CSV format."""
     import io
 
     front = {id(c) for c in (res.get("frontier") or [])}
@@ -2552,7 +2657,7 @@ def _recipe_csv(res: dict[str, Any]) -> list[str]:
     w = csv.writer(out)
     w.writerow(
         [
-            "recipe",
+            "strategy",
             "robust_clear_rate",
             "semantic_divergence",
             "human_like",
@@ -2666,19 +2771,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--variants",
         default="paraphrase:3",
-        help="Comma list of <strength>:<candidates> (default: paraphrase:3). "
+        help="Comma list of <tactic>:<candidates> (default: paraphrase:3). "
         "candidates = max rewrite attempts per input; the Layer B loop stops "
         "early when an attempt passes evaluation.",
     )
     p.add_argument(
         "--mode",
-        choices=("variants", "minimal", "recipe"),
+        choices=("variants", "minimal", "strategy"),
         default="variants",
-        help="variants: run named-strength rewrite variants (default). minimal: "
+        help="variants: run named-tactic rewrite variants (default). minimal: "
         "per sample, raise the numeric rewrite level (--rewrite-level-start, "
         "+--rewrite-level-step) until a rewrite is no longer watermarked, then "
-        "report the average minimal level. recipe: search (or compose-run, with "
-        "--recipes) for the best strength@intensity combination and report the "
+        "report the average minimal level. strategy: search (or compose-run, with "
+        "--strategies) for the best tactic@intensity combination and report the "
         "Pareto frontier.",
     )
     p.add_argument(
@@ -2819,7 +2924,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--intensity-grid",
         default="0.2,0.4,0.6,0.8,1.0",
-        help="Comma list of intensities swept per strength in recipe mode "
+        help="Comma list of intensities swept per tactic in strategy mode "
         "(default: 0.2,0.4,0.6,0.8,1.0)",
     )
     p.add_argument(
@@ -2831,34 +2936,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--beam", type=int, default=4, help="Composition-search beam width (default: 4)")
     p.add_argument(
-        "--max-passes", type=int, default=3, help="Max recipe steps in the search (default: 3)"
+        "--max-passes", type=int, default=3, help="Max strategy steps in the search (default: 3)"
     )
     p.add_argument(
-        "--phase2-levels-per-strength",
+        "--phase2-levels-per-tactic",
         type=int,
         default=3,
         help="Per-weight top-k intensities considered in the phase 2 beam search "
         "(default: 3). Raising this broadens the search over intensities and "
-        "aggressive multi-step recipes but costs more evals; lower it to stay "
+        "aggressive multi-step strategies but costs more evals; lower it to stay "
         "inside a tight wall-clock budget.",
     )
     p.add_argument(
         "--recommend-weight",
         default="0.5/0.3/0.2",
-        help="w_removal/w_semantic/w_human used to pick the recommended recipe "
+        help="w_removal/w_semantic/w_human used to pick the recommended strategy "
         "from the weight-independent Pareto frontier (default: 0.5/0.3/0.2).",
     )
     p.add_argument(
-        "--recipes",
+        "--write-strategy-outputs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write each evaluated strategy candidate's per-sample input/output text "
+        "under <out-dir>/work/strategies/<strategy>/ for inspection (default: on; "
+        "disable with --no-write-strategy-outputs).",
+    )
+    p.add_argument(
+        "--strategies",
         default=None,
-        help="Explicit recipe to compose-run and score (not a search), e.g. "
-        "'chunk@0.6,paraphrase@0.3,humanize@1.0'. Used with --mode recipe.",
+        help="Explicit strategy to compose-run and score (not a search), e.g. "
+        "'chunk@0.6,paraphrase@0.3,humanize@1.0'. Used with --mode strategy.",
     )
     p.add_argument(
         "--layer-a-after",
         action="store_true",
         default=False,
-        help="Re-run the Unicode scrub (/clean) on the composed recipe's final "
+        help="Re-run the Unicode scrub (/clean) on the composed strategy's final "
         "output. Default OFF: the rewrite backend is assumed watermark-safe.",
     )
     return p
@@ -2907,17 +3020,17 @@ def main() -> int:
         )
         return 2
 
-    # Fail fast on a bad recipe grid/spec and positive-value flags before
+    # Fail fast on a bad strategy grid/spec and positive-value flags before
     # constructing Benchmark, which starts MarkLLMWorker and the semantic
     # backend. A misconfigured --intensity-grid / --weight-grid / --beam /
     # --max-passes would otherwise only be rejected after the expensive setup
     # (and before the worker-cleanup path that normally runs on early returns).
-    if args.mode == "recipe":
+    if args.mode == "strategy":
         parse_float_grid(args.intensity_grid)
         parse_weight_grid(args.weight_grid)
         parse_weight_vec(args.recommend_weight)
-        if args.phase2_levels_per_strength < 1:
-            eprint("error: --phase2-levels-per-strength must be >= 1")
+        if args.phase2_levels_per_tactic < 1:
+            eprint("error: --phase2-levels-per-tactic must be >= 1")
             return 1
         if args.beam < 1:
             eprint("error: --beam must be >= 1")
@@ -2925,8 +3038,8 @@ def main() -> int:
         if args.max_passes < 1:
             eprint("error: --max-passes must be >= 1")
             return 1
-        if args.recipes:
-            parse_recipe(args.recipes)
+        if args.strategies:
+            parse_strategy(args.strategies)
 
     bench = Benchmark(args, upstream)
     if not bench.corpus:
@@ -2982,10 +3095,11 @@ def main() -> int:
         "weight_grid": args.weight_grid,
         "beam": args.beam,
         "max_passes": args.max_passes,
-        "phase2_levels_per_strength": args.phase2_levels_per_strength,
+        "phase2_levels_per_tactic": args.phase2_levels_per_tactic,
         "recommend_weight": args.recommend_weight,
-        "recipes": args.recipes,
+        "strategies": args.strategies,
         "layer_a_after": args.layer_a_after,
+        "write_strategy_outputs": args.write_strategy_outputs,
         "command": " ".join(
             [
                 "python3 service/scripts/bench_synthid_text.py",
@@ -3024,9 +3138,9 @@ def main() -> int:
                 f"--weight-grid {args.weight_grid}",
                 f"--beam {args.beam}",
                 f"--max-passes {args.max_passes}",
-                f"--phase2-levels-per-strength {args.phase2_levels_per_strength}",
+                f"--phase2-levels-per-tactic {args.phase2_levels_per_tactic}",
                 f"--recommend-weight {args.recommend_weight}",
-                *([f"--recipes {args.recipes}"] if args.recipes else []),
+                *([f"--strategies {args.strategies}"] if args.strategies else []),
                 *(["--layer-a-after"] if args.layer_a_after else []),
                 *(["--restamp-control"] if args.restamp_control else []),
                 *(["--rewrite-allow-remote"] if args.rewrite_allow_remote else []),
@@ -3046,15 +3160,15 @@ def main() -> int:
         samples = bench.generate_samples(workdir)
         if args.mode == "minimal":
             rows = bench.minimal_search(samples, workdir)
-        elif args.mode == "recipe":
+        elif args.mode == "strategy":
             rows = []
-            if args.recipes:
-                recipe = parse_recipe(args.recipes)
-                candid = bench._eval_recipe(recipe, samples)
+            if args.strategies:
+                strategy = parse_strategy(args.strategies)
+                candid = bench._eval_strategy(strategy, samples)
                 if candid.get("n", 0) == 0:
-                    eprint("error: recipe produced no evaluable samples (watermark not detected?)")
+                    eprint("error: strategy produced no evaluable samples (watermark not detected?)")
                     return 2
-                candid["steps"] = recipe
+                candid["steps"] = strategy
                 res = {
                     "candidates": [candid],
                     "recommended": candid,
@@ -3062,7 +3176,7 @@ def main() -> int:
                     "intensity_curves": {},
                 }
             else:
-                res = bench.recipe_search(samples, workdir)
+                res = bench.strategy_search(samples, workdir)
         else:
             rows = bench.run_variants(samples, workdir)
     finally:
@@ -3077,10 +3191,10 @@ def main() -> int:
         agg = aggregate_minimal(rows)
         report = render_markdown_minimal(config, samples, rows, agg)
         csv_lines = _minimal_csv(rows)
-    elif args.mode == "recipe":
-        report = render_markdown_recipe(config, samples, res)
+    elif args.mode == "strategy":
+        report = render_markdown_strategy(config, samples, res)
         agg = {}
-        csv_lines = _recipe_csv(res)
+        csv_lines = _strategy_csv(res)
     else:
         # Attach USD cost using per-doc token estimates.
         for row in rows:
@@ -3174,8 +3288,8 @@ def main() -> int:
 
     (out_dir / "report.md").write_text(report, encoding="utf-8")
     payload: dict[str, Any] = {"meta": config, "samples": samples, "rows": rows, "aggregates": agg}
-    if args.mode == "recipe":
-        payload["recipe"] = res
+    if args.mode == "strategy":
+        payload["strategy"] = res
     (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (out_dir / "results.csv").write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
 
@@ -3194,12 +3308,12 @@ def main() -> int:
         print(f"  mean min sem div  : {_fmt(agg['mean_min_semantic_divergence'])}")
         print(f"  mean min lex div  : {_fmt(agg['mean_min_lexical_divergence'])}")
         print(f"  mean min margin   : {_fmt(agg['mean_min_margin'])}")
-    elif args.mode == "recipe":
+    elif args.mode == "strategy":
         rec = res.get("recommended")
-        print("best recipe (recommended)")
+        print("best strategy (recommended)")
         print("-" * 40)
         if not rec:
-            print("  none (no recipe had all three axes available)")
+            print("  none (no strategy had all three axes available)")
         else:
             print(
                 f"  steps         : {' → '.join(f'{s}@{level_i:g}' for s, level_i in rec['steps'])}"
@@ -3210,6 +3324,9 @@ def main() -> int:
         print(
             f"  frontier size : {len(res.get('frontier') or [])} / candidates {len(res.get('candidates') or [])}"
         )
+        n_outputs = res.get("strategy_outputs_written", 0)
+        if n_outputs:
+            print(f"  outputs       : {n_outputs} strategy dirs written to {workdir / 'strategies'} (--no-write-strategy-outputs to disable)")
     else:
         print(
             "variant          n   clear%  dScore  margin  lexDiv  semDiv  lenR  nums  tokOut  att  s/doc  eff/MTok"

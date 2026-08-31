@@ -79,7 +79,7 @@ bench-synthid-text:
 	  echo "run: $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --rewrite-model <model> --rewrite-backend <backend>"; \
 	fi
 
-# Full recipe-search benchmark: all strengths, robust margin, re-stamp control,
+# Full strategy-search benchmark: all tactics, robust margin, re-stamp control,
 # semantic axis required. Use a non-watermarked rewrite backend.
 bench-full:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
@@ -87,7 +87,7 @@ bench-full:
 	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
 	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
 	else \
-	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode recipe --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
+	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode strategy --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
 	fi
 
 # Install the semantic-divergence dependency into the MarkLLM venv and run with a

@@ -36,7 +36,7 @@ Nine image algorithms in two categories:
 2. **`DiffusionPurification` is blind regeneration.** It reuses the *same*
    pipeline, so it will not defeat a watermark that is robust to its own
    regeneration path, and it drifts image content (more than CtrlRegen's
-   controllable ControlNet regeneration). Conservative strength default (0.3),
+   controllable ControlNet regeneration). Conservative intensity default (0.3),
    treated as a fallback/comparison engine, never a guarantee.
 3. **Heavy stack.** torch ≥ 2.4,<2.11 + diffusers + a Stable Diffusion model
    download (~4–10 GB). GPU strongly recommended. Some HF models are gated →
@@ -64,7 +64,7 @@ echo "a red fox in snow" > /tmp/prompt.txt
 
 # 2. remove (blind regeneration)
 "$MD" "$SCRIPTS/markdiffusion_harness.py" purify /tmp/wm.png \
-  -o /tmp/wm.purified.png --purification-strength 0.3 --json
+  -o /tmp/wm.purified.png --purification-intensity 0.3 --json
 
 # 3. re-detect with the SAME scheme config
 "$MD" "$SCRIPTS/markdiffusion_harness.py" detect /tmp/wm.purified.png \

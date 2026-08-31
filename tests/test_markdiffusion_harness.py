@@ -206,7 +206,7 @@ def _build_args(mod, cmd: str, **overrides) -> object:
     args.output = None
     args.watermarked_output = None
     args.unwatermarked_output = None
-    args.purification_strength = 0.3
+    args.purification_intensity = 0.3
     for k, v in overrides.items():
         setattr(args, k, v)
     return args
@@ -331,7 +331,7 @@ def test_run_purify_success_parses_json(tmp_path: Path, monkeypatch: pytest.Monk
         Path("x.png"),
         Path("y.png"),
         upstream_dir=str(upstream),
-        strength=0.4,
+        intensity=0.4,
         size=512,
         steps=40,
         device="cpu",
@@ -342,7 +342,7 @@ def test_run_purify_success_parses_json(tmp_path: Path, monkeypatch: pytest.Monk
     assert result["device"] == "cpu"
     cmd = captured["cmd"]
     assert "purify" in cmd
-    assert "--purification-strength" in cmd and "0.4" in cmd
+    assert "--purification-intensity" in cmd and "0.4" in cmd
     assert "--upstream-dir" in cmd and str(upstream) in cmd
     assert captured["kwargs"]["timeout"] == 99
     if os.name == "posix":
@@ -401,11 +401,11 @@ def test_clean_image_diffusion_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         dest,
         remove_pixel="diffusion",
         markdiffusion_dir=str(tmp_path / "upstream"),
-        markdiffusion_strength=0.3,
+        markdiffusion_intensity=0.3,
     )
 
     assert result["pixel_removal"]["available"] is True
     assert any("DiffusionPurification pixel removal" in a for a in result["actions"])
     assert captured["path"] == dest
     assert captured["output"] == dest
-    assert captured["kwargs"]["strength"] == 0.3
+    assert captured["kwargs"]["intensity"] == 0.3
