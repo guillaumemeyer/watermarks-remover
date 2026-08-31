@@ -1556,6 +1556,7 @@ def test_strategy_search_reuses_evaluated_strategy_across_weights(tmp_path, monk
         max_passes=3,
         phase2_levels_per_tactic=1,
         recommend_weight="0.5/0.3/0.2",
+        humanize_intensity=1.0,
     )
     b = bench.Benchmark(args, Path(args.markllm_dir))
     monkeypatch.setattr(b, "_eval_strategy", evaluate)
@@ -1564,6 +1565,92 @@ def test_strategy_search_reuses_evaluated_strategy_across_weights(tmp_path, monk
 
     seen = {tuple(c["steps"]) for c in res["candidates"]}
     assert (("paraphrase", 1.0), ("backtranslate", 1.0), ("chunk", 1.0)) in seen
+
+
+def test_normalize_strategy_humanize_last():
+    """humanize steps are moved to the end (collapsed to one at min intensity)."""
+    assert bench._normalize_strategy([("chunk", 0.6), ("humanize", 0.5), ("paraphrase", 0.3)]) == [
+        ("chunk", 0.6),
+        ("paraphrase", 0.3),
+        ("humanize", 0.5),
+    ]
+    assert bench._normalize_strategy(
+        [("humanize", 0.8), ("paraphrase", 0.3), ("humanize", 0.5)]
+    ) == [("paraphrase", 0.3), ("humanize", 0.5)]
+    assert bench._normalize_strategy([("paraphrase", 0.3), ("structural", 1.0)]) == [
+        ("paraphrase", 0.3),
+        ("structural", 1.0),
+    ]
+
+
+def test_split_holdout():
+    """_split_holdout keeps `fraction` of docs for search, the rest for validation."""
+    samples = [{"doc": f"d{i}", "seed": 1} for i in range(5)]
+    train, hold = bench._split_holdout(samples, 0.6)
+    assert len(train) == 3 and len(hold) == 2
+    assert train and hold
+    assert bench._split_holdout(samples, 0.0) == (samples, [])
+
+
+def test_strategy_search_no_recommend_when_nothing_clears(tmp_path, monkeypatch):
+    """When no strategy clears the mark, nothing is recommended."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        coverage_floor=0.5,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 0.0,
+            "sem_div": 0.2,
+            "human_like": 0.8,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    assert res["recommended"] is None
+    assert res["verdict"] == "resists"
+
+
+def test_strategy_search_recommended_ends_humanize(tmp_path, monkeypatch):
+    """The recommended strategy is automatically finished with a humanize step."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        humanize_intensity=0.4,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    rec = res["recommended"]
+    assert rec is not None
+    assert rec["steps"][-1][0] == "humanize"
 
 
 def test_persist_strategy_outputs_writes_files(tmp_path):

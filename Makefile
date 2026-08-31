@@ -87,7 +87,7 @@ bench-full:
 	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
 	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
 	else \
-	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --target-margin 0.03 --require-semantic --mode strategy --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
+	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --target-margin 0.03 --require-semantic --mode strategy --coverage-floor 0.5 --eval-split 0.8 --humanize-intensity 0.4 --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
 	fi
 
 # Install the semantic-divergence dependency into the MarkLLM venv and run with a

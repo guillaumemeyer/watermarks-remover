@@ -1652,10 +1652,12 @@ class Benchmark:
     ) -> tuple[str, dict[str, Any]]:
         """Apply an ordered strategy: each (tactic, intensity) step is one rewrite,
         feeding the previous output as the next input. Returns (final_text, stats)
-        where stats is the last step's rewrite stats (carrying markllm before/after)."""
+        where stats is the last step's rewrite stats (carrying markllm before/after).
+        Ordering is normalized so ``humanize`` (the user-facing polish) always runs
+        last."""
         current = text
         stats: dict[str, Any] = {}
-        for tactic, level in steps:
+        for tactic, level in _normalize_strategy(steps):
             current, stats = self.rewrite(
                 current, tactic, 1, rewrite_level=level, target_margin=target_margin
             )
@@ -1675,6 +1677,7 @@ class Benchmark:
         output text (persisted for inspection) plus that sample's doc/seed,
         robust verdict, margin and semantic divergence.
         """
+        steps = _normalize_strategy(strategy)
         rows_in: list[dict[str, Any]] = []
         outs: list[str] = []
         score_at: list[int] = []
@@ -1696,7 +1699,7 @@ class Benchmark:
                 "note": None,
             }
             try:
-                out, stats = self.compose_strategy(orig, strategy, self.args.target_margin)
+                out, stats = self.compose_strategy(orig, steps, self.args.target_margin)
             except RuntimeError as e:
                 rows_in.append({"robust": None, "sem": None, "human": None, "err": str(e)})
                 entry["note"] = f"rewrite failed: {e}"
@@ -1739,6 +1742,7 @@ class Benchmark:
                 "human_like": None,
                 "n": 0,
                 "unverified": unverified,
+                "steps": steps,
                 "outputs": per_sample,
             }
         rob = sum(1 for r in verified if r["robust"]) / n
@@ -1750,6 +1754,7 @@ class Benchmark:
             "human_like": round(1.0 - _mean(hum_vals), 4) if hum_vals else None,
             "n": n,
             "unverified": unverified,
+            "steps": steps,
             "outputs": per_sample,
         }
 
@@ -1780,16 +1785,21 @@ class Benchmark:
         weights = parse_weight_grid(a.weight_grid)
         recommend_w = parse_weight_vec(getattr(a, "recommend_weight", "0.5/0.3/0.2"))
         k = max(1, int(getattr(a, "phase2_levels_per_tactic", 3)))
+        eval_split = float(getattr(a, "eval_split", 0.0) or 0.0)
+        eval_samples, holdout = _split_holdout(samples, eval_split)
+        coverage_floor = float(getattr(a, "coverage_floor", 0.5))
+        humanize_intensity = float(getattr(a, "humanize_intensity", 0.4))
         evaluated: dict[tuple[tuple[str, float], ...], dict] = {}
         cands: list[dict] = []
 
         def _eval(strategy: list[tuple[str, float]]) -> dict | None:
-            """eval."""
-            key = tuple(strategy)
+            """Evaluate one candidate strategy (humanize-last normalized) once."""
+            norm = _normalize_strategy(strategy)
+            key = tuple(norm)
             if key in evaluated:
                 return evaluated[key]
-            axis = self._eval_strategy(strategy, samples)
-            axis["steps"] = list(strategy)
+            axis = self._eval_strategy(strategy, eval_samples)
+            axis["steps"] = norm
             cands.append(axis)
             evaluated[key] = axis
             return axis
@@ -1841,7 +1851,35 @@ class Benchmark:
                 beams = [cand for _sc, cand in candidates_beam[: a.beam]]
 
         frontier = _pareto_frontier(cands)
-        recommended = _best_on_frontier(frontier, cands, recommend_w)
+
+        # Cross-input validation: re-measure the frontier (the candidates that matter
+        # for the recommendation) on the held-out documents so a strategy that only
+        # overfits the search subset is not recommended.
+        if holdout:
+            for c in frontier:
+                h = self._eval_strategy(c["steps"], holdout)
+                c["holdout_robust_clear_rate"] = h["robust_clear_rate"]
+                c["holdout_sem_div"] = h["sem_div"]
+                c["holdout_human_like"] = h["human_like"]
+
+        recommended = _best_on_frontier(
+            frontier,
+            cands,
+            recommend_w,
+            coverage_floor=coverage_floor,
+            prefer_holdout=bool(holdout),
+        )
+
+        # Humanizer always runs last: the recommended default ends with a humanize
+        # polish (re-measured on all inputs so its reported axes reflect the final
+        # output the user actually sees).
+        if recommended is not None:
+            steps = [*recommended["steps"]]
+            if not steps or steps[-1][0] != "humanize":
+                steps = [*steps, ("humanize", humanize_intensity)]
+                final = self._eval_strategy(steps, samples)
+                final["steps"] = steps
+                recommended = final
 
         # Intensity curves per tactic (from Phase 1 single-step strategies).
         curves: dict[str, list] = {}
@@ -1859,6 +1897,12 @@ class Benchmark:
                     )
             curves[tactic] = sorted(curve, key=lambda r: r["level"])
 
+        verdict = _strategy_verdict(cands)
+        # No recommendable remover: if some strategy was evaluable but none met the
+        # coverage floor, the actionable outcome is that the mark resisted.
+        if recommended is None and any(c.get("robust_clear_rate") is not None for c in cands):
+            verdict = "resists"
+
         strategy_outputs_written = self._persist_strategy_outputs(cands, workdir)
 
         return {
@@ -1866,7 +1910,7 @@ class Benchmark:
             "recommended": recommended,
             "frontier": frontier,
             "intensity_curves": curves,
-            "verdict": _strategy_verdict(cands),
+            "verdict": verdict,
             "strategy_outputs_written": strategy_outputs_written,
         }
 
@@ -2062,18 +2106,68 @@ def _weighted_score(axis: dict[str, Any], w: tuple[float, float, float]) -> floa
     return w[0] * removal + w[1] * (1.0 - sem) + w[2] * human
 
 
+def _normalize_strategy(steps: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Enforce humanize-last ordering on a strategy.
+
+    Moves any ``humanize`` step(s) to the final position (collapsing multiple
+    humanize steps to one at the minimum intensity), so a strategy is always:
+    removal/rewrite tactics first, then the optional humanize polish last.
+    """
+    removal = [(tactic, level) for tactic, level in steps if tactic != "humanize"]
+    human = [level for tactic, level in steps if tactic == "humanize"]
+    if human:
+        removal.append(("humanize", min(human)))
+    return removal
+
+
+def _split_holdout(
+    samples: list[dict[str, Any]], fraction: float
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split samples into (search, holdout) sets by document id, deterministically.
+
+    ``fraction`` is the share of documents kept for searching; the rest is the
+    held-out validation set. ``fraction <= 0`` disables holdout (returns
+    ``(samples, [])``).
+    """
+    if fraction <= 0:
+        return samples, []
+    docs = sorted({s["doc"] for s in samples})
+    n_support = max(1, round(len(docs) * fraction))
+    support = set(docs[:n_support])
+    train = [s for s in samples if s["doc"] in support]
+    holdout = [s for s in samples if s["doc"] not in support]
+    return train, holdout
+
+
+def _coverage_of(c: dict[str, Any], *, prefer_holdout: bool) -> float | None:
+    """Population robust clear rate for a candidate, optionally preferring holdout."""
+    if prefer_holdout and c.get("holdout_robust_clear_rate") is not None:
+        return c["holdout_robust_clear_rate"]
+    return c.get("robust_clear_rate")
+
+
 def _best_on_frontier(
-    frontier: list[dict], cands: list[dict], w: tuple[float, float, float]
+    frontier: list[dict],
+    cands: list[dict],
+    w: tuple[float, float, float],
+    coverage_floor: float = 0.0,
+    *,
+    prefer_holdout: bool = False,
 ) -> dict | None:
     """Pick the Pareto-frontier strategy best under weight w.
 
-    Falls back to the best candidate under w if the frontier is empty (which can
-    happen when no strategy has all three axes available).
+    Only strategies whose population coverage is at least ``coverage_floor`` are
+    eligible, so a strategy that clears only a handful of inputs is never
+    recommended. Falls back to the best eligible candidate under w if the frontier
+    is empty.
     """
     pool = frontier or cands
     best: dict | None = None
     best_sc: float | None = None
     for c in pool:
+        cov = _coverage_of(c, prefer_holdout=prefer_holdout)
+        if cov is None or cov < coverage_floor - 1e-9:
+            continue
         sc = _weighted_score(c, w)
         if sc is None:
             continue
@@ -2552,17 +2646,22 @@ def render_markdown_strategy(
     )
     L.append("")
     rec = res.get("recommended")
+    floor = config.get("coverage_floor", 0.5)
     L.append("## Recommended strategy")
     L.append("")
     if not rec:
         L.append(
-            "No single strategy had all three axes available (add `--require-semantic` / a detector)."
+            "No strategy in the searched space removed the mark on enough inputs to be "
+            f"recommendable (population robust clear below the `--coverage-floor` {floor}). "
+            "Nothing is recommended; the frontier below is diagnostics only."
         )
     else:
         L.append(f"- **{_steps_str(rec['steps'])}**")
         L.append(f"- robust clear %: {_fmt(rec.get('robust_clear_rate'))} (n={rec.get('n', 0)})")
         L.append(f"- semantic divergence: {_fmt(rec.get('sem_div'))}")
         L.append(f"- human_like: {_fmt(rec.get('human_like'))}")
+        if rec.get("steps") and rec["steps"][-1][0] == "humanize":
+            L.append("- final step: `humanize` style polish (runs last by design)")
     L.append("")
     L.append("## Verdict")
     L.append("")
@@ -2571,16 +2670,23 @@ def render_markdown_strategy(
     L.append("## Pareto frontier (weight-independent)")
     L.append("")
     front = res.get("frontier") or []
+    has_holdout = any(c.get("holdout_robust_clear_rate") is not None for c in front)
     if not front:
         L.append("No strategy had all three axes available; the frontier is empty.")
     else:
-        L.append("| strategy | robust % | sem div | human_like ↑ |")
-        L.append("| --- | ---: | ---: | ---: |")
+        L.append(
+            "| strategy | robust % | sem div | human_like ↑ |"
+            + (" holdout % |" if has_holdout else "")
+        )
+        L.append("| --- | ---: | ---: | ---: |" + (" ---: |" if has_holdout else ""))
         for c in front:
-            L.append(
+            row = (
                 f"| {_steps_str(c['steps'])} | {_fmt(c.get('robust_clear_rate'))} | "
                 f"{_fmt(c.get('sem_div'))} | {_fmt(c.get('human_like'))} |"
             )
+            if has_holdout:
+                row += f" {_fmt(c.get('holdout_robust_clear_rate'))} |"
+            L.append(row)
     L.append("")
     L.append("## Per-tactic intensity curves (single-pass)")
     L.append("")
@@ -2660,18 +2766,23 @@ def _strategy_csv(res: dict[str, Any]) -> list[str]:
             "semantic_divergence",
             "human_like",
             "n",
+            "holdout_robust_clear_rate",
+            "humanize_last",
             "recommended",
             "in_frontier",
         ]
     )
     for c in res.get("candidates") or []:
+        steps = c.get("steps") or []
         w.writerow(
             [
-                _steps_str(c.get("steps") or []),
+                _steps_str(steps),
                 c.get("robust_clear_rate"),
                 c.get("sem_div"),
                 c.get("human_like"),
                 c.get("n"),
+                c.get("holdout_robust_clear_rate"),
+                1 if steps and steps[-1][0] == "humanize" else 0,
                 1 if rec is not None and id(rec) == id(c) else 0,
                 1 if id(c) in front else 0,
             ]
@@ -2952,6 +3063,28 @@ def build_parser() -> argparse.ArgumentParser:
         "from the weight-independent Pareto frontier (default: 0.5/0.3/0.2).",
     )
     p.add_argument(
+        "--coverage-floor",
+        type=float,
+        default=0.5,
+        help="Minimum population robust clear rate a strategy must reach before it is "
+        "recommendable (default: 0.5). A strategy that clears only a fraction of the "
+        "inputs is never put forward as 'the best'.",
+    )
+    p.add_argument(
+        "--eval-split",
+        type=float,
+        default=0.0,
+        help="Fraction of documents kept for the search; the rest is held out and used "
+        "to validate that the recommended strategy generalizes across inputs "
+        "(default: 0.0 = no holdout).",
+    )
+    p.add_argument(
+        "--humanize-intensity",
+        type=float,
+        default=0.4,
+        help="Intensity of the auto-appended final humanize polish step (default: 0.4).",
+    )
+    p.add_argument(
         "--write-strategy-outputs",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -3095,6 +3228,9 @@ def main() -> int:
         "max_passes": args.max_passes,
         "phase2_levels_per_tactic": args.phase2_levels_per_tactic,
         "recommend_weight": args.recommend_weight,
+        "coverage_floor": args.coverage_floor,
+        "eval_split": args.eval_split,
+        "humanize_intensity": args.humanize_intensity,
         "strategies": args.strategies,
         "layer_a_after": args.layer_a_after,
         "write_strategy_outputs": args.write_strategy_outputs,
@@ -3138,6 +3274,13 @@ def main() -> int:
                 f"--max-passes {args.max_passes}",
                 f"--phase2-levels-per-tactic {args.phase2_levels_per_tactic}",
                 f"--recommend-weight {args.recommend_weight}",
+                f"--coverage-floor {args.coverage_floor}",
+                *([f"--eval-split {args.eval_split}"] if args.eval_split else []),
+                *(
+                    [f"--humanize-intensity {args.humanize_intensity}"]
+                    if args.humanize_intensity != 0.4
+                    else []
+                ),
                 *([f"--strategies {args.strategies}"] if args.strategies else []),
                 *(["--layer-a-after"] if args.layer_a_after else []),
                 *(["--restamp-control"] if args.restamp_control else []),
@@ -3161,7 +3304,7 @@ def main() -> int:
         elif args.mode == "strategy":
             rows = []
             if args.strategies:
-                strategy = parse_strategy(args.strategies)
+                strategy = _normalize_strategy(parse_strategy(args.strategies))
                 candid = bench._eval_strategy(strategy, samples)
                 if candid.get("n", 0) == 0:
                     eprint(
@@ -3169,6 +3312,14 @@ def main() -> int:
                     )
                     return 2
                 candid["steps"] = strategy
+                # Humanizer always runs last: append the finishing polish and re-measure.
+                if not strategy or strategy[-1][0] != "humanize":
+                    humanize_intensity = float(getattr(args, "humanize_intensity", 0.4))
+                    final = bench._eval_strategy(
+                        [*strategy, ("humanize", humanize_intensity)], samples
+                    )
+                    final["steps"] = [*strategy, ("humanize", humanize_intensity)]
+                    candid = final
                 strategy_outputs_written = bench._persist_strategy_outputs([candid], workdir)
                 res = {
                     "candidates": [candid],
@@ -3315,7 +3466,7 @@ def main() -> int:
         print("best strategy (recommended)")
         print("-" * 40)
         if not rec:
-            print("  none (no strategy had all three axes available)")
+            print("  none (no strategy removed the mark on enough inputs to be recommendable)")
         else:
             print(
                 f"  steps         : {' → '.join(f'{s}@{level_i:g}' for s, level_i in rec['steps'])}"

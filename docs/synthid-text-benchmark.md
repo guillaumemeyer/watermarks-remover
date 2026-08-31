@@ -312,16 +312,27 @@ applied sequentially - each step's output feeds the next.
   `--weight-grid`, combining an order of tactics with the top
   `--phase2-levels-per-tactic` intensities for that weight, so both step order
   and intensity are explored.
+- **Cross-input scoring.** Every candidate is scored on the aggregate **population**
+  (all docs × seeds), so the primary axis is **coverage** = robust clear rate, not a
+  single-sample verdict. A single input tells you almost nothing; use `--docs 10+`
+  and `--seeds 3+` for meaningful coverage.
 - The report's **Pareto frontier** is computed by dominance (no weights) over the
   union of all candidates, so it is weight-independent. The "recommended" strategy
   is the frontier point best matching `--recommend-weight` (a
   w_removal/w_semantic/w_human triple summing to 1.0, default `0.5/0.3/0.2`).
-  The report's **Verdict** section distinguishes the no-clear cases rather than
-  calling every empty result `resists`: it reports **resists** only when the
-  best verified robust clear % is 0.0, and **undetermined** when no candidate
-  strategy was evaluable (all three axes missing, so no verified clear rate
-  exists). Either way, an empty or unevaluable search is stated explicitly
-  instead of leaving an empty frontier to interpret.
+- **A strategy is only recommended if it clears enough inputs.** `--coverage-floor`
+  (default `0.5`) is the minimum population robust clear rate a candidate needs
+  before it can be put forward. If nothing clears the floor, the report says so and
+  shows **no recommended strategy** (the frontier is diagnostics only) - it never
+  recommends a non-removing strategy.
+- **Hold-out validation.** `--eval-split 0.8` keeps 80% of documents for the search
+  and holds the rest out; the frontier candidates are then re-measured on the held-out
+  documents (reported as an extra `holdout %` column and used for the recommendation),
+  so a strategy that only overfits the search subset is not recommended.
+- **`humanize` always runs last.** Any strategy containing `humanize` is ordered so
+  it is the final step, and the recommended strategy is auto-finished with
+  `humanize@--humanize-intensity` (default `0.4`) as the user-facing polish. Its
+  reported axes reflect that final output.
 - `--strategies "chunk@0.6,paraphrase@0.3"` composes and scores one explicit strategy
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
@@ -336,7 +347,8 @@ applied sequentially - each step's output feeds the next.
     ~/MarkLLM/.venv/bin/python service/scripts/bench_synthid_text.py \
       --markllm-dir ~/MarkLLM \
       --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
-      --mode strategy --target-margin 0.03 --restamp-control --require-semantic \
+      --mode strategy --target-margin 0.03 --coverage-floor 0.5 \
+      --eval-split 0.8 --humanize-intensity 0.4 \
       --rewrite-backend openai-compatible --rewrite-model <model> \
       --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
 
