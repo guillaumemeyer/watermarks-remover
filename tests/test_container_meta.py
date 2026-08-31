@@ -178,6 +178,7 @@ def test_svg_metadata():
 def _make_docx_with_app(
     app_name: str = "Microsoft Macintosh Word", company: str = "Acme AI Corp"
 ) -> bytes:
+    """Generate a synthetic DOCX bytes payload containing extended app properties."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
@@ -186,7 +187,7 @@ def _make_docx_with_app(
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
   <Override PartName="/customXml/item1.xml" ContentType="application/xml"/>
 </Types>""",
         )
@@ -206,6 +207,7 @@ def _make_docx_with_app(
 
 
 def test_docx_strips_app_and_customxml(tmp_path: Path):
+    """Verify DOCX cleans Application/Company and customXml while keeping AppVersion."""
     data = _make_docx_with_app()
     cleaned, actions = clean_docx(data)
     assert any(
@@ -415,6 +417,7 @@ def _make_docx_with_invisible_body() -> bytes:
 
 
 def test_docx_scrubs_docprops_provenance_fields_unconditionally():
+    """Verify unconditional scrubbing of docProps provenance fields in DOCX."""
     import xml.etree.ElementTree as ET
 
     data = _make_docx_with_docprops()
@@ -813,7 +816,7 @@ def test_zip_budget_rejection_propagates_from_detect_container_format_mimetype(m
 
 
 def test_docx_clean_preserves_ooxml_appversion_schema_validity():
-    """clean_docx preserves AppVersion and Application to avoid ECMA-376 schema errors (issue #283)."""
+    """clean_docx preserves AppVersion while scrubbing application provenance (#283)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
@@ -822,7 +825,7 @@ def test_docx_clean_preserves_ooxml_appversion_schema_validity():
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
 </Types>""",
         )

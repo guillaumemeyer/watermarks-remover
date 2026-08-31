@@ -36,6 +36,7 @@ def _create_synthetic_xlsx(
     with_custom_xml: bool = True,
     with_c2pa_image: bool = True,
 ) -> bytes:
+    """Create a synthetic XLSX workbook payload with core, extended, and custom metadata."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         # [Content_Types].xml
@@ -211,6 +212,7 @@ def test_pptx_detection_and_classification(tmp_path):
 
 
 def test_xlsx_inspect_and_clean():
+    """Verify inspect_xlsx detects provenance and clean_xlsx scrubs tracking metadata."""
     xlsx_bytes = _create_synthetic_xlsx()
 
     # Inspect
