@@ -230,6 +230,21 @@ def _parse_id3v2_frames(data: bytes) -> tuple[int, int, list[tuple[bytes, bytes]
 
 
 def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
+    if len(data) >= 10 and data[:3] == b"ID3":
+        major = data[3]
+        tag_size = _id3v2_size(data, 6)
+        total = 10 + tag_size
+        if total > len(data):
+            hits = _contains_any(data, AI_META_HINTS)
+            has_c2pa = _classify_c2pa(hits)
+            findings = [
+                f"truncated ID3v2.{major} tag detected ({len(data)} bytes present, {total} declared) "
+                "— metadata may be incomplete"
+            ]
+            if hits:
+                findings.append(f"partial ID3v2.{major} tag markers: {', '.join(hits[:8])}")
+            return has_c2pa, bool(hits), findings
+
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
         return False, False, []
@@ -257,7 +272,47 @@ def _inspect_id3v2(data: bytes) -> tuple[bool, bool, list[str]]:
     return has_c2pa, has_ai, findings
 
 
+def _is_valid_mp3_frame_header(data: bytes, offset: int) -> bool:
+    """Validate 4-byte MPEG audio frame header (version, layer, bitrate, samplerate)."""
+    if offset + 4 > len(data):
+        return False
+    b0, b1, b2, b3 = data[offset : offset + 4]
+    # Sync word: 11 bits set
+    if b0 != 0xFF or (b1 & 0xE0) != 0xE0:
+        return False
+    version = (b1 >> 3) & 0x03
+    layer = (b1 >> 1) & 0x03
+    if version == 1 or layer == 0:  # MPEG version '01' reserved; Layer '00' reserved
+        return False
+    bitrate_idx = (b2 >> 4) & 0x0F
+    if bitrate_idx in (0x00, 0x0F):  # 0000 free, 1111 bad
+        return False
+    samplerate_idx = (b2 >> 2) & 0x03
+    if samplerate_idx == 0x03:  # 11 reserved
+        return False
+    emphasis = b3 & 0x03
+    return emphasis != 0x02  # 10 reserved
+
+
 def _strip_id3v2(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[str]]:
+    if len(data) >= 10 and data[:3] == b"ID3":
+        major = data[3]
+        tag_size = _id3v2_size(data, 6)
+        total = 10 + tag_size
+        if total > len(data):
+            audio_pos = -1
+            for i in range(10, len(data) - 3):
+                if _is_valid_mp3_frame_header(data, i):
+                    audio_pos = i
+                    break
+            if audio_pos != -1:
+                return data[audio_pos:], [
+                    f"drop truncated ID3v2.{major} tag (found audio frame at offset {audio_pos})"
+                ]
+            return data, [
+                f"cannot locate valid audio frame in truncated ID3v2.{major} tag; preserving file"
+            ]
+
     parsed = _parse_id3v2_frames(data)
     if parsed is None:
         return data, []

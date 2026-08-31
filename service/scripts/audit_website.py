@@ -30,6 +30,7 @@ import contextlib
 
 from audit_lib import aggregate, format_sarif, print_human_report, scan_file
 from common import EXIT_PARTIAL, emit_json, eprint
+from container_meta import detect_container_format
 
 DEFAULT_MAX_BYTES = 4 << 20
 DEFAULT_TIMEOUT = 15
@@ -206,6 +207,10 @@ def guess_kind(url: str, data: bytes, content_type: str | None = None) -> str:
         if brand in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"):
             return "heic"
         return "mp4"
+    url_filename = Path(urllib.parse.urlsplit(url).path).name or "input"
+    ckind = detect_container_format(Path(url_filename), data)
+    if ckind != "unknown":
+        return ckind
     if data[:100].lstrip().startswith(b"<") and b"svg" in data[:500].lower():
         return "svg"
     if b"<html" in data[:2000].lower() or data[:100].lstrip().lower().startswith(b"<"):

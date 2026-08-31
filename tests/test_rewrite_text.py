@@ -752,6 +752,9 @@ def test_rewrite_blocks_redirect_and_never_sends_key():
 
     class Redirector(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > 0:
+                self.rfile.read(content_length)
             self.send_response(302)
             self.send_header(
                 "Location",
