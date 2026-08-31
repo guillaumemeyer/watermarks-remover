@@ -775,6 +775,9 @@ class HumanLikeness:
             if time.monotonic() > deadline:
                 raise TimeoutError("pangram bulk job timed out")
             time.sleep(2.0)
+        if status == "failed":
+            # Every item failed; trigger score_many's stylometry fallback.
+            raise RuntimeError("pangram bulk job failed (all items failed)")
         scores: dict[str, float | None] = {}
         offset = 0
         while True:
@@ -2217,7 +2220,7 @@ def render_markdown(
     L.append("")
     post = (auroc or {}).get("post") or {}
     L.append(
-        "| Variant | n | clear % | robust % | Δscore μ | margin μ | lex div | sem div | human ↓ | AUROC ↓ | len ratio | nums keep | tok out | att | s/doc | clears/MTok | noop |"
+        "| Variant | n | clear % | robust % | Δscore μ | margin μ | lex div | sem div | AI-likeness ↓ | AUROC ↓ | len ratio | nums keep | tok out | att | s/doc | clears/MTok | noop |"
     )
     L.append(
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
@@ -2460,7 +2463,7 @@ def render_markdown_recipe(
     if not front:
         L.append("No recipe had all three axes available; the frontier is empty.")
     else:
-        L.append("| recipe | robust % | sem div | human_like |")
+        L.append("| recipe | robust % | sem div | human_like ↑ |")
         L.append("| --- | ---: | ---: | ---: |")
         for c in front:
             L.append(
@@ -2477,7 +2480,7 @@ def render_markdown_recipe(
         for strength, rows in curves.items():
             L.append(f"### {strength}")
             L.append("")
-            L.append("| level | robust % | sem div | human_like |")
+            L.append("| level | robust % | sem div | human_like ↑ |")
             L.append("| ---: | ---: | ---: | ---: |")
             for r in rows:
                 L.append(
@@ -2965,7 +2968,7 @@ def main() -> int:
         "noop_lex_floor": args.noop_lex_floor,
         "human_backend": args.human_backend,
         "human_detector_dir": args.human_detector_dir,
-        "human_pangram_model": args.human_pangram_model,
+        "human_pangram_model": bench.human.pangram_model,
         "human_backend_used": bench.human.backend_used,
         "intensity_grid": args.intensity_grid,
         "weight_grid": args.weight_grid,

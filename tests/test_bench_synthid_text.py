@@ -1662,6 +1662,42 @@ def test_human_likeness_pangram_fallback_on_error(monkeypatch):
     assert all(s is None or isinstance(s, float) for s in scores)
 
 
+def test_human_likeness_pangram_bulk_failed_falls_back(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            return {"bulk_id": "blk_1", "status": "queued"}
+        if method == "GET" and path == "/bulk/blk_1":
+            return {"status": "failed"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    scores = h.score_many(["short text"])
+    # A job-level "failed" raises, so score_many degrades to stylometry.
+    assert h.backend_used == "stylometry"
+    assert scores == [None]  # short text -> stylometry uncalibrated
+
+
+def test_human_likeness_pangram_model_fallback_resolved(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["default"]}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None, pangram_model="pangram-4")
+    assert h.backend_used == "pangram"
+    # The resolved (allowed) selector is persisted for the metadata field.
+    assert h.pangram_model == "default"
+
+
 def test_render_markdown_recipe_and_csv():
     rec = {
         "steps": [("chunk", 0.6)],
