@@ -22,11 +22,16 @@ sys.path.insert(0, str(SCRIPTS))
 
 import bench_synthid_text as bench
 from bench_synthid_text import (
+    _auc,
+    _pareto_frontier,
     _parse_stats_json,
     aggregate,
     estimate_tokens,
     load_corpus,
+    parse_float_grid,
+    parse_recipe,
     parse_variants,
+    parse_weight_grid,
 )
 
 DETECT_POS = {"available": True, "is_watermarked": True, "score": 2.0}
@@ -79,6 +84,15 @@ def _args(**overrides):
         rewrite_level_max=1.0,
         level_attempts=3,
         target_margin=0.0,
+        noop_lex_floor=0.05,
+        human_backend="stylometry",
+        human_detector_dir=None,
+        intensity_grid="0.2,0.4,0.6,0.8,1.0",
+        weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.33/0.33/0.33",
+        beam=4,
+        max_passes=3,
+        recipes=None,
+        layer_a_after=False,
     )
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -367,6 +381,7 @@ class _FakeBench:
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
         self.semantic = bench.SemanticEmbedder(args.semantic_model)
+        self.human = bench.HumanLikeness(args.human_backend, args.human_detector_dir)
 
     def close_worker(self):
         pass
@@ -1185,3 +1200,196 @@ def test_render_minimal_reports_semantic_status_and_exclusions():
     assert "| Samples excluded (sanity gate / generation) | 1 |" in md
     assert "| Identical generations across seeds | 0 |" in md
     assert "0.0500 points below the detection threshold" in md
+
+
+# ---------------------------------------------------------------------------
+# Recipe search: parse/validate, AUROC, Pareto, no-op guard, compose, human
+# ---------------------------------------------------------------------------
+
+
+def test_parse_recipe_valid_and_invalid():
+    assert parse_recipe("chunk@0.6,paraphrase@0.3,humanize@1.0") == [
+        ("chunk", 0.6),
+        ("paraphrase", 0.3),
+        ("humanize", 1.0),
+    ]
+    with pytest.raises(SystemExit):
+        parse_recipe("paraphrase@0")  # intensity 0 is invalid
+    with pytest.raises(SystemExit):
+        parse_recipe("paraphrase@1.5")
+    with pytest.raises(SystemExit):
+        parse_recipe("bogus@0.5")  # unknown strength
+    with pytest.raises(SystemExit):
+        parse_recipe("humanize@1.0")  # only humanize: not a removal attempt
+    with pytest.raises(SystemExit):
+        parse_recipe("")  # empty
+
+
+def test_parse_weight_grid():
+    assert parse_weight_grid("0.8/0.1/0.1,0.5/0.3/0.2") == [(0.8, 0.1, 0.1), (0.5, 0.3, 0.2)]
+    with pytest.raises(SystemExit):
+        parse_weight_grid("0.5/0.5")  # not three components
+    with pytest.raises(SystemExit):
+        parse_weight_grid("0.5/0.5/0.5")  # does not sum to 1.0
+
+
+def test_parse_float_grid():
+    assert parse_float_grid("0.2,0.4,1.0") == [0.2, 0.4, 1.0]
+    with pytest.raises(SystemExit):
+        parse_float_grid("")  # empty grid
+    with pytest.raises(SystemExit):
+        parse_float_grid("0.2,x")  # non-numeric
+    with pytest.raises(SystemExit):
+        parse_float_grid("1.5")  # outside (0,1]
+
+
+def test_auc_perfect_and_random_and_empty():
+    assert _auc([2.0, 3.0], [1.0, 0.5]) == 1.0
+    assert _auc([1.0, 2.0], [2.0, 1.0]) == 0.5
+    assert _auc([], [1.0]) is None
+    assert _auc([1.0], []) is None
+
+
+def test_pareto_frontier_weight_free():
+    cands = [
+        {
+            "steps": [("paraphrase", 0.3)],
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.3,
+            "human_like": 0.7,
+        },
+        {"steps": [("chunk", 0.6)], "robust_clear_rate": 1.0, "sem_div": 0.2, "human_like": 0.6},
+        {
+            "steps": [("backtranslate", 0.4)],
+            "robust_clear_rate": 0.5,
+            "sem_div": 0.1,
+            "human_like": 0.8,
+        },
+        {
+            "steps": [("structural", 0.8)],
+            "robust_clear_rate": 0.0,
+            "sem_div": 0.9,
+            "human_like": 0.5,
+        },
+    ]
+    front = _pareto_frontier(cands)
+    names = {c["steps"][0][0] for c in front}
+    assert "structural" not in names  # dominated by everything
+    assert len(front) == 3
+
+
+def test_aggregate_robust_and_noop():
+    def _rew(cleared, robust, noop):
+        return {
+            "variant": "rewrite-paraphrase:1",
+            "kind": "rewrite",
+            "before_pos": True,
+            "cleared": cleared,
+            "robust_cleared": robust,
+            "noop": noop,
+            "score_before": 2.0,
+            "score_after": -1.0 if cleared else 0.5,
+            "margin": 0.5 if robust else None,
+            "seconds": 1.0,
+            "attempts": 1,
+            "quality": {
+                "lexical_divergence": 0.8,
+                "semantic_divergence": None,
+                "length_ratio": 1.0,
+                "numbers_preserved": 1.0,
+                "urls_preserved": 1.0,
+                "tokens_in": 100,
+                "tokens_out": 100,
+            },
+            "notes": [],
+        }
+
+    rows = [_rew(True, True, False), _rew(None, False, True)]
+    agg = aggregate(rows, [("paraphrase", 1)])
+    a = agg["rewrite-paraphrase:1"]
+    assert a["clear_rate"] == 0.5  # noop row is cleared=None, excluded from numerator
+    assert a["robust_clear_rate"] == 0.5
+    assert a["noop_n"] == 1
+
+
+def test_run_variants_noop_guard(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
+
+    def _noop(text, strength, candidates, **kw):
+        return text, {**_rewrite_stats(cleared=False), "noop": True}
+
+    monkeypatch.setattr(b, "rewrite", _noop)
+    samples = b.generate_samples(tmp_path / "work")
+    rows = b.run_variants(samples, tmp_path / "work")
+    rew = next(r for r in rows if r["kind"] == "rewrite")
+    assert rew["noop"] is True
+    assert rew["cleared"] is None  # a no-op is not a removal attempt
+    assert rew["robust_cleared"] is False
+    assert any("no-op" in n for n in rew["notes"])
+
+
+def test_compose_recipe_applies_steps_in_order(tmp_path, monkeypatch):
+    b, _ = _make_bench(tmp_path, monkeypatch)
+    calls = []
+
+    def _rewrite(text, strength, candidates, **kw):
+        calls.append((strength, kw.get("rewrite_level"), text))
+        return text + f"|{strength}", _rewrite_stats()
+
+    monkeypatch.setattr(b, "rewrite", _rewrite)
+    out, _stats = b.compose_recipe("base", [("chunk", 0.6), ("paraphrase", 0.3)], 0.0)
+    assert calls[0] == ("chunk", 0.6, "base")
+    assert calls[1] == ("paraphrase", 0.3, "base|chunk")  # step 1 output feeds step 2
+    assert out == "base|chunk|paraphrase"
+
+
+def test_human_likeness_backend_fallback():
+    h = bench.HumanLikeness("lastde", None)  # no detector dir -> degrade to stylometry
+    assert h.backend_used == "stylometry"
+    assert h.reason() is not None
+    s = h.score("A reasonably long piece of prose about watermarks and their removal.")
+    assert s is None or isinstance(s, (int, float))
+    h2 = bench.HumanLikeness("stylometry")
+    assert h2.backend_used == "stylometry"
+
+
+def test_render_markdown_recipe_and_csv():
+    rec = {
+        "steps": [("chunk", 0.6)],
+        "robust_clear_rate": 1.0,
+        "sem_div": 0.1,
+        "human_like": 1.0,
+        "n": 5,
+    }
+    res = {
+        "candidates": [rec],
+        "recommended": rec,
+        "frontier": [rec],
+        "intensity_curves": {
+            "chunk": [{"level": 0.6, "robust_clear_rate": 1.0, "sem_div": 0.1, "human_like": 1.0}]
+        },
+    }
+    config = {
+        "tag": "t",
+        "timestamp": "now",
+        "repo_commit": "abc",
+        "markllm_commit": "def",
+        "markllm_model": "m",
+        "corpus": "c",
+        "docs": 1,
+        "seeds": 1,
+        "rewrite_backend": "b",
+        "rewrite_model": "r",
+        "human_backend": "stylometry",
+        "human_backend_used": "stylometry",
+        "semantic_model": "sm",
+        "recipes": None,
+        "command": "cmd",
+    }
+    md = bench.render_markdown_recipe(config, [], res)
+    assert "Recommend" in md
+    assert "chunk@0.6" in md
+    assert "Pareto frontier" in md
+    csv = bench._recipe_csv(res)
+    assert any("chunk@0.6" in line for line in csv)
+    assert csv[0].startswith("recipe,")  # header

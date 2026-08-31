@@ -747,7 +747,217 @@ def inspect_svg(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
 
+_XML_DECL_KEYWORDS = ("doctype", "entity")
+
+
+def _xml_decl_keyword(text: str, i: int) -> str | None:
+    """Return "doctype"/"entity" if text[i:] opens that declaration, else None."""
+    if text[i : i + 2] != "<!":
+        return None
+    rest = text[i + 2 :]
+    for kw in _XML_DECL_KEYWORDS:
+        if rest.lower().startswith(kw):
+            # Require a word boundary so names like <!DOCTYPEfoo> aren't matched.
+            nxt = rest[len(kw) : len(kw) + 1]
+            if nxt and (nxt.isalnum() or nxt in "_:"):
+                return None
+            return kw
+    return None
+
+
+def _xml_decl_end(text: str, i: int, keyword: str) -> int:
+    """Return the index just past a declaration's closing '>', or -1 if unterminated.
+
+    Quotes and the internal subset are respected, so a '>' inside a quoted
+    external identifier or a nested internal subset does not end the
+    declaration early.
+    """
+    j = i + 2 + len(keyword)
+    n = len(text)
+    quote: str | None = None
+    subset_depth = 0
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            # Line breaks are legal inside quoted system/public literals and
+            # entity values, so they don't terminate the declaration; the first
+            # unquoted '>' ends it.
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        # DTD comments inside the internal subset must not affect subset_depth
+        # or look like a close, so skip them whole.
+        if text.startswith("<!--", j):
+            end = text.find("-->", j)
+            if end == -1:
+                return -1
+            j = end + 3
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == "[":
+            subset_depth += 1
+            j += 1
+            continue
+        if c == "]":
+            if subset_depth:
+                subset_depth -= 1
+            j += 1
+            continue
+        if c == ">" and subset_depth == 0:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _strip_xml_declarations(text: str) -> tuple[str, int]:
+    """Remove top-level <!DOCTYPE ...> and <!ENTITY ...> declarations.
+
+    Only declarations in markup context are stripped, so matching text inside
+    CDATA sections, comments, and quoted attribute values (which do not start a
+    declaration) is preserved. A declaration is consumed through its true
+    terminator: quoted external identifiers and the internal subset, including
+    nested brackets and embedded '>' characters, are respected. An unterminated
+    declaration is left intact rather than partially deleted.
+    """
+    i = 0
+    n = len(text)
+    out: list[str] = []
+    removed = 0
+    in_tag = False
+    quote: str | None = None
+    while i < n:
+        c = text[i]
+        if in_tag:
+            if quote is not None:
+                out.append(c)
+                if c == quote:
+                    quote = None
+            elif c in "\"'":
+                quote = c
+                out.append(c)
+            elif c == ">":
+                in_tag = False
+                out.append(c)
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        keyword = _xml_decl_keyword(text, i)
+        if keyword:
+            end = _xml_decl_end(text, i, keyword)
+            if end == -1:
+                out.append(c)
+                i += 1
+                continue
+            removed += 1
+            i = end
+            continue
+        out.append(c)
+        if c == "<":
+            in_tag = True
+        i += 1
+    return "".join(out), removed
+
+
+def _strip_root_svg_attrs(text: str) -> tuple[str, int]:
+    """Remove provenance attributes from the root <svg ...> start tag only.
+
+    The attribute substitution runs on the parsed root start tag so matching
+    text in CDATA, comments, or text content is untouched. Both single- and
+    double-quoted attribute values are supported.
+    """
+    n = len(text)
+    i = 0
+    start = -1
+    while i < n:
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text.startswith("<?", i):
+            # A processing instruction may contain "<svg"; skip it so the root
+            # element start tag is what gets cleaned.
+            end = text.find("?>", i)
+            if end == -1:
+                return text, 0
+            i = end + 2
+            continue
+        if text[i : i + 4].lower() == "<svg":
+            nxt = text[i + 4 : i + 5]
+            if not (nxt and (nxt.isalnum() or nxt in "_:.-")):
+                start = i
+                break
+        i += 1
+    if start == -1:
+        return text, 0
+    # Find the quote-aware '>' that closes the start tag.
+    j = start + 4
+    quote: str | None = None
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == ">":
+            break
+        j += 1
+    else:
+        return text, 0  # unclosed start tag; leave as-is
+    tag = text[start : j + 1]
+    new_tag, cnt = re.subn(
+        r'\s(?:inkscape:version|sodipodi:docname|generator)\s*=\s*("[^"]*"|\'[^\']*\')',
+        "",
+        tag,
+        flags=re.I,
+    )
+    if not cnt:
+        return text, 0
+    return text[:start] + new_tag + text[j + 1 :], cnt
+
+
 def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
+    """Strip AI provenance metadata from SVG content, returning (bytes, actions).
+
+    Removes <metadata>/<xmpmeta> blocks, XML DOCTYPE and ENTITY declarations,
+    AI-marker comments, and embedded data URIs, and drops generator-like
+    attributes on the root element. Declaration stripping is context-aware so
+    the document body, CDATA sections, comments, and quoted attribute values are
+    preserved.
+    """
     actions: list[str] = []
     text = data.decode("utf-8", errors="surrogateescape")
     # Drop metadata blocks (linear scan - lazy .*? is quadratic on unclosed tags)
@@ -760,6 +970,11 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if n:
         actions.append(f"drop xmpmeta x{n}")
         text = new
+
+    # Drop XML DOCTYPE and ENTITY declarations (context-aware)
+    text, decl_count = _strip_xml_declarations(text)
+    if decl_count:
+        actions.append(f"drop DOCTYPE/entity declarations x{decl_count}")
 
     # Drop comments that look like provenance (linear scan)
     def _cmt(block: str) -> bool:
@@ -775,17 +990,12 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    if not actions:
-        # still strip generator attribute on root if present
-        new, n = re.subn(
-            r'\s(inkscape:version|sodipodi:docname|generator)\s*=\s*"[^"]*"',
-            "",
-            text,
-            flags=re.I,
-        )
-        if n:
-            actions.append(f"drop generator-like attrs x{n}")
-            text = new
+    # Strip generator-like attributes on the root <svg> start tag independently
+    # of the actions above, so they are removed whenever present (not only when
+    # nothing else needed cleaning).
+    text, n = _strip_root_svg_attrs(text)
+    if n:
+        actions.append(f"drop generator-like attrs x{n}")
     if not actions:
         actions.append("no SVG metadata removed")
     return text.encode("utf-8", errors="surrogateescape"), actions
@@ -2106,11 +2316,11 @@ def which_ghostscript() -> str | None:
 
 def _exiftool_strip(
     exiftool: str, dest: Path, actions: list[str], deadline: "_Deadline | None" = None
-) -> None:
+) -> bool:
     """Run ``exiftool -all=`` over *dest* in place, recording the outcome."""
     if deadline is not None and deadline.spent():
         actions.append("exiftool skipped: clean budget exhausted")
-        return
+        return False
     try:
         r = subprocess.run(
             [exiftool, "-all=", "-overwrite_original", safe_arg(str(dest))],
@@ -2124,8 +2334,10 @@ def _exiftool_strip(
             creationflags=subprocess_creationflags,
         )
         actions.append(f"exiftool -all= (rc={r.returncode})")
+        return r.returncode == 0
     except Exception as e:
         actions.append(f"exiftool failed: {e}")
+        return False
 
 
 def _pdf_deep_image_clean(
@@ -2262,34 +2474,44 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
     exiftool = which("exiftool")
     rewritten = False
 
+    def _stdlib_document_strip(source: bytes) -> str:
+        """Apply the byte-preserving fallback and return its reported mode."""
+        blanked, n = _blank_xmp_packets(source)
+        safe_write_bytes(dest, blanked if n else source)
+        if n:
+            actions.append(f"blanked XMP xpacket x{n} (degraded; byte offsets preserved)")
+            actions.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
+            return "stdlib-xmp"
+        actions.append(
+            "no PDF cleaner available (install exiftool for reliable metadata "
+            "strip); document-level metadata left as-is"
+        )
+        return "copy"
+
     if exiftool:
         safe_write_bytes(dest, data)
-        _exiftool_strip(exiftool, dest, actions, deadline)
-        # exiftool writes PDFs *incrementally*: it appends a
-        # %BeginExifToolUpdate block that frees the Info object and drops
-        # /Info from the trailer, but the original metadata bytes stay in the
-        # file verbatim and are trivially recoverable (exiftool itself can
-        # revert them with -PDF-update:all=). A structural rewrite is what
-        # actually drops the now-unreferenced objects.
-        rewritten = _pdf_structural_rewrite(dest, actions, deadline)
-        document_mode = "exiftool"
+        if not _exiftool_strip(exiftool, dest, actions, deadline):
+            # An installed exiftool can still reject malformed or unsupported
+            # PDFs. Fall back to the same byte-preserving XMP scrub as the
+            # no-exiftool path, and report the result as degraded instead of
+            # claiming the optional cleaner completed.
+            document_mode = _stdlib_document_strip(data)
+            exiftool = None
+        else:
+            # exiftool writes PDFs *incrementally*: it appends a
+            # %BeginExifToolUpdate block that frees the Info object and drops
+            # /Info from the trailer, but the original metadata bytes stay in the
+            # file verbatim and are trivially recoverable (exiftool itself can
+            # revert them with -PDF-update:all=). A structural rewrite is what
+            # actually drops the now-unreferenced objects.
+            rewritten = _pdf_structural_rewrite(dest, actions, deadline)
+            document_mode = "exiftool"
     else:
         # Degraded document-level strip: obvious XMP packets and nothing else.
         # The deep-image ladder below still runs -- Ghostscript reaches metadata
         # inside image XObjects on its own, and gating that on exiftool left the
         # only tool that can do that job unused.
-        blanked, n = _blank_xmp_packets(data)
-        safe_write_bytes(dest, blanked if n else data)
-        if n:
-            actions.append(f"blanked XMP xpacket x{n} (degraded; byte offsets preserved)")
-            actions.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
-            document_mode = "stdlib-xmp"
-        else:
-            actions.append(
-                "no PDF cleaner available (install exiftool for reliable metadata "
-                "strip); document-level metadata left as-is"
-            )
-            document_mode = "copy"
+        document_mode = _stdlib_document_strip(data)
 
     # Document-level strip is done. Metadata inside embedded images is out
     # of reach from here, so decide whether to re-distill.
@@ -2306,12 +2528,17 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
     def _settle(ran: bool) -> None:
         # pdfwrite stamps its own /Producer, and exiftool edits PDFs
         # incrementally, so re-serialize once more after removing it.
-        nonlocal rewritten
+        nonlocal document_mode, exiftool, rewritten
         if not ran:
             return
         if exiftool:
-            _exiftool_strip(exiftool, dest, actions, deadline)
-            rewritten = _pdf_structural_rewrite(dest, actions, deadline) or rewritten
+            current = dest.read_bytes()
+            if _exiftool_strip(exiftool, dest, actions, deadline):
+                rewritten = _pdf_structural_rewrite(dest, actions, deadline) or rewritten
+            else:
+                document_mode = _stdlib_document_strip(current)
+                exiftool = None
+                rewritten = False
         else:
             # Trading a vendor mark for a Ghostscript one is still worth it,
             # but the caller should not have to discover the swap.

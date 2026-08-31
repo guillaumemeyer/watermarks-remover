@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from container_meta import (
 )
 
 needs_exiftool = pytest.mark.skipif(not which("exiftool"), reason="exiftool not installed")
+needs_qpdf = pytest.mark.skipif(not which("qpdf"), reason="qpdf not installed")
 needs_ghostscript = pytest.mark.skipif(not which_ghostscript(), reason="ghostscript not installed")
 
 
@@ -51,8 +53,8 @@ def _assemble_pdf(objs: list[bytes], trailer_extra: bytes = b"") -> bytes:
     return bytes(out)
 
 
-def _minimal_pdf(info: bytes = b"") -> bytes:
-    """A one-page PDF, optionally carrying an Info dictionary."""
+def _minimal_pdf(info: bytes = b"", xmp: bytes = b"") -> bytes:
+    """A one-page PDF, optionally carrying an Info dictionary or XMP stream."""
     content = b"BT /F1 12 Tf 72 720 Td (deep image test) Tj ET"
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -62,6 +64,13 @@ def _minimal_pdf(info: bytes = b"") -> bytes:
         b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
+    if xmp:
+        objs[0] = b"<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>"
+        objs.append(
+            b"<< /Type /Metadata /Subtype /XML /Length %d >>\nstream\n" % len(xmp)
+            + xmp
+            + b"\nendstream"
+        )
     trailer_extra = b""
     if info:
         objs.append(info)
@@ -171,6 +180,7 @@ def test_never_skips_the_deep_pass(tmp_path):
 
 
 @needs_exiftool
+@needs_qpdf
 def test_auto_leaves_a_marker_free_pdf_alone(tmp_path):
     """No AI/C2PA markers left means no reason to spend a re-distill."""
     src = tmp_path / "in.pdf"
@@ -180,6 +190,135 @@ def test_auto_leaves_a_marker_free_pdf_alone(tmp_path):
     assert meta["deep_image_pass"] is False
     assert meta["images_reencoded"] is False
     assert any("deep image pass not needed" in a for a in actions)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [subprocess.CompletedProcess([], 7), OSError("exiftool unavailable")],
+    ids=("nonzero", "exception"),
+)
+def test_exiftool_failure_falls_back_to_degraded_xmp_strip(tmp_path, monkeypatch, outcome):
+    """A failed optional cleaner must not be reported as a successful exiftool pass."""
+    import container_meta
+
+    monkeypatch.setattr(
+        container_meta,
+        "which",
+        lambda name: "/fake/bin/exiftool" if name == "exiftool" else None,
+    )
+
+    def fake_run(*args, **kwargs):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(container_meta.subprocess, "run", fake_run)
+
+    src = tmp_path / "in.pdf"
+    dest = tmp_path / "out.pdf"
+    src.write_bytes(_minimal_pdf(xmp=_PROVENANCE_XMP))
+
+    actions, meta = clean_pdf(src, dest, deep_images="auto")
+
+    assert meta["mode"] == "stdlib-xmp"
+    assert meta["degraded"] is True
+    assert b"contentauth" not in dest.read_bytes()
+    assert any("blanked XMP" in action for action in actions)
+    assert not any("qpdf" in action for action in actions)
+
+
+def test_missing_exiftool_uses_degraded_xmp_strip(tmp_path, monkeypatch):
+    """The stdlib document-level fallback remains explicit when exiftool is absent."""
+    import container_meta
+
+    monkeypatch.setattr(container_meta, "which", lambda _name: None)
+
+    src = tmp_path / "in.pdf"
+    dest = tmp_path / "out.pdf"
+    src.write_bytes(_minimal_pdf(xmp=_PROVENANCE_XMP))
+
+    actions, meta = clean_pdf(src, dest, deep_images="never")
+
+    assert meta == {
+        "mode": "stdlib-xmp",
+        "structural_rewrite": False,
+        "deep_images": "never",
+        "deep_image_pass": False,
+        "images_reencoded": False,
+        "degraded": True,
+    }
+    assert b"contentauth" not in dest.read_bytes()
+    assert any("pure-stdlib" in action for action in actions)
+
+
+@pytest.mark.parametrize(
+    "settle_outcome",
+    [subprocess.CompletedProcess([], 7), OSError("exiftool unavailable"), "deadline"],
+    ids=("nonzero", "exception", "deadline"),
+)
+def test_exiftool_settle_failure_falls_back_on_post_ghostscript_bytes(
+    tmp_path, monkeypatch, settle_outcome
+):
+    """A failed post-distill strip degrades the current output instead of claiming success."""
+    import container_meta
+
+    monkeypatch.setattr(
+        container_meta,
+        "which",
+        lambda name: f"/fake/bin/{name}" if name in ("exiftool", "gs") else None,
+    )
+
+    if settle_outcome == "deadline":
+
+        class ExpiringDeadline:
+            def __init__(self):
+                self.spent_calls = 0
+
+            def spent(self):
+                self.spent_calls += 1
+                return self.spent_calls >= 3
+
+            def timeout(self, cap):
+                return cap
+
+        monkeypatch.setattr(container_meta, "_Deadline", lambda _budget: ExpiringDeadline())
+
+    post_ghostscript = _minimal_pdf(xmp=_PROVENANCE_XMP).replace(
+        b"deep image test", b"post gs bytes!!"
+    )
+    exiftool_calls = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal exiftool_calls
+        if cmd[0].endswith("exiftool"):
+            exiftool_calls += 1
+            if exiftool_calls == 1:
+                return subprocess.CompletedProcess(cmd, 0)
+            if isinstance(settle_outcome, Exception):
+                raise settle_outcome
+            return settle_outcome
+        if cmd[0].endswith("gs"):
+            output_arg = next(arg for arg in cmd if arg.startswith("-sOutputFile="))
+            Path(output_arg.removeprefix("-sOutputFile=")).write_bytes(post_ghostscript)
+            return subprocess.CompletedProcess(cmd, 0)
+        raise AssertionError(f"unexpected tool call: {cmd}")
+
+    monkeypatch.setattr(container_meta.subprocess, "run", fake_run)
+
+    src = tmp_path / "in.pdf"
+    dest = tmp_path / "out.pdf"
+    src.write_bytes(_minimal_pdf())
+
+    actions, meta = clean_pdf(src, dest, deep_images="always")
+
+    assert meta["mode"] == "stdlib-xmp"
+    assert meta["degraded"] is True
+    assert meta["structural_rewrite"] is False
+    assert meta["deep_image_pass"] is True
+    assert b"post gs bytes!!" in dest.read_bytes()
+    assert b"contentauth" not in dest.read_bytes()
+    assert any("blanked XMP" in action for action in actions)
+    assert exiftool_calls >= (1 if settle_outcome == "deadline" else 2)
 
 
 @needs_exiftool

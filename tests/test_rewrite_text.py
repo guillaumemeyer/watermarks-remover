@@ -65,17 +65,24 @@ def test_build_prompt_unknown_strength_raises():
         build_prompt("nope", "ABC", lang="French", original_lang="English")
 
 
-def test_build_prompt_level_embeds_level():
+def test_build_prompt_level_modulates_strength():
     p = build_prompt(
         "paraphrase", "Hello 42.", lang="French", original_lang="English", rewrite_level=0.3
     )
     assert "Hello 42." in p
     assert "0.30" in p
-    # level prompt is not the regular paraphrase prompt
+    # strength + level keeps the strength-specific instruction AND the clause
+    assert "clause order" in p
+
+
+def test_build_prompt_level_alone_keeps_generic_prompt():
+    # A bare intensity (no strength) still yields the generic level-only prompt.
+    p = build_prompt(None, "Hello 42.", lang="French", original_lang="English", rewrite_level=0.3)
+    assert "0.30" in p
     assert "clause order" not in p
 
 
-def test_rewrite_level_takes_precedence_over_strength():
+def test_rewrite_level_modulates_strength():
     out, info = rewrite(
         "Sample prose about water marks 42.",
         **_rewrite_kwargs(strength="paraphrase", rewrite_level=0.4),
@@ -83,8 +90,9 @@ def test_rewrite_level_takes_precedence_over_strength():
     assert info["mode"] == "print-prompt"
     assert info["strength"] == "paraphrase"
     assert info["rewrite_level"] == 0.4
+    assert info["noop"] is False  # print-prompt echoes the prompt; long input
     assert "0.40" in out
-    assert "clause order" not in out
+    assert "clause order" in out  # paraphrase instruction retained
 
 
 def test_rewrite_level_out_of_range_rejected(monkeypatch):
@@ -850,3 +858,21 @@ def test_max_margin_ranks_by_raw_margin_when_rounded_margins_tie():
         "lexical_divergence": 0.5,
     }
     assert rewrite_text._margin_of(rec_large_raw) > rewrite_text._margin_of(rec_small_raw)
+
+
+def test_rewrite_noop_guard_flags_verbatim_output(monkeypatch):
+    # A rewrite that returns the input unchanged must be flagged noop, so a
+    # benchmark never reads it as "0% clear".
+    text = "the watermark removal theory is interesting to study"
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: text)
+    out, info = rewrite(
+        text,
+        **_rewrite_kwargs(
+            backend="ollama",
+            model="m",
+            base_url="http://127.0.0.1:11434",
+            noop_lex_floor=0.05,
+        ),
+    )
+    assert info["noop"] is True
+    assert out == text
