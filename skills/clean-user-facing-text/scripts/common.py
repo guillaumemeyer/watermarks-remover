@@ -295,6 +295,50 @@ def safe_write_text(path: str | Path, text: str) -> None:
     safe_write_bytes(path, text.encode("utf-8", errors="surrogateescape"))
 
 
+def is_mutating_action(action: str) -> bool:
+    """True if *action* describes an actual modification, False for informational notices."""
+    action_lower = action.strip().lower()
+    if (
+        action_lower.startswith("no ")
+        or action_lower.startswith("warning:")
+        or "not needed" in action_lower
+        or "skipped" in action_lower
+        or "preserved" in action_lower
+        or "already clean" in action_lower
+        or "none matched" in action_lower
+        or "available for inspect" in action_lower
+        or "failed" in action_lower
+        or "left unchanged" in action_lower
+        or "kept" in action_lower
+        or "copied remainder" in action_lower
+    ):
+        return False
+    return not action_lower.startswith("layer a text: removed=0 replaced=0")
+
+
+def result_has_changes(result: dict[str, Any]) -> bool:
+    """True if a clean operation modified the content."""
+    if "changed" in result:
+        return bool(result["changed"])
+    stats = result.get("stats")
+    if stats is not None:
+        return bool(stats.get("removed_count") or stats.get("replaced_count"))
+    inp = result.get("input")
+    out = result.get("output")
+    if inp and out:
+        p_in = Path(inp)
+        p_out = Path(out)
+        if p_in.is_file() and p_out.is_file():
+            try:
+                return p_in.read_bytes() != p_out.read_bytes()
+            except OSError:
+                pass
+    if "bytes_in" in result and "bytes_out" in result and result["bytes_in"] != result["bytes_out"]:
+        return True
+    actions = result.get("actions", [])
+    return any(is_mutating_action(a) for a in actions)
+
+
 def backup_path(src: Path) -> tuple[Path, bool]:
     """Create a ``.bak`` copy of *src* no-clobber; return (backup, created).
 
@@ -312,6 +356,9 @@ def backup_path(src: Path) -> tuple[Path, bool]:
     reports whether this call created the backup or kept an existing one.
     """
     bak = src.with_suffix(src.suffix + ".bak")
+    if bak.exists() and not bak.is_file():
+        eprint(f"cannot create backup {bak}: target exists and is not a regular file")
+        raise SystemExit(2)
     try:
         fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _default_file_mode())
     except FileExistsError:

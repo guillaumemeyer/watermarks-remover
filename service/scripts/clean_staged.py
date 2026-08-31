@@ -32,7 +32,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import EXIT_PARTIAL, MAX_INPUT_BYTES, eprint, subprocess_creationflags
+from common import (
+    EXIT_PARTIAL,
+    MAX_INPUT_BYTES,
+    eprint,
+    result_has_changes,
+    subprocess_creationflags,
+)
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
@@ -60,27 +66,8 @@ def _is_modifying_action(action: str) -> bool:
 
 
 def _changed(result: dict) -> bool:
-    """Determine whether a clean_file.py JSON report indicates content was modified.
-
-    This function serves strictly as a fallback when before/after digests on
-    disk cannot be computed. Text cleaning reports explicit removal/replacement
-    statistics. For binary and container cleaners, actions that removed nothing
-    append a 'nothing was removed' filler message (issue #173), so a non-empty
-    actions list alone cannot indicate change. A change is confirmed when byte
-    counts differ, explicit change flags are set, or active modifying actions
-    (e.g. dropping chunks, blanking XMP packets) are present in the report.
-    """
-    if "changed" in result:
-        return bool(result["changed"])
-    stats = result.get("stats")
-    if stats is not None:
-        return bool(stats.get("removed_count") or stats.get("replaced_count"))
-    if "bytes_in" in result and "bytes_out" in result and result["bytes_in"] != result["bytes_out"]:
-        return True
-    actions = result.get("actions")
-    if actions:
-        return any(_is_modifying_action(a) for a in actions)
-    return False
+    """Determine whether a clean_file.py JSON report indicates content was modified."""
+    return result_has_changes(result)
 
 
 def _failure_detail(proc: subprocess.CompletedProcess[str], summary: str) -> str:

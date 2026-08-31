@@ -41,3 +41,16 @@ def test_no_existing_bak_still_created(tmp_path):
     bak, created = common.backup_path(f)
     assert created is True
     assert bak.read_bytes() == b"data"
+
+
+def test_backup_path_rejects_non_regular_file(tmp_path):
+    import pytest
+
+    f = tmp_path / "target.txt"
+    f.write_bytes(b"data")
+    bak_dir = tmp_path / "target.txt.bak"
+    bak_dir.mkdir()
+
+    with pytest.raises(SystemExit) as exc_info:
+        common.backup_path(f)
+    assert exc_info.value.code == 2

@@ -78,6 +78,52 @@ _ZIP_PARSE_ERRORS = (
     zlib.error,
 )
 
+MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
+
+
+def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
+    """Fast-path zip-bomb guard on the declared member size.
+
+    A single member whose *declared* size already exceeds the cap is
+    rejected before any decompression. The authoritative accounting lives in
+    _read_zip_member, which charges **actual** decompressed bytes to the
+    shared budget: ZipInfo.file_size comes from the archive central
+    directory and is attacker-controlled, so trusting it for the cumulative
+    limit would let a crafted archive declare a tiny size and still expand
+    to gigabytes.
+    """
+    if info.file_size > MAX_ZIP_DECOMPRESSED_BYTES:
+        raise ZipBudgetExceeded(
+            "zip decompressed size exceeds cap "
+            f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
+        )
+
+
+def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list[int]) -> bytes:
+    """Read one zip member, charging real decompressed bytes to the budget.
+
+    Streams the member in chunks so the cumulative cap is enforced on bytes
+    actually produced, not on the declared ``file_size``; raises
+    ``ZipBudgetExceeded`` the moment the cap is crossed, before the whole
+    member is buffered.
+    """
+    _check_zip_budget(info, budget)
+    with zf.open(info) as stream:
+        chunks: list[bytes] = []
+        while True:
+            chunk = stream.read(1 << 16)
+            if not chunk:
+                break
+            budget[0] += len(chunk)
+            if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
+                raise ZipBudgetExceeded(
+                    "zip decompressed size exceeds cap "
+                    f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # Frontmatter / meta keys that often carry AI provenance
 AI_FRONTMATTER_KEYS = frozenset(
     {
@@ -184,13 +230,27 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
             try:
                 with zipfile.ZipFile(io.BytesIO(data)) as zf:
                     names = set(zf.namelist())
-                    if "word/document.xml" in names:
+                    if "mimetype" in names:
+                        info = zf.getinfo("mimetype")
+                        budget = [0]
+                        raw = _read_zip_member(zf, info, budget)
+                        try:
+                            mt = raw.decode("ascii", errors="ignore").strip()
+                            if "epub" in mt:
+                                return "epub"
+                            if "opendocument" in mt or "oasis" in mt:
+                                return "odt"
+                        except (UnicodeDecodeError, AttributeError):
+                            pass
+                    if "word/document.xml" in names or any(n.startswith("word/") for n in names):
                         return "docx"
-                    if "xl/workbook.xml" in names:
+                    if "xl/workbook.xml" in names or any(n.startswith("xl/") for n in names):
                         return "xlsx"
-                    if "ppt/presentation.xml" in names:
+                    if "ppt/presentation.xml" in names or any(n.startswith("ppt/") for n in names):
                         return "pptx"
-                    if "content.xml" in names and "meta.xml" in names:
+                    if "content.xml" in names and (
+                        "meta.xml" in names or "META-INF/manifest.xml" in names
+                    ):
                         return "odt"
                     if "META-INF/container.xml" in names and any(n.endswith(".opf") for n in names):
                         return "epub"
@@ -771,52 +831,6 @@ DOCX_SCRUB_FIELDS = (
 def _zip_namelist(data: bytes) -> list[str]:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         return zf.namelist()
-
-
-MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
-
-
-def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
-    """Fast-path zip-bomb guard on the declared member size.
-
-    A single member whose *declared* size already exceeds the cap is
-    rejected before any decompression. The authoritative accounting lives in
-    _read_zip_member, which charges **actual** decompressed bytes to the
-    shared budget: ZipInfo.file_size comes from the archive central
-    directory and is attacker-controlled, so trusting it for the cumulative
-    limit would let a crafted archive declare a tiny size and still expand
-    to gigabytes.
-    """
-    if info.file_size > MAX_ZIP_DECOMPRESSED_BYTES:
-        raise ZipBudgetExceeded(
-            "zip decompressed size exceeds cap "
-            f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
-        )
-
-
-def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list[int]) -> bytes:
-    """Read one zip member, charging real decompressed bytes to the budget.
-
-    Streams the member in chunks so the cumulative cap is enforced on bytes
-    actually produced, not on the declared ``file_size``; raises
-    ``ZipBudgetExceeded`` the moment the cap is crossed, before the whole
-    member is buffered.
-    """
-    _check_zip_budget(info, budget)
-    with zf.open(info) as stream:
-        chunks: list[bytes] = []
-        while True:
-            chunk = stream.read(1 << 16)
-            if not chunk:
-                break
-            budget[0] += len(chunk)
-            if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
-                raise ZipBudgetExceeded(
-                    "zip decompressed size exceeds cap "
-                    f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
-                )
-            chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _is_docx_meta_part(name: str) -> bool:
