@@ -134,6 +134,24 @@ def test_utf16_localization_file_yields_no_findings(tmp_path, monkeypatch):
     assert check_staged.main() == 0
 
 
+def test_utf16_handled_the_same_as_the_pre_existing_text_extensions(tmp_path):
+    """UTF-16 decoding is a property of the text pipeline, not of this table.
+
+    ``audit_lib.scan_file()`` reads text as UTF-8 with ``surrogateescape``, so a
+    carrier inside a UTF-16 file is missed today — for the long-standing ``.txt``
+    and ``.csv`` entries exactly as much as for the suffixes added here. Pin the
+    parity: widening the table neither introduces the gap nor deepens it, and a
+    future BOM-aware decoder will flip every one of these together.
+    """
+    verdicts = {}
+    for name in ("legacy.txt", "rows.csv", "Localizable.strings", "deploy.ps1"):
+        path = tmp_path / name
+        path.write_text(CARRIER, encoding="utf-16")
+        verdicts[name] = is_actionable(scan_file(path))
+
+    assert len(set(verdicts.values())) == 1, verdicts
+
+
 def test_extension_tables_stay_disjoint():
     """A suffix must resolve to exactly one pipeline."""
     tables = {
