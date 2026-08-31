@@ -84,8 +84,10 @@ bench-synthid-text:
 bench-full:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
 	  echo "bench-full skipped (set MARKLLM_DIR; see docs/synthid-text-benchmark.md)"; \
+	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
+	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
 	else \
-	  $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode recipe --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
+	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode recipe --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
 	fi
 
 # Install the semantic-divergence dependency into the MarkLLM venv and run with a
@@ -93,10 +95,12 @@ bench-full:
 bench-semantic:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
 	  echo "bench-semantic skipped (set MARKLLM_DIR)"; \
+	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
+	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
 	else \
 	  mkdir -p $(CURDIR)/.hf-cache && \
-	  $(MARKLLM_DIR)/.venv/bin/pip install -r $(SCRIPTS)/requirements-semantic.txt && \
-	  HF_HOME=$(CURDIR)/.hf-cache $(MARKLLM_DIR)/.venv/bin/python $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --require-semantic --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
+	  "$(MARKLLM_DIR)/.venv/bin/python" -m pip install -r $(SCRIPTS)/requirements-semantic.txt && \
+	  HF_HOME=$(CURDIR)/.hf-cache "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --require-semantic --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
 	fi
 
 bootstrap-markdiffusion:

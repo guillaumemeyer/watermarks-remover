@@ -315,7 +315,7 @@ applied sequentially - each step's output feeds the next.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
   because the rewrite backend is assumed watermark-safe.
 
-    python3 service/scripts/bench_synthid_text.py \
+    ~/MarkLLM/.venv/bin/python service/scripts/bench_synthid_text.py \
       --markllm-dir ~/MarkLLM \
       --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
       --mode recipe --target-margin 0.03 --restamp-control --require-semantic \

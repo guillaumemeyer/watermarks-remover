@@ -1235,6 +1235,12 @@ def test_parse_weight_grid():
 
 def test_parse_float_grid():
     assert parse_float_grid("0.2,0.4,1.0") == [0.2, 0.4, 1.0]
+    with pytest.raises(SystemExit):
+        parse_float_grid("")  # empty grid
+    with pytest.raises(SystemExit):
+        parse_float_grid("0.2,x")  # non-numeric
+    with pytest.raises(SystemExit):
+        parse_float_grid("1.5")  # outside (0,1]
 
 
 def test_auc_perfect_and_random_and_empty():

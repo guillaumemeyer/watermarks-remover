@@ -52,7 +52,7 @@ from urllib.parse import urlparse
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from common import eprint, subprocess_creationflags  # noqa: E402
+from common import eprint, safe_arg, subprocess_creationflags  # noqa: E402
 from detect_text_watermark import SCHEMES  # noqa: E402  (single source of scheme names)
 from rewrite_text import _lexical_divergence  # noqa: E402
 from text_unicode import clean_text  # noqa: E402
@@ -154,6 +154,8 @@ def parse_float_grid(spec: str) -> list[float]:
         if not (0 < val <= 1):
             raise SystemExit(f"error: intensity must be in (0,1], got {val}")
         out.append(val)
+    if not out:
+        raise SystemExit("error: empty intensity grid")
     return out
 
 
@@ -465,7 +467,7 @@ def run_rewrite(
     if target_margin:
         cmd += ["--target-margin", str(target_margin)]
     if noop_lex_floor is not None:
-        cmd += ["--noop-lex-floor", str(noop_lex_floor)]
+        cmd += ["--noop-lex-floor", safe_arg(str(noop_lex_floor))]
     if allow_remote:
         cmd.append("--allow-remote")
     try:
