@@ -42,7 +42,8 @@ def test_inspect_image_synthid_watermark_marked_suspicious(monkeypatch):
 
     res = server._inspect_payload(data, "test.png", run_detect=False)
     assert res["ok"] is True
-    assert res["suspicious"] is True
+    assert res["suspicious"]["verdict"] is True
+    assert res["suspicious"]["classes"]["watermark_detector"]["present"] is True
     assert any("synthid" in f.lower() for f in res["report"]["findings"])
 
 
@@ -80,5 +81,6 @@ def test_inspect_image_synthid_clean_verdict_not_suspicious(monkeypatch):
 
     res = server._inspect_payload(data, "test.png", run_detect=False)
     assert res["ok"] is True
-    assert res["suspicious"] is False
+    assert res["suspicious"]["verdict"] is False
+    assert res["suspicious"]["classes"]["watermark_detector"]["present"] is False
     assert not any("synthid" in f.lower() for f in res["report"]["findings"])

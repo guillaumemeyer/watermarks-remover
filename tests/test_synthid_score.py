@@ -268,3 +268,40 @@ def test_synthid_score_http_blocks_redirect(tmp_path: Path):
     finally:
         collector.shutdown()
         redirector.shutdown()
+
+
+def test_synthid_http_uses_passed_data_not_a_reread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_synthid_score_http must build the request from supplied bytes and not
+    re-read the path (§4). A missing on-disk file plus data= proves it: the read
+    branch would return a 'cannot read' error, and the request body must carry
+    the passed bytes."""
+    import base64
+    import urllib.request
+
+    captured: dict[str, bytes] = {}
+
+    class _FakeResp:
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"available": True, "score": 0.1}).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):  # type: ignore[no-untyped-def]
+        captured["body"] = req.data
+        return _FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    missing = tmp_path / "never-created.png"
+    res = image_meta._synthid_score_http(missing, "http://sidecar.local", "", 1.0, data=b"PNGBYTES")
+
+    assert res == {"available": True, "score": 0.1}
+    sent = json.loads(captured["body"].decode("utf-8"))
+    assert base64.b64decode(sent["file"]) == b"PNGBYTES"

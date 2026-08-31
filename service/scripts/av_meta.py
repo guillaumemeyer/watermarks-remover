@@ -499,8 +499,9 @@ def _strip_wav(data: bytes, *, strip_all_metadata: bool) -> tuple[bytes, list[st
 # ---------------------------------------------------------------------------
 
 
-def inspect_av(path: Path) -> AVInspectReport:
-    data = path.read_bytes()
+def inspect_av(path: Path, *, data: bytes | None = None) -> AVInspectReport:
+    if data is None:
+        data = path.read_bytes()
     fmt = detect_av_format(data)
     if fmt == "mp4":
         has_c2pa, has_ai, findings = _inspect_mp4(data)

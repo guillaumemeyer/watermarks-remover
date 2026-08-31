@@ -168,7 +168,12 @@ def test_inspect_detect_is_opt_in(conn, monkeypatch, tmp_path):
     status, body = _post(conn, "/inspect", {"file": _b64(txt), "name": "notes.txt", "detect": True})
     assert status == 200
     assert "text_detectors" in body["report"]
-    assert body["suspicious"] is True
+    assert body["suspicious"]["verdict"] is True
+    wm = body["suspicious"]["classes"]["watermark_detector"]
+    assert wm["present"] is True
+    assert wm["strength"] == "scheme_specific"
+    assert wm["description"]
+    assert body["suspicious"]["description"]
 
 
 def test_clean_text_detect_before_after(conn, monkeypatch, tmp_path):

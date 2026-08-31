@@ -207,6 +207,96 @@ def _schema(**props: Any) -> dict[str, Any]:
     return props
 
 
+# Plain-language meaning of each evidence class, keyed by class name. Shared by
+# the OpenAPI schema and the runtime payload so the two never drift.
+_SUSPICIOUS_CLASS_DESCRIPTIONS = {
+    "provenance": (
+        "Observable, deterministic provenance metadata (C2PA/Content Credentials "
+        "or AI-metadata markers) embedded in the file. Strongest evidence class: "
+        "directly inspectable, not inferred."
+    ),
+    "layer_a_unicode": (
+        "Invisible/format Unicode carriers (Layer A) detected in the text body. "
+        "Deterministic but edit-based: a known carrier was present, not proof of "
+        "AI authorship."
+    ),
+    "watermark_detector": (
+        "A positive result from a detector configured for a specific watermark "
+        "scheme. Strong only for that scheme; it is not evidence of any other mark."
+    ),
+    "stylometry": (
+        "Stylometric AI-density score reached the threshold. Heuristic and "
+        "statistical: weaker than observable metadata and subject to false positives."
+    ),
+}
+
+
+def _suspicious_schema() -> dict[str, Any]:
+    """OpenAPI schema for the structured `suspicious` evidence object."""
+
+    def cls(name: str, strength: str, signals: dict[str, Any]) -> dict[str, Any]:
+        """Build the schema for one evidence class."""
+        return _schema(
+            type="object",
+            properties={
+                "present": _schema(type="boolean"),
+                "strength": _schema(type="string", description=strength),
+                "description": _schema(
+                    type="string", description=_SUSPICIOUS_CLASS_DESCRIPTIONS[name]
+                ),
+                "signals": _schema(type="object", properties=signals),
+            },
+        )
+
+    return _schema(
+        type="object",
+        description=(
+            "Heterogeneous evidence for suspected marking, reported per evidence "
+            "class so callers can weigh each signal instead of trusting one boolean. "
+            "Not a single provenance judgment."
+        ),
+        properties={
+            "verdict": _schema(type="boolean"),
+            "description": _schema(type="string"),
+            "classes": _schema(
+                type="object",
+                properties={
+                    "provenance": cls(
+                        "provenance",
+                        "definitive",
+                        {
+                            "has_c2pa": _schema(type="boolean"),
+                            "has_ai_metadata": _schema(type="boolean"),
+                        },
+                    ),
+                    "layer_a_unicode": cls(
+                        "layer_a_unicode",
+                        "deterministic",
+                        {"suspicious_total": _schema(type="integer")},
+                    ),
+                    "watermark_detector": cls(
+                        "watermark_detector",
+                        "scheme_specific",
+                        {
+                            "detected_any": _schema(type="boolean"),
+                            "detectors": _schema(type="array", items=_schema(type="object")),
+                        },
+                    ),
+                    "stylometry": cls(
+                        "stylometry",
+                        "heuristic",
+                        {
+                            # Non-text assets have no stylometry, so these are null.
+                            "score": _schema(type="number", nullable=True),
+                            "density_tier": _schema(type="string", nullable=True),
+                        },
+                    ),
+                },
+            ),
+        },
+    )
+
+
 def _file_request(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     schema: dict[str, Any] = {
         "type": "object",
@@ -339,7 +429,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                     properties={
                         "ok": _schema(type="boolean"),
                         "kind": _schema(type="string", enum=["text", "image", "container", "av"]),
-                        "suspicious": _schema(type="boolean"),
+                        "suspicious": _suspicious_schema(),
                         "report": _schema(type="object"),
                     },
                 )
@@ -418,7 +508,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                         type="string",
                                         enum=["text", "image", "container", "av", "unknown"],
                                     ),
-                                    "suspicious": _schema(type="boolean"),
+                                    "suspicious": _suspicious_schema(),
                                     "report": _schema(type="object"),
                                     "error": _schema(type="string"),
                                 },
@@ -680,14 +770,73 @@ def _batch_items(
     return items
 
 
+def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Break the collapsed `suspicious` boolean into explicit evidence classes.
+
+    Each class keeps its own evidentiary weight and a plain-language
+    `description`, so a downstream agent can weigh the signals rather than
+    treating one boolean as a unified provenance judgment.
+    """
+    detectors = report.get("text_detectors") or []
+    synthid_wm = synthid_is_watermarked(report.get("synthid"))
+    detected_wm = any(entry.get("available") and entry.get("is_watermarked") for entry in detectors) or synthid_wm
+    stylometry = report.get("stylometry") or {}
+    styl_score = stylometry.get("score") or 0.0
+    styl_present = stylometry.get("status") == "ok" and styl_score >= 0.65
+
+    classes = {
+        "provenance": {
+            "present": bool(report.get("has_c2pa") or report.get("has_ai_metadata")),
+            "strength": "definitive",
+            "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["provenance"],
+            "signals": {
+                "has_c2pa": bool(report.get("has_c2pa")),
+                "has_ai_metadata": bool(report.get("has_ai_metadata")),
+            },
+        },
+        "layer_a_unicode": {
+            "present": bool(report.get("suspicious_total")),
+            "strength": "deterministic",
+            "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["layer_a_unicode"],
+            "signals": {"suspicious_total": report.get("suspicious_total", 0)},
+        },
+        "watermark_detector": {
+            "present": detected_wm,
+            "strength": "scheme_specific",
+            "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["watermark_detector"],
+            "signals": {"detected_any": detected_wm, "detectors": detectors, "synthid": report.get("synthid")},
+        },
+        "stylometry": {
+            "present": styl_present,
+            "strength": "heuristic",
+            "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["stylometry"],
+            "signals": {
+                "score": stylometry.get("score"),
+                "density_tier": stylometry.get("density_tier"),
+            },
+        },
+    }
+
+    return {
+        "verdict": any(c["present"] for c in classes.values()),
+        "description": (
+            "Combined across heterogeneous evidence classes. A hint to inspect "
+            "further, not a single provenance judgment: a file flagged here is "
+            "not necessarily watermark-free or human-authored."
+        ),
+        "classes": classes,
+    }
+
+
 def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]:
+    """Inspect a file and return findings plus a structured suspicious report."""
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
         return {
             "ok": True,
             "kind": "unknown",
             "report": {"note": "unrecognized format; use a filename with a known extension"},
-            "suspicious": False,
+            "suspicious": _suspicious_report({}),
         }
     with tempfile.TemporaryDirectory(prefix="wm-inspect-") as tmp:
         path = _tmp_path(Path(tmp), name or "input")
@@ -704,28 +853,12 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
             if run_detect:
                 report["text_detectors"] = run_all_text_detectors(raw_text)
         elif kind == "image":
-            report = inspect_image(path).to_dict()
+            report = inspect_image(path, data=data).to_dict()
         elif kind == "av":
-            report = inspect_av(path).to_dict()
+            report = inspect_av(path, data=data).to_dict()
         else:
-            report = inspect_container(path).to_dict()
-    detected_wm = any(
-        entry.get("available") and entry.get("is_watermarked")
-        for entry in report.get("text_detectors") or []
-    )
-    synthid_wm = synthid_is_watermarked(report.get("synthid"))
-
-    suspicious = (
-        bool(report.get("suspicious_total"))
-        or bool(report.get("has_c2pa") or report.get("has_ai_metadata"))
-        or bool(
-            report.get("stylometry", {}).get("status") == "ok"
-            and (report.get("stylometry", {}).get("score") or 0.0) >= 0.65
-        )
-        or detected_wm
-        or synthid_wm
-    )
-    return {"ok": True, "kind": kind, "report": report, "suspicious": suspicious}
+            report = inspect_container(path, data=data).to_dict()
+    return {"ok": True, "kind": kind, "report": report, "suspicious": _suspicious_report(report)}
 
 
 def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
@@ -744,7 +877,7 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
             detections.append({"detector": "stylometry", "available": True, **s_rep.to_dict()})
             return {"ok": True, "kind": kind, "detections": detections}
         elif kind == "image":
-            score = run_synthid_score(path)
+            score = run_synthid_score(path, data=data)
             if score is None:
                 score = {
                     "detector": "synthid",
@@ -763,11 +896,11 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
                 "ok": True,
                 "kind": kind,
                 "detections": [],
-                "report": inspect_av(path).to_dict(),
+                "report": inspect_av(path, data=data).to_dict(),
             }
         else:
             detections = []
-            report = inspect_container(path).to_dict()
+            report = inspect_container(path, data=data).to_dict()
             return {
                 "ok": True,
                 "kind": kind,
@@ -855,7 +988,12 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             definitely_audio = is_audio_format(result.get("format", ""))
             is_audio = definitely_audio or (is_audio_name(name) and media_has_video(src) is False)
             if is_audio and options.get("remove_audio_watermark"):
-                audio_dest = _tmp_path(tmpdir, "out.m4a")
+                # The container-clean dest above is "out" + the input suffix, so an
+                # .m4a input made both paths "out.m4a". ffmpeg refuses to edit a file
+                # in place, which silently skipped the chain while /clean still 200'd,
+                # so keep the re-encode dest literally distinct (an input suffix can
+                # never be "-audio.m4a").
+                audio_dest = _tmp_path(tmpdir, "out-audio.m4a")
                 audio_res = audio_purify(dest, audio_dest)
                 result["audio_mark_removal"] = audio_res
                 if audio_res.get("available"):

@@ -2388,8 +2388,9 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
 # ---------------------------------------------------------------------------
 
 
-def inspect_container(path: Path) -> ContainerInspectReport:
-    data = path.read_bytes()
+def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInspectReport:
+    if data is None:
+        data = path.read_bytes()
     fmt = detect_container_format(path, data)
     tools: dict[str, Any] = {}
     details: dict[str, Any] = {}

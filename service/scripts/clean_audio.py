@@ -243,7 +243,12 @@ def audio_purify(
 
     rc, stderr = _run_ffmpeg(cmd, timeout, "ffmpeg audio degradation")
     if rc != 0:
-        return {"available": False, "error": (stderr or "").strip()[-2000:]}
+        err = (stderr or "").strip()
+        # ffmpeg's stderr is commonly led by its configure/build banner; keep the
+        # trailing lines where the actual failure reason appears so it isn't buried.
+        err_lines = [ln for ln in err.splitlines() if ln.strip()]
+        err = "\n".join(err_lines[-8:]) if err_lines else err
+        return {"available": False, "error": err[-2000:]}
 
     return {
         "available": True,

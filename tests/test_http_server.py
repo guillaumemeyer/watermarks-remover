@@ -11,6 +11,7 @@ import sys
 import threading
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -165,8 +166,12 @@ def test_inspect_text_finds_watermark(conn):
     status, body = _post(conn, "/inspect", {"file": _b64(data), "name": "note.txt"})
     assert status == 200
     assert body["kind"] == "text"
-    assert body["suspicious"] is True
+    assert body["suspicious"]["verdict"] is True
     assert body["report"]["suspicious_total"] == 2
+    layer_a = body["suspicious"]["classes"]["layer_a_unicode"]
+    assert layer_a["present"] is True
+    assert layer_a["strength"] == "deterministic"
+    assert layer_a["description"]
 
 
 def test_clean_text_roundtrip(conn):
@@ -232,6 +237,73 @@ def test_clean_av_honors_remove_audio_watermark(conn):
     assert "audio_mark_removal" in body["report"]
     assert "available" in body["report"]["audio_mark_removal"]
     assert len(base64.b64decode(body["cleaned"])) == body["report"]["bytes_out"]
+
+
+def test_clean_av_m4a_reencode_dest_distinct_from_container_clean(conn, monkeypatch):
+    """An .m4a input must not reuse the container-clean dest for the re-encode.
+
+    The AV branch derives the container-clean dest as ``out<ext>`` (so ``.m4a``
+    gives ``out.m4a``). If the audio chain re-used the same name, ffmpeg would
+    refuse to edit its input in place and silently skip the chain. This stubs
+    ``audio_purify`` so the regression is independent of whether ffmpeg is on
+    the runner.
+    """
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_purify(src: Path, dest: Path) -> dict:
+        calls.append((src, dest))
+        return {"available": False, "error": "spy: ffmpeg unavailable"}
+
+    monkeypatch.setattr(server, "audio_purify", fake_purify)
+    monkeypatch.setattr(server, "media_has_video", lambda path: False)
+
+    status, _ = _post(
+        conn,
+        "/clean",
+        {
+            "file": _b64(_minimal_mp4()),
+            "name": "audio.m4a",
+            "options": {"remove_audio_watermark": True},
+        },
+    )
+    assert status == 200
+    assert len(calls) == 1, "audio_purify should run once for an .m4a audio item"
+    src, dest = calls[0]
+    assert src != dest, "re-encode dest must be distinct from the container-clean dest"
+
+
+def test_clean_av_m4a_success_uses_reencode_dest_output(conn, monkeypatch):
+    """A successful purify run must become the returned report and cleaned bytes.
+
+    The success path re-points the handler at the re-encode dest: after the
+    chain writes its output there, `bytes_out`/`cleaned` must reflect that file,
+    not the earlier container-clean output.
+    """
+    out_bytes = _minimal_mp4()
+
+    def fake_purify(src: Path, dest: Path) -> dict:
+        dest.write_bytes(out_bytes)
+        return {"available": True, "tempo": 1.08, "pitch_semitones": 2.0, "codec": "aac"}
+
+    after = SimpleNamespace(has_c2pa=False, has_ai_metadata=False, findings=[], format="mp4")
+    monkeypatch.setattr(server, "audio_purify", fake_purify)
+    monkeypatch.setattr(server, "media_has_video", lambda path: False)
+    monkeypatch.setattr(server, "inspect_av", lambda path: after)
+
+    status, body = _post(
+        conn,
+        "/clean",
+        {
+            "file": _b64(_minimal_mp4()),
+            "name": "audio.m4a",
+            "options": {"remove_audio_watermark": True},
+        },
+    )
+    assert status == 200
+    assert body["report"]["audio_mark_removal"]["available"] is True
+    assert any("destructive audio watermark chain" in a for a in body["report"]["actions"])
+    assert body["report"]["bytes_out"] == len(out_bytes)
+    assert base64.b64decode(body["cleaned"]) == out_bytes
 
 
 def test_clean_av_rejects_invalid_remove_pixel(conn):
@@ -322,7 +394,12 @@ def test_inspect_unknown_format_reports_kind(conn):
     status, body = _post(conn, "/inspect", {"file": _b64(data), "name": "input"})
     assert status == 200
     assert body["kind"] == "unknown"
-    assert body["suspicious"] is False
+    assert body["suspicious"]["verdict"] is False
+    # No stylometry is computed for a non-text asset, so its signals are null
+    # rather than omitted; the OpenAPI schema must permit that.
+    styl = body["suspicious"]["classes"]["stylometry"]
+    assert styl["signals"]["score"] is None
+    assert styl["signals"]["density_tier"] is None
     assert "note" in body["report"]
 
 
@@ -401,9 +478,9 @@ def test_inspect_batch_mixed_results(conn):
     assert body["ok"] is True
     results = {r["name"]: r for r in body["results"]}
     assert results["a.txt"]["ok"] is True
-    assert results["a.txt"]["suspicious"] is True
+    assert results["a.txt"]["suspicious"]["verdict"] is True
     assert results["b.txt"]["ok"] is True
-    assert results["b.txt"]["suspicious"] is False
+    assert results["b.txt"]["suspicious"]["verdict"] is False
 
 
 def test_clean_batch_mixed_results(conn):
@@ -516,3 +593,19 @@ def test_log_message_includes_readable_timestamp(monkeypatch):
         lines[0],
     )
     assert lines[0].endswith('"GET /health HTTP/1.1" 200 -')
+
+
+def test_inspect_image_uses_passed_bytes_not_a_reread(tmp_path: Path):
+    """§4 read-dedup: when data= is passed, the stdlib parse uses those bytes
+    instead of re-reading the path. An empty file on disk (which would parse as
+    'unknown') paired with real PNG bytes proves the file was not re-read."""
+    import image_meta
+
+    png = _watermarked_png()
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+
+    rep = image_meta.inspect_image(empty, data=png)
+    assert rep.format == "png"
+    # The C2PA/AI marker lives only in the passed bytes, so the stdlib scan sees it.
+    assert rep.has_c2pa or rep.has_ai_metadata

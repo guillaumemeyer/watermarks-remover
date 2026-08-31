@@ -1497,13 +1497,19 @@ _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
 def _synthid_score_http(
-    path: Path, base_url: str, api_key: str, timeout: float
+    path: Path,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    *,
+    data: bytes | None = None,
 ) -> dict[str, Any] | None:
     """Score *path* via the HTTP sidecar (synthid_score_server.py)."""
-    try:
-        data = path.read_bytes()
-    except OSError as e:
-        return {"available": False, "error": f"cannot read {path}: {e}"}
+    if data is None:
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            return {"available": False, "error": f"cannot read {path}: {e}"}
     body = json.dumps({"file": base64.b64encode(data).decode("ascii")}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1552,6 +1558,8 @@ def _synthid_python(upstream: Path) -> str:
 def run_synthid_score(
     path: Path,
     upstream_dir: str | None = None,
+    *,
+    data: bytes | None = None,
 ) -> dict[str, Any] | None:
     """Run the optional reverse-SynthID scorer.
 
@@ -1568,7 +1576,7 @@ def run_synthid_score(
             timeout = float(os.environ.get("WATERMARKS_SYNTHID_SCORER_TIMEOUT", "60"))
         except ValueError:
             timeout = DEFAULT_SYNTHID_SCORER_TIMEOUT
-        return _synthid_score_http(path, scorer_url, api_key, timeout)
+        return _synthid_score_http(path, scorer_url, api_key, timeout, data=data)
     if upstream_dir is None:
         upstream_dir = os.environ.get("REVERSE_SYNTHID_DIR")
     if not upstream_dir:
