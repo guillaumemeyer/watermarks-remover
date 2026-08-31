@@ -27,5 +27,5 @@ class TestSvgSecurityHardening(unittest.TestCase):
         self.assertTrue(any("DOCTYPE" in a for a in actions))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
