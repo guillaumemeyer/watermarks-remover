@@ -36,6 +36,7 @@ def _create_synthetic_xlsx(
     with_custom_xml: bool = True,
     with_c2pa_image: bool = True,
 ) -> bytes:
+    """Create a synthetic XLSX workbook payload with core, extended, and custom metadata."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         # [Content_Types].xml
@@ -84,6 +85,7 @@ def _create_synthetic_xlsx(
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
   <Application>{app}</Application>
   <Company>OpenAI</Company>
+  <AppVersion>16.0300</AppVersion>
 </Properties>""",
         )
         # docProps/custom.xml
@@ -210,6 +212,7 @@ def test_pptx_detection_and_classification(tmp_path):
 
 
 def test_xlsx_inspect_and_clean():
+    """Verify inspect_xlsx detects provenance and clean_xlsx scrubs tracking metadata."""
     xlsx_bytes = _create_synthetic_xlsx()
 
     # Inspect
@@ -245,10 +248,11 @@ def test_xlsx_inspect_and_clean():
         assert "<dc:creator></dc:creator>" in core_xml
         assert "ChatGPT" not in core_xml
 
-        # Validate app.xml empties Application/Company
+        # Validate app.xml empties Application and Company while preserving AppVersion (#283)
         app_xml = zf.read("docProps/app.xml").decode("utf-8")
-        assert "<Application></Application>" in app_xml
-        assert "<Company></Company>" in app_xml
+        assert "<Application></Application>" in app_xml or "<Application/>" in app_xml
+        assert "<Company></Company>" in app_xml or "<Company/>" in app_xml
+        assert "<AppVersion>16.0300</AppVersion>" in app_xml
 
         # Validate Layer A removed \u200b
         sst_xml = zf.read("xl/sharedStrings.xml").decode("utf-8")
