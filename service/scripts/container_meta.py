@@ -779,14 +779,20 @@ def _xml_decl_end(text: str, i: int, keyword: str) -> int:
     while j < n:
         c = text[j]
         if quote is not None:
-            # An open quote spanning a newline outside an internal subset does
-            # not occur in a well-formed declaration; treat it as unterminated
-            # rather than deleting content past the declaration.
-            if c == "\n" and subset_depth == 0:
-                return -1
+            # Line breaks are legal inside quoted system/public literals and
+            # entity values, so they don't terminate the declaration; the first
+            # unquoted '>' ends it.
             if c == quote:
                 quote = None
             j += 1
+            continue
+        # DTD comments inside the internal subset must not affect subset_depth
+        # or look like a close, so skip them whole.
+        if text.startswith("<!--", j):
+            end = text.find("-->", j)
+            if end == -1:
+                return -1
+            j = end + 3
             continue
         if c in "\"'":
             quote = c
@@ -873,6 +879,68 @@ def _strip_xml_declarations(text: str) -> tuple[str, int]:
     return "".join(out), removed
 
 
+def _strip_root_svg_attrs(text: str) -> tuple[str, int]:
+    """Remove provenance attributes from the root <svg ...> start tag only.
+
+    The attribute substitution runs on the parsed root start tag so matching
+    text in CDATA, comments, or text content is untouched. Both single- and
+    double-quoted attribute values are supported.
+    """
+    n = len(text)
+    i = 0
+    start = -1
+    while i < n:
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text[i : i + 4].lower() == "<svg":
+            nxt = text[i + 4 : i + 5]
+            if not (nxt and (nxt.isalnum() or nxt in "_:.-")):
+                start = i
+                break
+        i += 1
+    if start == -1:
+        return text, 0
+    # Find the quote-aware '>' that closes the start tag.
+    j = start + 4
+    quote: str | None = None
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == ">":
+            break
+        j += 1
+    else:
+        return text, 0  # unclosed start tag; leave as-is
+    tag = text[start : j + 1]
+    new_tag, cnt = re.subn(
+        r'\s(?:inkscape:version|sodipodi:docname|generator)\s*=\s*("[^"]*"|\'[^\']*\')',
+        "",
+        tag,
+        flags=re.I,
+    )
+    if not cnt:
+        return text, 0
+    return text[:start] + new_tag + text[j + 1 :], cnt
+
+
 def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     """Strip AI provenance metadata from SVG content, returning (bytes, actions).
 
@@ -914,18 +982,12 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    # Strip generator-like attributes on the root element independently of the
-    # actions above, so they are removed whenever present (not only when nothing
-    # else needed cleaning).
-    new, n = re.subn(
-        r'\s(inkscape:version|sodipodi:docname|generator)\s*=\s*"[^"]*"',
-        "",
-        text,
-        flags=re.I,
-    )
+    # Strip generator-like attributes on the root <svg> start tag independently
+    # of the actions above, so they are removed whenever present (not only when
+    # nothing else needed cleaning).
+    text, n = _strip_root_svg_attrs(text)
     if n:
         actions.append(f"drop generator-like attrs x{n}")
-        text = new
     if not actions:
         actions.append("no SVG metadata removed")
     return text.encode("utf-8", errors="surrogateescape"), actions
