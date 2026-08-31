@@ -312,9 +312,12 @@ applied sequentially - each step's output feeds the next.
   union of all candidates, so it is weight-independent. The "recommended" recipe
   is the frontier point best matching `--recommend-weight` (a
   w_removal/w_semantic/w_human triple summing to 1.0, default `0.5/0.3/0.2`).
-  If no recipe in the searched space clears the mark, the report says the mark
-  **resists** the searched attacks at that token length rather than leaving an
-  empty frontier to interpret.
+  The report's **Verdict** section distinguishes the no-clear cases rather than
+  calling every empty result `resists`: it reports **resists** only when the
+  best verified robust clear % is 0.0, and **undetermined** when no candidate
+  recipe was evaluable (all three axes missing, so no verified clear rate
+  exists). Either way, an empty or unevaluable search is stated explicitly
+  instead of leaving an empty frontier to interpret.
 - `--recipes "chunk@0.6,paraphrase@0.3"` composes and scores one explicit recipe
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**

@@ -564,6 +564,34 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
     assert bench.main() == 0
 
 
+def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, capsys):
+    """A --beam or --max-passes below 1 fails fast in recipe mode.
+
+    Otherwise --beam 0 empties the beam (and --max-passes 0 skips all Phase 2
+    expansion) and the run reports a verdict from single-step candidates only.
+    """
+    (tmp_path / "markllm" / "watermark").mkdir(parents=True)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "d1.txt").write_text("prompt", encoding="utf-8")
+    monkeypatch.setattr(bench, "Benchmark", _FakeBench)
+    base = [
+        "bench_synthid_text.py",
+        "--markllm-dir",
+        str(tmp_path / "markllm"),
+        "--corpus",
+        str(corpus),
+        "--rewrite-model",
+        "llama3.2",
+        "--mode",
+        "recipe",
+    ]
+    monkeypatch.setattr(sys, "argv", [*base, "--beam", "0"])
+    assert bench.main() == 1
+    monkeypatch.setattr(sys, "argv", [*base, "--max-passes", "0"])
+    assert bench.main() == 1
+
+
 def test_worker_publishes_port_env(tmp_path, monkeypatch):
     """A live worker publishes WATERMARKS_MARKLLM_PORT for child processes."""
 
@@ -1243,6 +1271,17 @@ def test_parse_weight_grid():
         parse_weight_grid("0.5/0.5/0.5")  # does not sum to 1.0
     with pytest.raises(SystemExit):
         parse_weight_grid("0.33/0.33/0.33")  # sums to 0.99
+    # Non-numeric, non-finite, and negative components must be rejected before
+    # (or independently of) the sum check; NaN/negative vectors slip through a
+    # sum-only check because NaN comparisons are false and -1/1/1 sums to 1.0.
+    with pytest.raises(SystemExit):
+        parse_weight_grid("a/0.5/0.5")  # non-numeric
+    with pytest.raises(SystemExit):
+        parse_weight_grid("nan/nan/nan")  # non-finite
+    with pytest.raises(SystemExit):
+        parse_weight_grid("inf/0.5/0.5")  # non-finite
+    with pytest.raises(SystemExit):
+        parse_weight_grid("-1/1/1")  # negative cumulative
 
 
 def test_parse_weight_vec():
@@ -1253,6 +1292,8 @@ def test_parse_weight_vec():
         parse_weight_vec("0.5/0.5")  # not three components
     with pytest.raises(SystemExit):
         parse_weight_vec("0.33/0.33/0.33")  # sums to 0.99
+    # A zero weight is a legitimate "ignore this axis" vector.
+    assert parse_weight_vec("0.0/0.5/0.5") == (0.0, 0.5, 0.5)
 
 
 def test_weighted_score():
@@ -1455,6 +1496,61 @@ def test_recipe_search_explores_intensity_and_order(tmp_path, monkeypatch):
     # The recommended recipe comes from the weight-independent frontier.
     assert res["recommended"] is not None
     assert res["recommended"]["steps"]
+
+
+def test_recipe_search_reuses_evaluated_recipe_across_weights(tmp_path, monkeypatch):
+    """A recipe shared by two weight vectors stays eligible for the later beam.
+
+    Regression: `_eval` used to return None for a recipe already evaluated under
+    an earlier weight vector, which dropped it from the later vector's beam and
+    left its descendants unexplored. Here chunk is anti-correlated: the removal
+    weight vector picks chunk@0.2 while the semantic weight vector picks
+    chunk@1.0, so both weights share prefixes like paraphrase@1.0+backtranslate
+    @1.0 but diverge on the chunk tail. The cache must return the already-evaluated
+    axis so the semantic vector keeps that prefix in its beam and explores the
+    chunk@1.0 descendants.
+    """
+    axis = {
+        "paraphrase": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "backtranslate": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "structural": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "humanize": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "chunk": {1.0: (0.1, 0.1, 0.9), 0.2: (1.0, 0.9, 0.2)},
+    }
+
+    def evaluate(recipe, samples=None):
+        robust = []
+        semi = []
+        human = []
+        for strength, level in recipe:
+            r, s, h = axis[strength][level]
+            robust.append(r)
+            semi.append(s)
+            human.append(h)
+        return {
+            "robust_clear_rate": round(sum(robust) / len(robust), 4),
+            "sem_div": round(sum(semi) / len(semi), 4),
+            "human_like": round(sum(human) / len(human), 4),
+            "n": 2,
+            "unverified": 0,
+        }
+
+    args = _args(
+        out_dir=tmp_path,
+        intensity_grid="0.2,1.0",
+        weight_grid="1.0/0.0/0.0,0.0/1.0/0.0",
+        beam=8,
+        max_passes=3,
+        phase2_levels_per_strength=1,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    monkeypatch.setattr(b, "_eval_recipe", evaluate)
+    samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
+    res = b.recipe_search(samples, tmp_path / "work")
+
+    seen = {tuple(c["steps"]) for c in res["candidates"]}
+    assert (("paraphrase", 1.0), ("backtranslate", 1.0), ("chunk", 1.0)) in seen
 
 
 def test_human_likeness_backend_fallback():

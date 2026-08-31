@@ -166,7 +166,14 @@ def parse_weight_grid(spec: str) -> list[tuple[float, float, float]]:
         parts = raw.strip().split("/")
         if len(parts) != 3:
             raise SystemExit(f"error: bad weight vector {raw!r}; expected a/b/c")
-        w = tuple(float(x) for x in parts)
+        try:
+            w = tuple(float(x) for x in parts)
+        except ValueError:
+            raise SystemExit(f"error: non-numeric weight component in {raw!r}") from None
+        if not all(math.isfinite(c) for c in w):
+            raise SystemExit(f"error: weight vector {raw!r} must be finite")
+        if any(c < 0.0 for c in w):
+            raise SystemExit(f"error: weight vector {raw!r} must be non-negative")
         if abs(sum(w) - 1.0) > 1e-6:
             raise SystemExit(f"error: weight vector {raw!r} does not sum to 1.0")
         out.append((w[0], w[1], w[2]))  # type: ignore[assignment]
@@ -1596,18 +1603,18 @@ class Benchmark:
         weights = parse_weight_grid(a.weight_grid)
         recommend_w = parse_weight_vec(getattr(a, "recommend_weight", "0.5/0.3/0.2"))
         k = max(1, int(getattr(a, "phase2_levels_per_strength", 3)))
-        seen: set[tuple] = set()
+        evaluated: dict[tuple[tuple[str, float], ...], dict] = {}
         cands: list[dict] = []
 
         def _eval(recipe: list[tuple[str, float]]) -> dict | None:
             """eval."""
             key = tuple(recipe)
-            if key in seen:
-                return None
-            seen.add(key)
+            if key in evaluated:
+                return evaluated[key]
             axis = self._eval_recipe(recipe, samples)
             axis["steps"] = list(recipe)
             cands.append(axis)
+            evaluated[key] = axis
             return axis
 
         # Phase 1: per-strength intensity sweep (single-step recipes).
@@ -2756,6 +2763,12 @@ def main() -> int:
         parse_weight_vec(args.recommend_weight)
         if args.phase2_levels_per_strength < 1:
             eprint("error: --phase2-levels-per-strength must be >= 1")
+            return 1
+        if args.beam < 1:
+            eprint("error: --beam must be >= 1")
+            return 1
+        if args.max_passes < 1:
+            eprint("error: --max-passes must be >= 1")
             return 1
         if args.recipes:
             parse_recipe(args.recipes)
