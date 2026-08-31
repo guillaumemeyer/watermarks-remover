@@ -874,6 +874,14 @@ def _strip_xml_declarations(text: str) -> tuple[str, int]:
 
 
 def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
+    """Strip AI provenance metadata from SVG content, returning (bytes, actions).
+
+    Removes <metadata>/<xmpmeta> blocks, XML DOCTYPE and ENTITY declarations,
+    AI-marker comments, and embedded data URIs, and drops generator-like
+    attributes on the root element. Declaration stripping is context-aware so
+    the document body, CDATA sections, comments, and quoted attribute values are
+    preserved.
+    """
     actions: list[str] = []
     text = data.decode("utf-8", errors="surrogateescape")
     # Drop metadata blocks (linear scan - lazy .*? is quadratic on unclosed tags)
