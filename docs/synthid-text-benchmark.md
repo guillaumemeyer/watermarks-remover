@@ -305,11 +305,16 @@ applied sequentially - each step's output feeds the next.
   produces the per-strength intensity curves (robust %, sem div, human_like vs
   intensity).
 - Phase 2 runs a beam search (`--beam`, `--max-passes`) once per weight vector in
-  `--weight-grid`, appending the best single steps. The scalarized objective
-  (`0.5 removal / 0.3 meaning / 0.2 human`) only drives the search.
+  `--weight-grid`, combining an order of strengths with the top
+  `--phase2-levels-per-strength` intensities for that weight, so both step order
+  and intensity are explored.
 - The report's **Pareto frontier** is computed by dominance (no weights) over the
   union of all candidates, so it is weight-independent. The "recommended" recipe
-  is one highlighted point on it.
+  is the frontier point best matching `--recommend-weight` (a
+  w_removal/w_semantic/w_human triple summing to 1.0, default `0.5/0.3/0.2`).
+  If no recipe in the searched space clears the mark, the report says the mark
+  **resists** the searched attacks at that token length rather than leaving an
+  empty frontier to interpret.
 - `--recipes "chunk@0.6,paraphrase@0.3"` composes and scores one explicit recipe
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
@@ -324,4 +329,6 @@ applied sequentially - each step's output feeds the next.
 
 A recipe search is expensive (each candidate = a full rewrite chain per sample).
 Run Phase 1 coarsely first with fewer docs/seeds, then confirm the winning
-recipes on a larger run with adequate statistical power.
+recipes on a larger run with adequate statistical power. Lower
+`--phase2-levels-per-strength` (or cut docs/seeds, `--beam`, `--max-passes`) to
+keep a run inside a tight wall-clock budget.

@@ -23,8 +23,11 @@ sys.path.insert(0, str(SCRIPTS))
 import bench_synthid_text as bench
 from bench_synthid_text import (
     _auc,
+    _best_on_frontier,
     _pareto_frontier,
     _parse_stats_json,
+    _recipe_verdict,
+    _weighted_score,
     aggregate,
     estimate_tokens,
     load_corpus,
@@ -32,6 +35,7 @@ from bench_synthid_text import (
     parse_recipe,
     parse_variants,
     parse_weight_grid,
+    parse_weight_vec,
 )
 
 DETECT_POS = {"available": True, "is_watermarked": True, "score": 2.0}
@@ -88,9 +92,11 @@ def _args(**overrides):
         human_backend="stylometry",
         human_detector_dir=None,
         intensity_grid="0.2,0.4,0.6,0.8,1.0",
-        weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.33/0.33/0.33",
+        weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.34/0.33/0.33",
         beam=4,
         max_passes=3,
+        phase2_levels_per_strength=3,
+        recommend_weight="0.5/0.3/0.2",
         recipes=None,
         layer_a_after=False,
     )
@@ -1227,10 +1233,75 @@ def test_parse_recipe_valid_and_invalid():
 
 def test_parse_weight_grid():
     assert parse_weight_grid("0.8/0.1/0.1,0.5/0.3/0.2") == [(0.8, 0.1, 0.1), (0.5, 0.3, 0.2)]
+    # The out-of-the-box default grid must be valid (each vector sums to 1.0);
+    # a 0.33/0.33/0.33 vector sums to 0.99 and is rejected.
+    default_grid = "0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.34/0.33/0.33"
+    assert len(parse_weight_grid(default_grid)) == 5
     with pytest.raises(SystemExit):
         parse_weight_grid("0.5/0.5")  # not three components
     with pytest.raises(SystemExit):
         parse_weight_grid("0.5/0.5/0.5")  # does not sum to 1.0
+    with pytest.raises(SystemExit):
+        parse_weight_grid("0.33/0.33/0.33")  # sums to 0.99
+
+
+def test_parse_weight_vec():
+    assert parse_weight_vec("0.5/0.3/0.2") == (0.5, 0.3, 0.2)
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.5/0.3/0.2,0.1/0.2/0.7")  # more than one vector
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.5/0.5")  # not three components
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.33/0.33/0.33")  # sums to 0.99
+
+
+def test_weighted_score():
+    axis = {"robust_clear_rate": 0.8, "sem_div": 0.2, "human_like": 0.7}
+    assert round(_weighted_score(axis, (1.0, 0.0, 0.0)), 4) == 0.8
+    assert round(_weighted_score(axis, (0.0, 1.0, 0.0)), 4) == 0.8  # 1 - sem = 0.8
+    assert round(_weighted_score(axis, (0.0, 0.0, 1.0)), 4) == 0.7
+    assert (
+        _weighted_score({"robust_clear_rate": None, "sem_div": 0.2, "human_like": 0.7}, (1, 0, 0))
+        is None
+    )
+
+
+def test_best_on_frontier_shifts_with_weight():
+    a = {"steps": [("chunk", 0.6)], "robust_clear_rate": 1.0, "sem_div": 0.9, "human_like": 0.1}
+    b = {
+        "steps": [("paraphrase", 0.3)],
+        "robust_clear_rate": 0.0,
+        "sem_div": 0.1,
+        "human_like": 1.0,
+    }
+    pick_removal = _best_on_frontier([a, b], [a, b], (1.0, 0.0, 0.0))
+    pick_human = _best_on_frontier([a, b], [a, b], (0.0, 0.0, 1.0))
+    assert pick_removal["steps"] == [("chunk", 0.6)]
+    assert pick_human["steps"] == [("paraphrase", 0.3)]
+    # Empty frontier falls back to the best candidate under the weight.
+    fallback = _best_on_frontier([], [a, b], (1.0, 0.0, 0.0))
+    assert fallback["steps"] == [("chunk", 0.6)]
+
+
+def test_recipe_verdict():
+    def c(rate):
+        return {"robust_clear_rate": rate, "sem_div": 0.2, "human_like": 0.7}
+
+    assert _recipe_verdict([c(1.0)]) == "removable"
+    assert _recipe_verdict([c(0.5)]) == "partial"
+    assert _recipe_verdict([c(0.0)]) == "resists"
+    assert _recipe_verdict([]) == "undetermined"
+    assert _recipe_verdict([{"sem_div": 0.2, "human_like": 0.7}]) == "undetermined"
+
+
+def test_render_recipe_verdict_resists():
+    res = {
+        "candidates": [{"robust_clear_rate": 0.0, "sem_div": 0.8, "human_like": 0.2}],
+        "verdict": "resists",
+    }
+    text = bench._render_recipe_verdict(res)
+    assert "resists" in text.lower()
+    assert "at this token length" in text.lower()
 
 
 def test_parse_float_grid():
@@ -1341,6 +1412,49 @@ def test_compose_recipe_applies_steps_in_order(tmp_path, monkeypatch):
     assert calls[0] == ("chunk", 0.6, "base")
     assert calls[1] == ("paraphrase", 0.3, "base|chunk")  # step 1 output feeds step 2
     assert out == "base|chunk|paraphrase"
+
+
+def _spot_eval(recipe):
+    """Deterministic stand-in for _eval_recipe used by the recipe_search smoke test."""
+    n = len(recipe)
+    max_lv = max(lv for _s, lv in recipe)
+    rob = min(1.0, 0.2 * n + 0.1 * max_lv)
+    sem = 0.1 * n + 0.05 * (1.0 - max_lv)
+    human = 0.4 + 0.1 * min(n, 2)
+    return {
+        "robust_clear_rate": round(rob, 4),
+        "sem_div": round(sem, 4),
+        "human_like": round(human, 4),
+        "n": 2,
+        "unverified": 0,
+    }
+
+
+def test_recipe_search_explores_intensity_and_order(tmp_path, monkeypatch):
+    args = _args(
+        out_dir=tmp_path,
+        intensity_grid="0.2,0.8,1.0",
+        weight_grid="0.5/0.3/0.2",
+        beam=4,
+        max_passes=3,
+        phase2_levels_per_strength=3,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    monkeypatch.setattr(b, "_eval_recipe", lambda recipe, _samples: _spot_eval(recipe))
+    samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
+    res = b.recipe_search(samples, tmp_path / "work")
+
+    # High-intensity levels are actually explored, not frozen to one best level.
+    levels_seen = {lv for c in res["candidates"] for _s, lv in c["steps"]}
+    assert any(lv > 0.2 for lv in levels_seen)
+    # Ordered composition never re-uses a strength.
+    for c in res["candidates"]:
+        strengths = [s for s, _lv in c["steps"]]
+        assert len(strengths) == len(set(strengths))
+    # The recommended recipe comes from the weight-independent frontier.
+    assert res["recommended"] is not None
+    assert res["recommended"]["steps"]
 
 
 def test_human_likeness_backend_fallback():
