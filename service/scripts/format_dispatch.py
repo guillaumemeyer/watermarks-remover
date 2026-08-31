@@ -50,11 +50,9 @@ CONTAINER_EXTS = {
     ".markdown",
     ".mdx",
 }
-#: Plain-text formats the Layer A scanner reads. An extension that is absent
-#: here, and whose bytes sniff as neither image nor container nor av,
-#: classifies as "unknown" — audit_lib skips it and check_staged passes it
-#: without a word, so a carrier in an unlisted extension is silently missed.
-#: Keep this table broad: every entry only has to decode as text.
+#: Plain-text formats the Layer A scanner reads and the clean hooks rewrite. An
+#: absent suffix is left unread and unrouted, so keep this table broad: every
+#: entry only has to decode as text.
 TEXT_EXTS = {
     ".txt",
     ".text",
@@ -110,7 +108,9 @@ TEXT_EXTS = {
     ".asciidoc",
     ".org",
     ".tex",
-    # Localization resources: where user-facing strings actually live
+    # Localization resources: where user-facing strings actually live. Text is
+    # read as UTF-8, so this covers UTF-8 .po/.pot/.arb; UTF-16 .strings still
+    # needs the BOM-aware decoder.
     ".po",
     ".pot",
     ".strings",
