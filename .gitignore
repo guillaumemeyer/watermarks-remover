@@ -36,11 +36,16 @@
 !/requirements-dev.txt
 !/ruff.toml
 !/SECURITY.md
+!/stealer/
+!/stealer/**
 
 # Exceptions even inside allowed trees
 .env
 **/__pycache__/
 *.pyc
+# The stealer's downloaded prompt corpus is generated data, not source.
+stealer/prompts/
+stealer/prompts/**
 .venv/
 .firecrawl/
 .figlet/
