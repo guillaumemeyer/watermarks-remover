@@ -779,7 +779,10 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
     """
     detectors = report.get("text_detectors") or []
     synthid_wm = synthid_is_watermarked(report.get("synthid"))
-    detected_wm = any(entry.get("available") and entry.get("is_watermarked") for entry in detectors) or synthid_wm
+    detected_wm = (
+        any(entry.get("available") and entry.get("is_watermarked") for entry in detectors)
+        or synthid_wm
+    )
     stylometry = report.get("stylometry") or {}
     styl_score = stylometry.get("score") or 0.0
     styl_present = stylometry.get("status") == "ok" and styl_score >= 0.65
@@ -804,7 +807,11 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
             "present": detected_wm,
             "strength": "scheme_specific",
             "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["watermark_detector"],
-            "signals": {"detected_any": detected_wm, "detectors": detectors, "synthid": report.get("synthid")},
+            "signals": {
+                "detected_any": detected_wm,
+                "detectors": detectors,
+                "synthid": report.get("synthid"),
+            },
         },
         "stylometry": {
             "present": styl_present,
