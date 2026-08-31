@@ -2315,11 +2315,11 @@ def which_ghostscript() -> str | None:
 
 def _exiftool_strip(
     exiftool: str, dest: Path, actions: list[str], deadline: "_Deadline | None" = None
-) -> None:
+) -> bool:
     """Run ``exiftool -all=`` over *dest* in place, recording the outcome."""
     if deadline is not None and deadline.spent():
         actions.append("exiftool skipped: clean budget exhausted")
-        return
+        return False
     try:
         r = subprocess.run(
             [exiftool, "-all=", "-overwrite_original", safe_arg(str(dest))],
@@ -2333,8 +2333,10 @@ def _exiftool_strip(
             creationflags=subprocess_creationflags,
         )
         actions.append(f"exiftool -all= (rc={r.returncode})")
+        return r.returncode == 0
     except Exception as e:
         actions.append(f"exiftool failed: {e}")
+        return False
 
 
 def _pdf_deep_image_clean(
@@ -2471,34 +2473,44 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
     exiftool = which("exiftool")
     rewritten = False
 
+    def _stdlib_document_strip(source: bytes) -> str:
+        """Apply the byte-preserving fallback and return its reported mode."""
+        blanked, n = _blank_xmp_packets(source)
+        safe_write_bytes(dest, blanked if n else source)
+        if n:
+            actions.append(f"blanked XMP xpacket x{n} (degraded; byte offsets preserved)")
+            actions.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
+            return "stdlib-xmp"
+        actions.append(
+            "no PDF cleaner available (install exiftool for reliable metadata "
+            "strip); document-level metadata left as-is"
+        )
+        return "copy"
+
     if exiftool:
         safe_write_bytes(dest, data)
-        _exiftool_strip(exiftool, dest, actions, deadline)
-        # exiftool writes PDFs *incrementally*: it appends a
-        # %BeginExifToolUpdate block that frees the Info object and drops
-        # /Info from the trailer, but the original metadata bytes stay in the
-        # file verbatim and are trivially recoverable (exiftool itself can
-        # revert them with -PDF-update:all=). A structural rewrite is what
-        # actually drops the now-unreferenced objects.
-        rewritten = _pdf_structural_rewrite(dest, actions, deadline)
-        document_mode = "exiftool"
+        if not _exiftool_strip(exiftool, dest, actions, deadline):
+            # An installed exiftool can still reject malformed or unsupported
+            # PDFs. Fall back to the same byte-preserving XMP scrub as the
+            # no-exiftool path, and report the result as degraded instead of
+            # claiming the optional cleaner completed.
+            document_mode = _stdlib_document_strip(data)
+            exiftool = None
+        else:
+            # exiftool writes PDFs *incrementally*: it appends a
+            # %BeginExifToolUpdate block that frees the Info object and drops
+            # /Info from the trailer, but the original metadata bytes stay in the
+            # file verbatim and are trivially recoverable (exiftool itself can
+            # revert them with -PDF-update:all=). A structural rewrite is what
+            # actually drops the now-unreferenced objects.
+            rewritten = _pdf_structural_rewrite(dest, actions, deadline)
+            document_mode = "exiftool"
     else:
         # Degraded document-level strip: obvious XMP packets and nothing else.
         # The deep-image ladder below still runs -- Ghostscript reaches metadata
         # inside image XObjects on its own, and gating that on exiftool left the
         # only tool that can do that job unused.
-        blanked, n = _blank_xmp_packets(data)
-        safe_write_bytes(dest, blanked if n else data)
-        if n:
-            actions.append(f"blanked XMP xpacket x{n} (degraded; byte offsets preserved)")
-            actions.append("warning: pure-stdlib PDF strip is best-effort; prefer exiftool")
-            document_mode = "stdlib-xmp"
-        else:
-            actions.append(
-                "no PDF cleaner available (install exiftool for reliable metadata "
-                "strip); document-level metadata left as-is"
-            )
-            document_mode = "copy"
+        document_mode = _stdlib_document_strip(data)
 
     # Document-level strip is done. Metadata inside embedded images is out
     # of reach from here, so decide whether to re-distill.
@@ -2515,12 +2527,17 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
     def _settle(ran: bool) -> None:
         # pdfwrite stamps its own /Producer, and exiftool edits PDFs
         # incrementally, so re-serialize once more after removing it.
-        nonlocal rewritten
+        nonlocal document_mode, exiftool, rewritten
         if not ran:
             return
         if exiftool:
-            _exiftool_strip(exiftool, dest, actions, deadline)
-            rewritten = _pdf_structural_rewrite(dest, actions, deadline) or rewritten
+            current = dest.read_bytes()
+            if _exiftool_strip(exiftool, dest, actions, deadline):
+                rewritten = _pdf_structural_rewrite(dest, actions, deadline) or rewritten
+            else:
+                document_mode = _stdlib_document_strip(current)
+                exiftool = None
+                rewritten = False
         else:
             # Trading a vendor mark for a Ghostscript one is still worth it,
             # but the caller should not have to discover the swap.
