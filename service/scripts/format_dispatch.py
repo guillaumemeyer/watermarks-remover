@@ -50,6 +50,11 @@ CONTAINER_EXTS = {
     ".markdown",
     ".mdx",
 }
+#: Plain-text formats the Layer A scanner reads. An extension that is absent
+#: here, and whose bytes sniff as neither image nor container nor av,
+#: classifies as "unknown" — audit_lib skips it and check_staged passes it
+#: without a word, so a carrier in an unlisted extension is silently missed.
+#: Keep this table broad: every entry only has to decode as text.
 TEXT_EXTS = {
     ".txt",
     ".text",
@@ -70,6 +75,53 @@ TEXT_EXTS = {
     ".yml",
     ".toml",
     ".csv",
+    # Compiled, JVM and systems languages
+    ".c",
+    ".h",
+    ".cpp",
+    ".cc",
+    ".hpp",
+    ".cs",
+    ".java",
+    ".kt",
+    ".kts",
+    ".swift",
+    ".scala",
+    ".dart",
+    # Scripting languages
+    ".rb",
+    ".php",
+    ".lua",
+    ".pl",
+    ".r",
+    # Shell and query languages
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".sql",
+    # Single-file web components
+    ".vue",
+    ".svelte",
+    ".astro",
+    # Prose and documentation markup
+    ".rst",
+    ".adoc",
+    ".asciidoc",
+    ".org",
+    ".tex",
+    # Localization resources: where user-facing strings actually live
+    ".po",
+    ".pot",
+    ".strings",
+    ".arb",
+    ".resx",
+    ".properties",
+    # Config and tabular data
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".tsv",
 }
 
 
