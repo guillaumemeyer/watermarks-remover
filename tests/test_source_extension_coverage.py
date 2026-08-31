@@ -1,23 +1,8 @@
-"""An invisible carrier must not change verdict with the file extension.
+"""A carrier's verdict must not depend on the file extension.
 
-``TEXT_EXTS`` in ``format_dispatch.py`` grew one contributor at a time: it
-carried ``.gd``/``.gdshader`` for Godot and the whole JS/TS family, but none of
-C, C++, Java, Kotlin, C#, Ruby, PHP, Swift, shell, SQL, reStructuredText, or any
-localization resource format. ``classify()`` answered ``unknown`` for those, and
-both consumers read ``unknown`` as nothing to say: ``audit_lib`` records
-"unrecognized format; not scanned", and ``check_staged.py`` skips the file
-without printing a line, so the pre-commit gate returned 0.
-
-Witness before the fix — ten files, each carrying exactly one U+200B::
-
-    Files skipped: 0
-    Files scanned: 10
-    By kind: {'unknown': 7, 'text': 2, 'markdown': 1}
-    Actionable files: 3
-
-Only ``.txt``, ``.md`` and ``.ts`` were read; the summary still counted all ten
-as scanned. On a Java, C++, Ruby, PHP or shell repository the
-``watermarks-remover-check`` hook was a gate that always returned 0.
+Extensions outside the JS/TS/Python family used to classify as ``unknown``,
+which both consumers read as nothing to say; these tests pin that a source or
+localization file is read the same as ``.txt``.
 """
 
 from __future__ import annotations
