@@ -701,6 +701,13 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
         actions.append(f"drop xmpmeta x{n}")
         text = new
 
+    # Drop XML DOCTYPE and ENTITY declarations
+    text, dt_count = re.subn(r"<!DOCTYPE\s+[^\[>]*(\[[^\]]*\])?\s*>", "", text, flags=re.I)
+    text, ent_count = re.subn(r"<!ENTITY\s+[^>]*>", "", text, flags=re.I)
+    total_cleaned = dt_count + ent_count
+    if total_cleaned:
+        actions.append(f"drop DOCTYPE/entity declarations x{total_cleaned}")
+
     # Drop comments that look like provenance (linear scan)
     def _cmt(block: str) -> bool:
         return bool(AI_META_NAME_RE.search(block))
