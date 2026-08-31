@@ -192,6 +192,20 @@ def test_inspect_report_to_dict_includes_synthid():
     assert empty.to_dict()["synthid"] is None
 
 
+def test_inspect_image_synthid_null_confidence_handled(tmp_path, monkeypatch):
+    img = tmp_path / "shot.png"
+    img.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x00\x00\x00\x00:~\x9bU\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    monkeypatch.setattr(
+        image_meta,
+        "run_synthid_score",
+        lambda *a, **k: {"available": True, "is_watermarked": True, "confidence": None},
+    )
+    report = image_meta.inspect_image(img)
+    assert any("SynthID pixel watermark detected" in f for f in report.findings)
+
+
 def test_synthid_score_http_blocks_redirect(tmp_path: Path):
     """Ensure _synthid_score_http refuses 302 redirects to prevent SSRF and key leakage."""
     import http.server

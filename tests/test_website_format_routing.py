@@ -77,3 +77,15 @@ def test_webp_marker_reaches_image_scanner_not_text():
 def test_html_still_text_friendly():
     assert audit_website.guess_kind("/x", b"<html><body>hi</body></html>", "text/html") == "html"
     assert audit_website.guess_kind("/page.htm", b"<html>", None) == "html"
+
+
+def test_extensionless_zip_classified_by_container_magic():
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+    data = buf.getvalue()
+    # URL has no extension, must route to epub based on container magic/mimetype
+    assert audit_website.guess_kind("https://example.com/download/asset", data, None) == "epub"

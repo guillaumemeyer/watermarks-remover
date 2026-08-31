@@ -18,6 +18,7 @@ from common import (
     cleaned_path,
     eprint,
     guard_binary,
+    result_has_changes,
     safe_write_text,
 )
 from container_meta import clean_container, detect_container_format
@@ -119,11 +120,11 @@ def main() -> int:
         bak, created = backup_path(args.path)
         if not created and not args.quiet:
             eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
-        dest = args.path
         # On a repeated in-place run the backup already holds the original
         # (pre-clean) bytes; process the current file so an already-clean
         # destination is not reported as modified against a stale .bak.
         src = bak if created else args.path
+        dest = args.path
     else:
         src = args.path
         dest = args.output or cleaned_path(args.path)
@@ -142,6 +143,7 @@ def main() -> int:
             "input": str(args.path),
             "output": str(dest),
             "stats": stats,
+            "changed": bool(stats["removed_count"] or stats["replaced_count"]),
         }
         changed = stats["removed_count"] or stats["replaced_count"]
         should_report = not args.quiet or changed
@@ -165,7 +167,12 @@ def main() -> int:
         except Exception as e:
             eprint(f"error: {e}")
             return 1
-        result = {"kind": "image", **result}
+        is_changed = (
+            (src.read_bytes() != dest.read_bytes())
+            if (src.is_file() and dest.is_file())
+            else result_has_changes(result)
+        )
+        result = {"kind": "image", "changed": is_changed, **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
         is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
         should_report = not args.quiet or is_changed or residual
@@ -174,9 +181,14 @@ def main() -> int:
                 print(json.dumps(result, indent=2))
         else:
             if should_report:
-                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-                for a in result["actions"]:
-                    eprint(f"  - {a}")
+                if result["changed"]:
+                    eprint(
+                        f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})"
+                    )
+                    for a in result["actions"]:
+                        eprint(f"  - {a}")
+                else:
+                    eprint(f"already clean: {result['output']}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -191,7 +203,12 @@ def main() -> int:
         except Exception as e:
             eprint(f"error: {e}")
             return 1
-        result = {"kind": "av", **result}
+        is_changed = (
+            (src.read_bytes() != dest.read_bytes())
+            if (src.is_file() and dest.is_file())
+            else result_has_changes(result)
+        )
+        result = {"kind": "av", "changed": is_changed, **result}
         residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
         is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
         should_report = not args.quiet or is_changed or residual
@@ -200,9 +217,14 @@ def main() -> int:
                 print(json.dumps(result, indent=2))
         else:
             if should_report:
-                eprint(f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})")
-                for a in result["actions"]:
-                    eprint(f"  - {a}")
+                if result["changed"]:
+                    eprint(
+                        f"wrote {result['output']} ({result['bytes_in']} -> {result['bytes_out']})"
+                    )
+                    for a in result["actions"]:
+                        eprint(f"  - {a}")
+                else:
+                    eprint(f"already clean: {result['output']}")
             if residual:
                 eprint("warning: residual C2PA/AI signals may remain")
         return 1 if residual else 0
@@ -212,7 +234,12 @@ def main() -> int:
     except Exception as e:
         eprint(f"error: {e}")
         return 1
-    result = {"kind": "container", **result}
+    is_changed = (
+        (src.read_bytes() != dest.read_bytes())
+        if (src.is_file() and dest.is_file())
+        else result_has_changes(result)
+    )
+    result = {"kind": "container", "changed": is_changed, **result}
     residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
     degraded = bool(result.get("meta", {}).get("degraded"))
     is_changed = result.get("changed", False) or (result["bytes_in"] != result["bytes_out"])
@@ -222,9 +249,12 @@ def main() -> int:
             print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         if should_report:
-            eprint(f"wrote {result['output']} format={result['format']}")
-            for a in result["actions"]:
-                eprint(f"  - {a}")
+            if result["changed"]:
+                eprint(f"wrote {result['output']} format={result['format']}")
+                for a in result["actions"]:
+                    eprint(f"  - {a}")
+            else:
+                eprint(f"already clean: {result['output']}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")
             for f in result.get("post_findings") or []:

@@ -2,7 +2,7 @@
 	smoke-ctrlregen bootstrap-ctrlregen docker-ctrlregen-build docker-ctrlregen-help \
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
-	bench-synthid-text \
+	bench-synthid-text bench-full bench-semantic \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
 	install-skill install-claude-code-skill install-claude-code-text-skill \
 	install-claude-project-skill package-cowork-skill package-cowork-text-skill \
@@ -10,6 +10,13 @@
 
 SCRIPTS := service/scripts
 PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
+
+# Rewrite backend defaults: DeepSeek (cross-model, non-origin). Override with
+# e.g. `make REWRITE_MODEL=<m> REWRITE_BASE_URL=http://127.0.0.1:8000 REWRITE_ALLOW_REMOTE= bench-full`.
+REWRITE_BACKEND ?= openai-compatible
+REWRITE_MODEL ?= deepseek-v4-flash
+REWRITE_BASE_URL ?= https://api.deepseek.com
+REWRITE_ALLOW_REMOTE ?= --rewrite-allow-remote
 
 test:
 	$(PYTHON) -m pytest
@@ -24,37 +31,22 @@ lint-fix:
 	$(PYTHON) -m ruff check --fix service tests
 
 smoke:
-	-python3 $(SCRIPTS)/inspect_text.py tests/fixtures/sample_watermarked.txt
-	python3 $(SCRIPTS)/clean_text.py tests/fixtures/sample_watermarked.txt -o /tmp/wm.cleaned.txt --stats
-	python3 $(SCRIPTS)/rewrite_text.py tests/fixtures/sample_watermarked.txt --backend print-prompt >/dev/null
-	-python3 $(SCRIPTS)/inspect_file.py tests/fixtures/sample_ai.md
-	python3 $(SCRIPTS)/clean_file.py tests/fixtures/sample_ai.md -o /tmp/sample_ai.cleaned.md
-	python3 $(SCRIPTS)/clean_file.py tests/fixtures/sample_ai.html -o /tmp/sample_ai.cleaned.html
-	python3 $(SCRIPTS)/clean_file.py tests/fixtures/sample_meta.svg -o /tmp/sample_meta.cleaned.svg
-	@echo "smoke ok"
+	./service/scripts/smoke.sh
 
 smoke-synthid:
-	@if [ -z "$(REVERSE_SYNTHID_DIR)" ]; then \
-	  echo "smoke-synthid skipped (set REVERSE_SYNTHID_DIR)"; \
-	else \
-	  $(PYTHON) $(SCRIPTS)/score_synthid.py --help >/dev/null && echo "score_synthid adapter present"; \
-	fi
+	./service/scripts/smoke_synthid.sh
 
 bootstrap-synthid:
-	./service/scripts/setup_synthid.sh
+	./service/scripts/setup_reverse_synthid.sh
 
 docker-synthid-build:
-	docker build -f service/Dockerfile.synthid -t watermarks-remover-synthid-scorer service/
+	docker build -f service/Dockerfile.synthid -t watermarks-remover-synthid service/
 
 docker-synthid-help:
-	docker run --rm watermarks-remover-synthid-scorer --help
+	docker run --rm watermarks-remover-synthid --help
 
 smoke-ctrlregen:
-	@if [ -z "$(NOAI_WATERMARK_DIR)" ]; then \
-	  echo "smoke-ctrlregen skipped (set NOAI_WATERMARK_DIR)"; \
-	else \
-	  $(PYTHON) $(SCRIPTS)/clean_ctrlregen.py --help >/dev/null && echo "clean_ctrlregen adapter present"; \
-	fi
+	./service/scripts/smoke_ctrlregen.sh
 
 bootstrap-ctrlregen:
 	./service/scripts/setup_ctrlregen.sh
@@ -66,11 +58,7 @@ docker-ctrlregen-help:
 	docker run --rm watermarks-remover-ctrlregen --help
 
 smoke-markllm:
-	@if [ -z "$(MARKLLM_DIR)" ]; then \
-	  echo "smoke-markllm skipped (set MARKLLM_DIR)"; \
-	else \
-	  $(PYTHON) $(SCRIPTS)/detect_text_watermark.py --help >/dev/null && echo "detect_text_watermark adapter present"; \
-	fi
+	./service/scripts/smoke_markllm.sh
 
 bootstrap-markllm:
 	./service/scripts/setup_markllm.sh
@@ -82,17 +70,37 @@ docker-markllm-help:
 	docker run --rm watermarks-remover-markllm --help
 
 smoke-markdiffusion:
-	@if [ -z "$(MARKDIFFUSION_DIR)" ]; then \
-	  echo "smoke-markdiffusion skipped (set MARKDIFFUSION_DIR)"; \
-	else \
-	  $(PYTHON) $(SCRIPTS)/markdiffusion_harness.py --help >/dev/null && echo "markdiffusion_harness adapter present"; \
-	fi
+	./service/scripts/smoke_markdiffusion.sh
 
 bench-synthid-text:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
 	  echo "bench-synthid-text skipped (set MARKLLM_DIR; see docs/synthid-text-benchmark.md)"; \
 	else \
 	  echo "run: $(PYTHON) $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --rewrite-model <model> --rewrite-backend <backend>"; \
+	fi
+
+# Full recipe-search benchmark: all strengths, robust margin, re-stamp control,
+# semantic axis required. Use a non-watermarked rewrite backend.
+bench-full:
+	@if [ -z "$(MARKLLM_DIR)" ]; then \
+	  echo "bench-full skipped (set MARKLLM_DIR; see docs/synthid-text-benchmark.md)"; \
+	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
+	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
+	else \
+	  "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 --variants paraphrase:3,backtranslate:3,structural:1,humanize:3,chunk:2 --target-margin 0.03 --restamp-control --require-semantic --mode recipe --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
+	fi
+
+# Install the semantic-divergence dependency into the MarkLLM venv and run with a
+# writable HF cache, so the sem-div column is never a silent '—'.
+bench-semantic:
+	@if [ -z "$(MARKLLM_DIR)" ]; then \
+	  echo "bench-semantic skipped (set MARKLLM_DIR)"; \
+	elif [ -z "$(REWRITE_MODEL)" ] || [ -z "$(REWRITE_BACKEND)" ]; then \
+	  echo "error: REWRITE_MODEL and REWRITE_BACKEND must be set (defaults: deepseek-v4-flash / openai-compatible)"; exit 1; \
+	else \
+	  mkdir -p $(CURDIR)/.hf-cache && \
+	  "$(MARKLLM_DIR)/.venv/bin/python" -m pip install -r $(SCRIPTS)/requirements-semantic.txt && \
+	  HF_HOME=$(CURDIR)/.hf-cache "$(MARKLLM_DIR)/.venv/bin/python" $(SCRIPTS)/bench_synthid_text.py --markllm-dir $(MARKLLM_DIR) --require-semantic --rewrite-backend $(REWRITE_BACKEND) --rewrite-model $(REWRITE_MODEL) --rewrite-base-url $(REWRITE_BASE_URL) $(REWRITE_ALLOW_REMOTE); \
 	fi
 
 bootstrap-markdiffusion:

@@ -78,6 +78,52 @@ _ZIP_PARSE_ERRORS = (
     zlib.error,
 )
 
+MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
+
+
+def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
+    """Fast-path zip-bomb guard on the declared member size.
+
+    A single member whose *declared* size already exceeds the cap is
+    rejected before any decompression. The authoritative accounting lives in
+    _read_zip_member, which charges **actual** decompressed bytes to the
+    shared budget: ZipInfo.file_size comes from the archive central
+    directory and is attacker-controlled, so trusting it for the cumulative
+    limit would let a crafted archive declare a tiny size and still expand
+    to gigabytes.
+    """
+    if info.file_size > MAX_ZIP_DECOMPRESSED_BYTES:
+        raise ZipBudgetExceeded(
+            "zip decompressed size exceeds cap "
+            f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
+        )
+
+
+def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list[int]) -> bytes:
+    """Read one zip member, charging real decompressed bytes to the budget.
+
+    Streams the member in chunks so the cumulative cap is enforced on bytes
+    actually produced, not on the declared ``file_size``; raises
+    ``ZipBudgetExceeded`` the moment the cap is crossed, before the whole
+    member is buffered.
+    """
+    _check_zip_budget(info, budget)
+    with zf.open(info) as stream:
+        chunks: list[bytes] = []
+        while True:
+            chunk = stream.read(1 << 16)
+            if not chunk:
+                break
+            budget[0] += len(chunk)
+            if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
+                raise ZipBudgetExceeded(
+                    "zip decompressed size exceeds cap "
+                    f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # Frontmatter / meta keys that often carry AI provenance
 AI_FRONTMATTER_KEYS = frozenset(
     {
@@ -184,13 +230,27 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
             try:
                 with zipfile.ZipFile(io.BytesIO(data)) as zf:
                     names = set(zf.namelist())
-                    if "word/document.xml" in names:
+                    if "mimetype" in names:
+                        info = zf.getinfo("mimetype")
+                        budget = [0]
+                        raw = _read_zip_member(zf, info, budget)
+                        try:
+                            mt = raw.decode("ascii", errors="ignore").strip()
+                            if "epub" in mt:
+                                return "epub"
+                            if "opendocument" in mt or "oasis" in mt:
+                                return "odt"
+                        except (UnicodeDecodeError, AttributeError):
+                            pass
+                    if "word/document.xml" in names or any(n.startswith("word/") for n in names):
                         return "docx"
-                    if "xl/workbook.xml" in names:
+                    if "xl/workbook.xml" in names or any(n.startswith("xl/") for n in names):
                         return "xlsx"
-                    if "ppt/presentation.xml" in names:
+                    if "ppt/presentation.xml" in names or any(n.startswith("ppt/") for n in names):
                         return "pptx"
-                    if "content.xml" in names and "meta.xml" in names:
+                    if "content.xml" in names and (
+                        "meta.xml" in names or "META-INF/manifest.xml" in names
+                    ):
                         return "odt"
                     if "META-INF/container.xml" in names and any(n.endswith(".opf") for n in names):
                         return "epub"
@@ -687,7 +747,217 @@ def inspect_svg(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
 
+_XML_DECL_KEYWORDS = ("doctype", "entity")
+
+
+def _xml_decl_keyword(text: str, i: int) -> str | None:
+    """Return "doctype"/"entity" if text[i:] opens that declaration, else None."""
+    if text[i : i + 2] != "<!":
+        return None
+    rest = text[i + 2 :]
+    for kw in _XML_DECL_KEYWORDS:
+        if rest.lower().startswith(kw):
+            # Require a word boundary so names like <!DOCTYPEfoo> aren't matched.
+            nxt = rest[len(kw) : len(kw) + 1]
+            if nxt and (nxt.isalnum() or nxt in "_:"):
+                return None
+            return kw
+    return None
+
+
+def _xml_decl_end(text: str, i: int, keyword: str) -> int:
+    """Return the index just past a declaration's closing '>', or -1 if unterminated.
+
+    Quotes and the internal subset are respected, so a '>' inside a quoted
+    external identifier or a nested internal subset does not end the
+    declaration early.
+    """
+    j = i + 2 + len(keyword)
+    n = len(text)
+    quote: str | None = None
+    subset_depth = 0
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            # Line breaks are legal inside quoted system/public literals and
+            # entity values, so they don't terminate the declaration; the first
+            # unquoted '>' ends it.
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        # DTD comments inside the internal subset must not affect subset_depth
+        # or look like a close, so skip them whole.
+        if text.startswith("<!--", j):
+            end = text.find("-->", j)
+            if end == -1:
+                return -1
+            j = end + 3
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == "[":
+            subset_depth += 1
+            j += 1
+            continue
+        if c == "]":
+            if subset_depth:
+                subset_depth -= 1
+            j += 1
+            continue
+        if c == ">" and subset_depth == 0:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _strip_xml_declarations(text: str) -> tuple[str, int]:
+    """Remove top-level <!DOCTYPE ...> and <!ENTITY ...> declarations.
+
+    Only declarations in markup context are stripped, so matching text inside
+    CDATA sections, comments, and quoted attribute values (which do not start a
+    declaration) is preserved. A declaration is consumed through its true
+    terminator: quoted external identifiers and the internal subset, including
+    nested brackets and embedded '>' characters, are respected. An unterminated
+    declaration is left intact rather than partially deleted.
+    """
+    i = 0
+    n = len(text)
+    out: list[str] = []
+    removed = 0
+    in_tag = False
+    quote: str | None = None
+    while i < n:
+        c = text[i]
+        if in_tag:
+            if quote is not None:
+                out.append(c)
+                if c == quote:
+                    quote = None
+            elif c in "\"'":
+                quote = c
+                out.append(c)
+            elif c == ">":
+                in_tag = False
+                out.append(c)
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        keyword = _xml_decl_keyword(text, i)
+        if keyword:
+            end = _xml_decl_end(text, i, keyword)
+            if end == -1:
+                out.append(c)
+                i += 1
+                continue
+            removed += 1
+            i = end
+            continue
+        out.append(c)
+        if c == "<":
+            in_tag = True
+        i += 1
+    return "".join(out), removed
+
+
+def _strip_root_svg_attrs(text: str) -> tuple[str, int]:
+    """Remove provenance attributes from the root <svg ...> start tag only.
+
+    The attribute substitution runs on the parsed root start tag so matching
+    text in CDATA, comments, or text content is untouched. Both single- and
+    double-quoted attribute values are supported.
+    """
+    n = len(text)
+    i = 0
+    start = -1
+    while i < n:
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                return text, 0
+            i = end + 3
+            continue
+        if text.startswith("<?", i):
+            # A processing instruction may contain "<svg"; skip it so the root
+            # element start tag is what gets cleaned.
+            end = text.find("?>", i)
+            if end == -1:
+                return text, 0
+            i = end + 2
+            continue
+        if text[i : i + 4].lower() == "<svg":
+            nxt = text[i + 4 : i + 5]
+            if not (nxt and (nxt.isalnum() or nxt in "_:.-")):
+                start = i
+                break
+        i += 1
+    if start == -1:
+        return text, 0
+    # Find the quote-aware '>' that closes the start tag.
+    j = start + 4
+    quote: str | None = None
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == ">":
+            break
+        j += 1
+    else:
+        return text, 0  # unclosed start tag; leave as-is
+    tag = text[start : j + 1]
+    new_tag, cnt = re.subn(
+        r'\s(?:inkscape:version|sodipodi:docname|generator)\s*=\s*("[^"]*"|\'[^\']*\')',
+        "",
+        tag,
+        flags=re.I,
+    )
+    if not cnt:
+        return text, 0
+    return text[:start] + new_tag + text[j + 1 :], cnt
+
+
 def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
+    """Strip AI provenance metadata from SVG content, returning (bytes, actions).
+
+    Removes <metadata>/<xmpmeta> blocks, XML DOCTYPE and ENTITY declarations,
+    AI-marker comments, and embedded data URIs, and drops generator-like
+    attributes on the root element. Declaration stripping is context-aware so
+    the document body, CDATA sections, comments, and quoted attribute values are
+    preserved.
+    """
     actions: list[str] = []
     text = data.decode("utf-8", errors="surrogateescape")
     # Drop metadata blocks (linear scan - lazy .*? is quadratic on unclosed tags)
@@ -700,6 +970,11 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if n:
         actions.append(f"drop xmpmeta x{n}")
         text = new
+
+    # Drop XML DOCTYPE and ENTITY declarations (context-aware)
+    text, decl_count = _strip_xml_declarations(text)
+    if decl_count:
+        actions.append(f"drop DOCTYPE/entity declarations x{decl_count}")
 
     # Drop comments that look like provenance (linear scan)
     def _cmt(block: str) -> bool:
@@ -715,17 +990,12 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    if not actions:
-        # still strip generator attribute on root if present
-        new, n = re.subn(
-            r'\s(inkscape:version|sodipodi:docname|generator)\s*=\s*"[^"]*"',
-            "",
-            text,
-            flags=re.I,
-        )
-        if n:
-            actions.append(f"drop generator-like attrs x{n}")
-            text = new
+    # Strip generator-like attributes on the root <svg> start tag independently
+    # of the actions above, so they are removed whenever present (not only when
+    # nothing else needed cleaning).
+    text, n = _strip_root_svg_attrs(text)
+    if n:
+        actions.append(f"drop generator-like attrs x{n}")
     if not actions:
         actions.append("no SVG metadata removed")
     return text.encode("utf-8", errors="surrogateescape"), actions
@@ -771,52 +1041,6 @@ DOCX_SCRUB_FIELDS = (
 def _zip_namelist(data: bytes) -> list[str]:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         return zf.namelist()
-
-
-MAX_ZIP_DECOMPRESSED_BYTES = 128 * 1024 * 1024
-
-
-def _check_zip_budget(info: zipfile.ZipInfo, budget: list[int]) -> None:
-    """Fast-path zip-bomb guard on the declared member size.
-
-    A single member whose *declared* size already exceeds the cap is
-    rejected before any decompression. The authoritative accounting lives in
-    _read_zip_member, which charges **actual** decompressed bytes to the
-    shared budget: ZipInfo.file_size comes from the archive central
-    directory and is attacker-controlled, so trusting it for the cumulative
-    limit would let a crafted archive declare a tiny size and still expand
-    to gigabytes.
-    """
-    if info.file_size > MAX_ZIP_DECOMPRESSED_BYTES:
-        raise ZipBudgetExceeded(
-            "zip decompressed size exceeds cap "
-            f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
-        )
-
-
-def _read_zip_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list[int]) -> bytes:
-    """Read one zip member, charging real decompressed bytes to the budget.
-
-    Streams the member in chunks so the cumulative cap is enforced on bytes
-    actually produced, not on the declared ``file_size``; raises
-    ``ZipBudgetExceeded`` the moment the cap is crossed, before the whole
-    member is buffered.
-    """
-    _check_zip_budget(info, budget)
-    with zf.open(info) as stream:
-        chunks: list[bytes] = []
-        while True:
-            chunk = stream.read(1 << 16)
-            if not chunk:
-                break
-            budget[0] += len(chunk)
-            if budget[0] > MAX_ZIP_DECOMPRESSED_BYTES:
-                raise ZipBudgetExceeded(
-                    "zip decompressed size exceeds cap "
-                    f"({MAX_ZIP_DECOMPRESSED_BYTES} bytes); refusing to process"
-                )
-            chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _is_docx_meta_part(name: str) -> bool:

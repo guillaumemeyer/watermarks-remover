@@ -27,11 +27,11 @@ attempts are generated and the most diverged one is selected). A vendor-detector
 seam (Google's retired SynthID-text detector) is reserved ahead of the
 same-config detectors should a vendor endpoint return.
 
-The rewrite instruction comes from --strength (a named prompt) or, when
---rewrite-level is set, a numeric rewrite intensity in (0,1] that controls how
-many tokens change (0 — the unchanged original — is excluded; 1 rewrites
-everything). The level is a request: output lexical/semantic divergence is
-measured, not guaranteed.
+The rewrite instruction comes from --strength (a named prompt) and, when
+--rewrite-level is set, that prompt is further modulated by a numeric rewrite
+intensity in (0,1] that controls how many tokens change (0 — the unchanged
+original — is excluded; 1 rewrites everything). The level is a request: output
+lexical/semantic divergence is measured, not guaranteed.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -124,10 +124,12 @@ PROMPTS = {
 
 
 def _tokens(text: str) -> list[str]:
+    """Extract lowercase alphanumeric tokens from text."""
     return re.findall(r"[A-Za-z0-9]+", text.lower())
 
 
 def _bigrams(tokens: list[str]) -> set[tuple[str, str]]:
+    """Extract consecutive token pairs as bigrams."""
     return set(itertools.pairwise(tokens))
 
 
@@ -162,6 +164,7 @@ def _select_candidate(original: str, candidates: list[str]) -> tuple[str, list[f
 
 
 def _env(name: str, default: str | None = None) -> str | None:
+    """Read an environment variable with fallback."""
     v = os.environ.get(name)
     if v is None or v == "":
         return default
@@ -169,10 +172,12 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def _flag_env(name: str) -> bool:
+    """Read an environment variable as a boolean flag."""
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read an environment variable as an integer."""
     try:
         return int(_env(name, str(default)) or str(default))
     except ValueError:
@@ -218,6 +223,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Custom redirect handler for URL requests."""
         raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
 
 
@@ -270,16 +276,8 @@ def _generate_once(
     raise SystemExit(f"unknown backend: {backend}")
 
 
-def build_prompt(
-    strength: str,
-    text: str,
-    *,
-    lang: str,
-    original_lang: str,
-    rewrite_level: float | None = None,
-) -> str:
-    if rewrite_level is not None:
-        return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
+def _strength_prompt(strength: str, text: str, lang: str, original_lang: str) -> str:
+    """Build the prompt for a named rewrite strength (no intensity modulation)."""
     if strength == "paraphrase":
         return PROMPTS["paraphrase"].format(TEXT=text)
     if strength == "humanize":
@@ -305,6 +303,44 @@ def build_prompt(
     raise ValueError(f"unknown strength: {strength}")
 
 
+def _intensity_clause(level: float) -> str:
+    """The intensity instruction appended to a strength prompt.
+
+    The level is a request, not a contract: measured lexical/semantic
+    divergence is the real outcome, and a model may not hit the fraction exactly.
+    """
+    return (
+        f"Modulate this rewrite so roughly a fraction {level:.2f} of tokens change: "
+        "0 would keep the wording unchanged, 1 rewrites everything. At low intensity "
+        "keep the sentence structure, word order, and every token that can stay, "
+        "changing only function words and a few non-essential content words; at high "
+        "intensity change wording substantially at the token level. Preserve all facts, "
+        "numbers, names, and technical identifiers. Do not add or remove claims."
+    )
+
+
+def build_prompt(
+    strength: str | None,
+    text: str,
+    *,
+    lang: str = "French",
+    original_lang: str = "English",
+    rewrite_level: float | None = None,
+) -> str:
+    """Construct the LLM rewrite prompt for a given strength and intensity."""
+    if strength is None:
+        if rewrite_level is not None:
+            return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
+        raise ValueError("unknown strength: None")
+    base = _strength_prompt(strength, text, lang, original_lang)
+    # A (strength, intensity) pair: modulate the named strength prompt with the
+    # level instead of replacing it with the generic level-only prompt. Code is
+    # exempt — identifier/comment rewrites are not naturally intensity-modulated.
+    if rewrite_level is not None and strength != "code":
+        return base + "\n\n" + _intensity_clause(rewrite_level)
+    return base
+
+
 def _split_units(text: str) -> list[tuple[str, str]]:
     """Split a document into (unit, separator) pairs.
 
@@ -328,6 +364,7 @@ def _split_units(text: str) -> list[tuple[str, str]]:
 
 
 def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
+    """Perform an HTTP POST request and return JSON response."""
     if urlparse(url).scheme not in ("http", "https"):
         raise ValueError(f"refusing non-http(s) rewrite endpoint: {url}")
     body = json.dumps(payload).encode("utf-8")
@@ -344,6 +381,7 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
 
 
 def call_ollama(base_url: str, model: str, prompt: str, timeout: float, temperature: float) -> str:
+    """Call Ollama API endpoint for text rewrite."""
     url = base_url.rstrip("/") + "/api/chat"
     data = _http_json(
         url,
@@ -372,6 +410,7 @@ def call_openai_compatible(
     temperature: float,
     reasoning_effort: str | None = None,
 ) -> str:
+    """Call OpenAI-compatible chat completions API."""
     url = base_url.rstrip("/") + "/v1/chat/completions"
     headers: dict[str, str] = {}
     if api_key:
@@ -445,6 +484,7 @@ def _margin_of(rec: dict) -> tuple[float, float, float]:
     # four decimals, so two candidates can share that rounded value while
     # differing in the raw margin (e.g. 0.12343 vs 0.12344 both round to
     # 0.1234). Preserve the p-value and lexical-divergence tie-breakers.
+    """Compute rankable candidate margin score."""
     raw = rec.get("raw_margin")
     raw_val = float(raw) if raw is not None else -float("inf")
     # For evaluators that report p_value (e.g. Keyed-Gumbel), lower p_value indicates a safer pass
@@ -482,7 +522,9 @@ def rewrite(
     target_margin: float = 0.0,
     selection: str = "min-divergence",
     chunk_shuffle: bool = False,
+    noop_lex_floor: float = 0.05,
 ) -> tuple[str, dict]:
+    """Execute text rewrite pass across candidates and select best candidate."""
     prompt = build_prompt(
         strength, text, lang=lang, original_lang=original_lang, rewrite_level=rewrite_level
     )
@@ -492,6 +534,8 @@ def rewrite(
         "rewrite_level": rewrite_level,
         "target_margin": target_margin,
         "selection": selection,
+        "noop_lex_floor": noop_lex_floor,
+        "noop": False,
         "model": model,
         "base_url": base_url,
         "temperature": temperature,
@@ -552,6 +596,7 @@ def rewrite(
     info["chunk_shuffle"] = bool(chunk_shuffle)
 
     def _rewrite_unit(unit: str) -> str:
+        """Rewrite a single text unit with prompt formatting."""
         return _generate_once(
             backend,
             base_url,
@@ -570,6 +615,7 @@ def rewrite(
         )
 
     def _generate_candidate() -> str:
+        """Generate a single rewrite candidate via configured backend."""
         if is_chunk:
             pairs = _split_units(text)
             if chunk_shuffle:
@@ -682,6 +728,18 @@ def rewrite(
         info["layer_a_after"] = rec["layer_a_after"]
     info["output_chars"] = len(out)
     info["mode"] = "rewritten"
+
+    # No-op guard: a rewrite that changed almost nothing is not a removal
+    # attempt. Report it so a benchmark never counts a near-verbatim output as
+    # "0% clear" (the misleading backtranslate row). Disabled with floor <= 0.
+    _out_div = _lexical_divergence(text, out)
+    _is_noop = noop_lex_floor > 0 and _out_div < noop_lex_floor
+    info["noop"] = bool(_is_noop)
+    if _is_noop:
+        eprint(
+            f"warning: rewrite returned ≈ input (lex divergence {_out_div:.4f} < "
+            f"{noop_lex_floor:.4f}); treating as no-op"
+        )
     note = (
         "Layer B is best-effort against statistical token-sampling watermarks; "
         "cannot certify removal against a vendor detector."
@@ -761,6 +819,7 @@ def rewrite(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser for text rewrite tool."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", nargs="?", default="-", help="Input text file, or - for stdin")
     p.add_argument("-o", "--output", help="Output path (default: stdout or *.rewritten.*)")
@@ -797,14 +856,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="paraphrase",
     )
     p.add_argument(
+        "--noop-lex-floor",
+        type=float,
+        default=0.05,
+        help="Treat a rewrite that changed fewer than this fraction of bigrams as "
+        "a no-op (emitted as noop:true in --json-stats, with a warning; default "
+        "0.05, 0 disables). A no-op is not a removal attempt.",
+    )
+    p.add_argument(
         "--rewrite-level",
         type=float,
         default=None,
         help="Numeric rewrite intensity in (0,1]; 0 (the unchanged original) is "
-        "excluded. When set, overrides --strength and builds a level-based prompt "
-        "that changes a fraction of tokens close to this value. Omit to use "
-        "--strength (the benchmark's minimal mode drives this explicitly). "
-        "Planned nominal default 0.5, to be tuned from benchmark output.",
+        "excluded. When set alongside --strength it modulates that strength's "
+        "prompt with an intensity clause (change roughly this fraction of tokens). "
+        "Omit to use the plain --strength prompt. Planned nominal default 0.5, to "
+        "be tuned from benchmark output.",
     )
     p.add_argument(
         "--target-margin",
@@ -904,6 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """CLI entry point."""
     args = build_parser().parse_args()
 
     if args.rewrite_level is not None and not (0 < args.rewrite_level <= 1):
@@ -942,6 +1010,7 @@ def main() -> int:
             target_margin=args.target_margin,
             selection=args.select,
             chunk_shuffle=args.chunk_shuffle,
+            noop_lex_floor=args.noop_lex_floor,
         )
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")

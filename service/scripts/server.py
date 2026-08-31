@@ -65,7 +65,7 @@ from common import (
 )
 from container_meta import DEEP_IMAGE_MODES, clean_container, inspect_container
 from format_dispatch import classify_bytes
-from image_meta import clean_image, inspect_image, run_synthid_score
+from image_meta import clean_image, inspect_image, run_synthid_score, synthid_is_watermarked
 from score_stylometry import score_text_stylometry
 from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
 from text_unicode import clean_text, inspect_text
@@ -778,7 +778,11 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
     treating one boolean as a unified provenance judgment.
     """
     detectors = report.get("text_detectors") or []
-    detected_wm = any(entry.get("available") and entry.get("is_watermarked") for entry in detectors)
+    synthid_wm = synthid_is_watermarked(report.get("synthid"))
+    detected_wm = (
+        any(entry.get("available") and entry.get("is_watermarked") for entry in detectors)
+        or synthid_wm
+    )
     stylometry = report.get("stylometry") or {}
     styl_score = stylometry.get("score") or 0.0
     styl_present = stylometry.get("status") == "ok" and styl_score >= 0.65
@@ -803,7 +807,11 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
             "present": detected_wm,
             "strength": "scheme_specific",
             "description": _SUSPICIOUS_CLASS_DESCRIPTIONS["watermark_detector"],
-            "signals": {"detected_any": detected_wm, "detectors": detectors},
+            "signals": {
+                "detected_any": detected_wm,
+                "detectors": detectors,
+                "synthid": report.get("synthid"),
+            },
         },
         "stylometry": {
             "present": styl_present,
