@@ -42,7 +42,7 @@
 
 ## Layer B tactics
 
-| Strength | When |
+| Tactic | When |
 | --- | --- |
 | `paraphrase` | Default; explicit word-choice + syntax churn |
 | `humanize` | Zero-shot "write like a human" token reshuffle |

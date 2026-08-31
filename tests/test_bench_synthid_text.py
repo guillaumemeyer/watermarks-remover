@@ -99,6 +99,7 @@ def _args(**overrides):
         phase2_levels_per_tactic=3,
         recommend_weight="0.5/0.3/0.2",
         strategies=None,
+        write_strategy_outputs=True,
         layer_a_after=False,
     )
     values.update(overrides)
@@ -1592,15 +1593,21 @@ def test_persist_strategy_outputs_writes_files(tmp_path):
         },
         # Candidate whose eval returned no per-sample text (e.g. a monkeypatched
         # _eval_strategy) is skipped, not crashed on.
-        {"steps": [("humanize", 1.0)], "robust_clear_rate": None, "sem_div": None,
-         "human_like": None, "n": 0, "unverified": 0},
+        {
+            "steps": [("humanize", 1.0)],
+            "robust_clear_rate": None,
+            "sem_div": None,
+            "human_like": None,
+            "n": 0,
+            "unverified": 0,
+        },
     ]
     workdir = tmp_path / "work"
     written = b._persist_strategy_outputs(cands, workdir)
     assert written == 1
-    cook_dir = workdir / "strategies" / "chunk@0.6+paraphrase@0.3"
-    assert (cook_dir / "input_doc1_seed1.txt").read_text() == "watermarked input"
-    assert (cook_dir / "output_doc1_seed1.txt").read_text() == "rewritten out"
+    cand_dir = workdir / "strategies" / "chunk@0.6+paraphrase@0.3"
+    assert (cand_dir / "input_doc1_seed1.txt").read_text() == "watermarked input"
+    assert (cand_dir / "output_doc1_seed1.txt").read_text() == "rewritten out"
     # Heavy text stripped from the candidate; replaced with on-disk references.
     assert cands[0]["outputs"] is None
     assert cands[0]["output_dir"] == "work/strategies/chunk@0.6+paraphrase@0.3"
@@ -1648,8 +1655,15 @@ def test_strategy_search_persists_outputs(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(b, "_eval_strategy", evaluate)
-    samples = [{"excluded": False, "doc": "doc1", "seed": 1, "watermarked": "wm input",
-                "before": DETECT_POS}]
+    samples = [
+        {
+            "excluded": False,
+            "doc": "doc1",
+            "seed": 1,
+            "watermarked": "wm input",
+            "before": DETECT_POS,
+        }
+    ]
     workdir = tmp_path / "work"
     res = b.strategy_search(samples, workdir)
 
@@ -1666,6 +1680,64 @@ def test_strategy_search_persists_outputs(tmp_path, monkeypatch):
                 assert (workdir.parent / f["output"]).exists()
             if f.get("input"):
                 assert (workdir.parent / f["input"]).exists()
+
+
+def test_strategy_search_no_write_strategy_outputs(tmp_path, monkeypatch):
+    """write_strategy_outputs=False still strips candidate text from results.json."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.2,1.0",
+        weight_grid="0.5/0.3/0.2",
+        beam=2,
+        max_passes=2,
+        phase2_levels_per_tactic=1,
+        recommend_weight="0.5/0.3/0.2",
+        write_strategy_outputs=False,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.6,
+            "n": 1,
+            "unverified": 0,
+            "outputs": [
+                {
+                    "doc": "doc1",
+                    "seed": 1,
+                    "input": "wm input",
+                    "output": "rewritten:" + "+".join(f"{s}@{lv:g}" for s, lv in strategy),
+                    "robust": True,
+                    "margin": 0.4,
+                    "sem": 0.1,
+                    "note": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [
+        {
+            "excluded": False,
+            "doc": "doc1",
+            "seed": 1,
+            "watermarked": "wm input",
+            "before": DETECT_POS,
+        }
+    ]
+    workdir = tmp_path / "work"
+    res = b.strategy_search(samples, workdir)
+
+    # No strategy dirs are written, so results.json stays slim.
+    assert res["strategy_outputs_written"] == 0
+    assert not (workdir / "strategies").exists()
+    for c in res["candidates"]:
+        assert c["outputs"] is None  # heavy per-sample text stripped
+        assert "output_files" not in c
+        assert "output_dir" not in c
 
 
 def test_human_likeness_backend_fallback():

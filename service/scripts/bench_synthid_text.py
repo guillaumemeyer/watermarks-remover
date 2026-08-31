@@ -1655,7 +1655,7 @@ class Benchmark:
         where stats is the last step's rewrite stats (carrying markllm before/after)."""
         current = text
         stats: dict[str, Any] = {}
-        for _i, (tactic, level) in enumerate(steps):
+        for tactic, level in steps:
             current, stats = self.rewrite(
                 current, tactic, 1, rewrite_level=level, target_margin=target_margin
             )
@@ -1663,7 +1663,9 @@ class Benchmark:
             current, _layer = clean_text(current)
         return current, stats
 
-    def _eval_strategy(self, strategy: list[tuple[str, float]], samples: list[dict[str, Any]]) -> dict:
+    def _eval_strategy(
+        self, strategy: list[tuple[str, float]], samples: list[dict[str, Any]]
+    ) -> dict:
         """Score one strategy across all non-excluded watermarked samples.
 
         Axes: robust_clear_rate (↑), sem_div (↓), human_like (↑). A sample
@@ -1868,13 +1870,9 @@ class Benchmark:
             "strategy_outputs_written": strategy_outputs_written,
         }
 
+    # --- Strategy output persistence -------------------------------------------
 
-# --- Strategy output persistence -------------------------------------------
-
-
-    def _persist_strategy_outputs(
-        self, cands: list[dict[str, Any]], workdir: Path | None
-    ) -> int:
+    def _persist_strategy_outputs(self, cands: list[dict[str, Any]], workdir: Path | None) -> int:
         """Write each candidate's per-sample input/output text to disk for inspection.
 
         One directory per strategy (``<workdir>/strategies/<slug>/``) holding
@@ -1886,6 +1884,8 @@ class Benchmark:
         results.json stays slim while the text stays inspectable on disk.
         """
         if not getattr(self.args, "write_strategy_outputs", True) or workdir is None:
+            for cand in cands:
+                cand["outputs"] = None
             return 0
         strategies_dir = workdir / "strategies"
         written = 0
@@ -1919,9 +1919,7 @@ class Benchmark:
                     )
                 if entry.get("output") is not None:
                     out_path = cand_dir / f"output_{stem}.txt"
-                    out_path.write_text(
-                        entry["output"], encoding="utf-8", errors="surrogateescape"
-                    )
+                    out_path.write_text(entry["output"], encoding="utf-8", errors="surrogateescape")
                     files.append(
                         {
                             "doc": doc,
@@ -2016,7 +2014,7 @@ def compute_auroc(
 def _pareto_frontier(cands: list[dict]) -> list[dict]:
     """Non-dominated strategies over (robust_clear_rate ↑, sem_div ↓, human_like ↑).
 
-    Strategys missing any of the three axes are dropped (they cannot be ranked by
+    Strategies missing any of the three axes are dropped (they cannot be ranked by
     dominance). A strategy is dominated if another is at least as good on all three
     and strictly better on at least one.
     """
@@ -2606,7 +2604,7 @@ def render_markdown_strategy(
     L.append(
         "Same-config MarkLLM detection only; not Google's production SynthID-Text "
         "keying (retired from the API Aug 2026). Human-likeness and semantic "
-        "divergence are gauges, not proof of human authorship. Strategys are "
+        "divergence are gauges, not proof of human authorship. Strategies are "
         "search results on this corpus/backend; re-confirm on a larger powered run."
     )
     L.append("")
@@ -2631,7 +2629,7 @@ def _render_strategy_verdict(res: dict[str, Any]) -> str:
         )
     if verdict == "partial":
         return (
-            f"Strategys in the searched space partially clear the mark (best robust % = {best}), "
+            f"Strategies in the searched space partially clear the mark (best robust % = {best}), "
             "but none robustly clears every sample at the configured `--target-margin`."
         )
     if verdict == "resists":
@@ -3166,14 +3164,18 @@ def main() -> int:
                 strategy = parse_strategy(args.strategies)
                 candid = bench._eval_strategy(strategy, samples)
                 if candid.get("n", 0) == 0:
-                    eprint("error: strategy produced no evaluable samples (watermark not detected?)")
+                    eprint(
+                        "error: strategy produced no evaluable samples (watermark not detected?)"
+                    )
                     return 2
                 candid["steps"] = strategy
+                strategy_outputs_written = bench._persist_strategy_outputs([candid], workdir)
                 res = {
                     "candidates": [candid],
                     "recommended": candid,
                     "frontier": [candid],
                     "intensity_curves": {},
+                    "strategy_outputs_written": strategy_outputs_written,
                 }
             else:
                 res = bench.strategy_search(samples, workdir)
@@ -3326,7 +3328,9 @@ def main() -> int:
         )
         n_outputs = res.get("strategy_outputs_written", 0)
         if n_outputs:
-            print(f"  outputs       : {n_outputs} strategy dirs written to {workdir / 'strategies'} (--no-write-strategy-outputs to disable)")
+            print(
+                f"  outputs       : {n_outputs} strategy dirs written to {workdir / 'strategies'} (--no-write-strategy-outputs to disable)"
+            )
     else:
         print(
             "variant          n   clear%  dScore  margin  lexDiv  semDiv  lenR  nums  tokOut  att  s/doc  eff/MTok"

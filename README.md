@@ -594,7 +594,7 @@ Order of operations: metadata strip first, then CtrlRegen pixel removal, then
 an optional reverse-SynthID before/after score (when `REVERSE_SYNTHID_DIR` is
 also set).
 
-**Strength is conservative by default** (`--ctrlregen-intensity 0.25`), because
+**Intensity is conservative by default** (`--ctrlregen-intensity 0.25`), because
 higher intensity removes more watermark but regenerates more of the image.
 Documented presets: `0.15` minimal / `0.25` default / `0.35` balanced /
 `0.5` aggressive / `0.7` max (backend default is 0.5). `--ctrlregen-steps`
