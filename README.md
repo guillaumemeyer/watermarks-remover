@@ -1115,13 +1115,9 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 [unmark-web](https://github.com/ivanusto/unmark-web) is an independent, MIT-licensed static web client. It removes invisible Unicode marks from text and strips provenance metadata from images entirely in the browser, and can optionally call this repository's HTTP service for the formats it does not handle locally. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
 
-### ClaudeWatermarks — browser-local text inspector
-
-[ClaudeWatermarks](https://claudewatermarks.com) is an independent, free web tool that inspects pasted text for invisible Unicode carriers entirely in the browser — nothing is uploaded — and lists every finding with its code point, position and surrounding context so the reader decides what to remove. Its inspector engine is published separately as [claude-text-inspector](https://github.com/little-pp395/claude-text-inspector) (MIT, TypeScript); its code-point tables and in-context preservation rules (emoji glue, script joiners, flag tags) follow this repository's Layer A engine. The site also reads C2PA Content Credentials from supported files locally. It does not call this repository's service, and it states plainly that it cannot detect or remove Claude's statistical text mark. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
-
 ### Adding a project
 
-To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project. Please avoid names that start with or closely resemble `watermarks-remover` — look-alike names make it hard to tell which project is which.
+To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project. A listed project should build on or integrate this repository — for example, by calling its service or reusing its detection engine — rather than merely address the same problem independently. Please avoid names that start with or closely resemble `watermarks-remover` — look-alike names make it hard to tell which project is which.
 
 ## Pre-commit hook
 
