@@ -141,10 +141,24 @@ def parse_recipe(spec: str) -> list[tuple[str, float]]:
 
 
 def parse_float_grid(spec: str) -> list[float]:
-    return [float(x) for x in spec.split(",") if x.strip()]
+    """Parse comma-separated floats in (0, 1] into a list."""
+    out: list[float] = []
+    for raw in spec.split(","):
+        x = raw.strip()
+        if not x:
+            continue
+        try:
+            val = float(x)
+        except ValueError:
+            raise SystemExit(f"error: bad float {x!r} in grid") from None
+        if not (0 < val <= 1):
+            raise SystemExit(f"error: intensity must be in (0,1], got {val}")
+        out.append(val)
+    return out
 
 
 def parse_weight_grid(spec: str) -> list[tuple[float, float, float]]:
+    """Parse comma-separated weight triples (a/b/c) summing to 1.0."""
     out: list[tuple[float, float, float]] = []
     for raw in spec.split(","):
         parts = raw.strip().split("/")
@@ -158,6 +172,7 @@ def parse_weight_grid(spec: str) -> list[tuple[float, float, float]]:
 
 
 def _base_url_is_loopback(base_url: str) -> bool:
+    """Check if base URL points to localhost/loopback address."""
     host = urlparse(base_url).hostname or ""
     return host in LOOPBACK_HOSTS
 
@@ -172,6 +187,7 @@ def _venv_python(upstream: Path) -> Path | None:
 
 
 def _markllm_commit(upstream: Path) -> str | None:
+    """Resolve current git commit SHA of MarkLLM repository."""
     git = which("git")
     if git is None:
         return None
@@ -192,6 +208,7 @@ def _markllm_commit(upstream: Path) -> str | None:
 
 
 def _repo_commit() -> str | None:
+    """Resolve current git commit SHA of watermarks-remover repository."""
     git = which("git")
     if git is None:
         return None
@@ -218,6 +235,7 @@ def _run_cmd(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess[s
     # 4 GiB child cap kills CUDA init and the 5 GB fp32 model). This matches
     # text_detectors.py, which applies no address-space cap to MarkLLM by
     # default.
+    """Run subprocess command with timeout and error capture."""
     return subprocess.run(
         cmd,
         capture_output=True,
@@ -312,6 +330,7 @@ def run_watermark(
 
 
 def _unlink(path: str) -> None:
+    """Safely remove a file if it exists."""
     with contextlib.suppress(OSError):
         os.unlink(path)
 
@@ -445,7 +464,7 @@ def run_rewrite(
         cmd += ["--rewrite-level", str(rewrite_level)]
     if target_margin:
         cmd += ["--target-margin", str(target_margin)]
-    if noop_lex_floor:
+    if noop_lex_floor is not None:
         cmd += ["--noop-lex-floor", str(noop_lex_floor)]
     if allow_remote:
         cmd.append("--allow-remote")
@@ -488,6 +507,7 @@ def load_corpus(path: Path, limit: int) -> list[tuple[str, str]]:
 
 
 def _numbers_preserved(original: str, candidate: str) -> float:
+    """Check if numbers from original text are retained in candidate."""
     a = set(re.findall(r"\d+", original))
     if not a:
         return 1.0
@@ -496,6 +516,7 @@ def _numbers_preserved(original: str, candidate: str) -> float:
 
 
 def _urls_preserved(original: str, candidate: str) -> float:
+    """Check if URLs from original text are retained in candidate."""
     a = set(re.findall(r"https?://\S+", original))
     if not a:
         return 1.0
@@ -504,6 +525,7 @@ def _urls_preserved(original: str, candidate: str) -> float:
 
 
 def estimate_tokens(text: str, chars_per_token: float) -> int:
+    """Estimate token count from character length."""
     return max(1, int(len(text) / max(chars_per_token, 1.0)))
 
 
@@ -513,6 +535,7 @@ def estimate_tokens(text: str, chars_per_token: float) -> int:
 
 
 def _detect_positive(d: dict[str, Any] | None) -> bool:
+    """Check if watermark detection report verdict is positive."""
     return bool(d and d.get("available") and d.get("is_watermarked"))
 
 
@@ -526,6 +549,7 @@ class SemanticEmbedder:
     """
 
     def __init__(self, model_name: str) -> None:
+        """init."""
         self._model_name = model_name
         self._model = None
         self._util = None
@@ -534,6 +558,7 @@ class SemanticEmbedder:
     def _load(self):
         # Fail-soft: a prior load OR encode failure disables the backend so we
         # stop retrying a failing model/encode instead of looping on it.
+        """load."""
         if self._failed is not None:
             return None
         if self._model is not None:
@@ -549,6 +574,7 @@ class SemanticEmbedder:
         return self._model
 
     def available(self) -> bool:
+        """Available."""
         return self._load() is not None
 
     def reason(self) -> str | None:
@@ -559,6 +585,7 @@ class SemanticEmbedder:
         return self._failed
 
     def score(self, original: str, candidate: str) -> float | None:
+        """Score."""
         model = self._load()
         if model is None:
             return None
@@ -583,6 +610,7 @@ class HumanLikeness:
     """
 
     def __init__(self, backend: str, detector_dir: str | None = None) -> None:
+        """init."""
         self.backend = backend
         self.detector_dir = detector_dir
         self.backend_used = "stylometry"
@@ -591,6 +619,7 @@ class HumanLikeness:
         self._load()
 
     def _load(self) -> None:
+        """load."""
         if self.backend == "stylometry":
             return
         if not self.detector_dir:
@@ -611,17 +640,21 @@ class HumanLikeness:
             self._failed = f"{self.backend} detector unavailable: {e}"
 
     def available(self) -> bool:
+        """Available."""
         return True  # stylometry fallback always scores
 
     def reason(self) -> str | None:
+        """Reason."""
         return self._failed
 
     def score(self, text: str) -> float | None:
+        """Score human-likeness of text."""
         if self._detector is not None:
             try:
                 v = self._detector(text)
                 return round(float(v), 4) if isinstance(v, (int, float)) else None
             except Exception as e:
+                self._detector = None
                 self._failed = f"detector error: {e}"
         try:
             from score_stylometry import score_text_stylometry
@@ -638,6 +671,7 @@ class HumanLikeness:
 def _quality(
     original: str, candidate: str, chars_per_token: float, semantic: SemanticEmbedder | None = None
 ) -> dict[str, Any]:
+    """Compute quality metrics between original and rewritten text."""
     sem = semantic.score(original, candidate) if semantic is not None else None
     return {
         "lexical_divergence": round(_lexical_divergence(original, candidate), 4),
@@ -651,6 +685,7 @@ def _quality(
 
 
 def _score_of(d: dict[str, Any] | None) -> float | None:
+    """Extract primary score from detection result."""
     if not d or not d.get("available"):
         return None
     s = d.get("score")
@@ -676,6 +711,7 @@ class MarkLLMWorker:
         scheme: str,
         config: str | None,
     ) -> None:
+        """init."""
         self._timeout = timeout
         cmd = [
             python,
@@ -718,15 +754,18 @@ class MarkLLMWorker:
             os.environ["WATERMARKS_MARKLLM_PORT"] = str(self.port)
 
     def _drain_stderr(self) -> None:
+        """drain stderr."""
         for line in self._proc.stderr:
             self._stderr_tail.append(line.rstrip())
             if len(self._stderr_tail) > 200:
                 self._stderr_tail.pop(0)
 
     def _read_line(self, timeout: float) -> dict[str, Any] | None:
+        """read line."""
         q: queue.Queue[str] = queue.Queue()
 
         def _reader() -> None:
+            """reader."""
             try:
                 q.put(self._proc.stdout.readline())
             except Exception as e:
@@ -749,6 +788,7 @@ class MarkLLMWorker:
         return data if isinstance(data, dict) else None
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """request."""
         try:
             self._proc.stdin.write(json.dumps(payload) + "\n")
             self._proc.stdin.flush()
@@ -761,6 +801,7 @@ class MarkLLMWorker:
         return resp
 
     def watermark(self, prompt: str, seed: int, max_new_tokens: int) -> dict[str, Any]:
+        """Watermark."""
         resp = self._request(
             {
                 "op": "watermark",
@@ -779,6 +820,7 @@ class MarkLLMWorker:
         }
 
     def detect(self, text: str) -> dict[str, Any]:
+        """Detect."""
         resp = self._request({"op": "detect", "id": 0, "text": text})
         return {
             "available": True,
@@ -788,6 +830,7 @@ class MarkLLMWorker:
         }
 
     def close(self) -> None:
+        """Close."""
         os.environ.pop("WATERMARKS_MARKLLM_PORT", None)
         if self._proc.poll() is None:
             try:
@@ -805,6 +848,7 @@ class MarkLLMWorker:
 
 class Benchmark:
     def __init__(self, args: argparse.Namespace, upstream: Path) -> None:
+        """init."""
         self.args = args
         self.upstream = upstream
         self.script = SCRIPTS_DIR / "detect_text_watermark.py"
@@ -834,17 +878,20 @@ class Benchmark:
                 eprint(f"markllm worker unavailable, using one-shot subprocesses: {e}")
 
     def _drop_worker(self) -> None:
+        """drop worker."""
         if self.worker is not None:
             with contextlib.suppress(Exception):
                 self.worker.close()
         self.worker = None
 
     def close_worker(self) -> None:
+        """Close worker."""
         self._drop_worker()
 
     # -- step wrappers (monkeypatchable in tests) --------------------------
 
     def watermark_sample(self, prompt_path: Path, seed: int, out_dir: Path) -> dict[str, Any]:
+        """Watermark sample."""
         if self.worker is not None:
             prompt = prompt_path.read_text(encoding="utf-8", errors="surrogateescape")
             try:
@@ -867,6 +914,7 @@ class Benchmark:
         )
 
     def detect(self, text: str) -> dict[str, Any]:
+        """Detect."""
         if self.worker is not None:
             try:
                 return self.worker.detect(text)
@@ -893,6 +941,7 @@ class Benchmark:
         rewrite_level: float | None = None,
         target_margin: float = 0.0,
     ) -> tuple[str, dict[str, Any]]:
+        """Execute text rewrite pass across candidates and select best candidate."""
         a = self.args
         return run_rewrite(
             self.python,
@@ -1195,6 +1244,7 @@ class Benchmark:
         # Rewrite variants already get after-detection from the rewrite's
         # --json-stats; running another MarkLLM detect here would waste a
         # model load per document.
+        """row."""
         started = time.monotonic()
         after = self.detect(candidate) if detect_after else None
         seconds = round(time.monotonic() - started, 3) if detect_after else 0.0
@@ -1495,20 +1545,30 @@ class Benchmark:
             sem = self.semantic.score(orig, out) if self.semantic is not None else None
             human = self.human.score(out)
             rows_in.append({"robust": robust, "sem": sem, "human": human})
-        n = len(rows_in)
+        verified = [r for r in rows_in if r["robust"] is not None]
+        n = len(verified)
+        unverified = len(rows_in) - n
         if n == 0:
-            return {"robust_clear_rate": None, "sem_div": None, "human_like": None, "n": 0}
-        rob = sum(1 for r in rows_in if r["robust"]) / n
-        sem_vals = [r["sem"] for r in rows_in if r.get("sem") is not None]
-        hum_vals = [r["human"] for r in rows_in if r.get("human") is not None]
+            return {
+                "robust_clear_rate": None,
+                "sem_div": None,
+                "human_like": None,
+                "n": 0,
+                "unverified": unverified,
+            }
+        rob = sum(1 for r in verified if r["robust"]) / n
+        sem_vals = [r["sem"] for r in verified if r.get("sem") is not None]
+        hum_vals = [r["human"] for r in verified if r.get("human") is not None]
         return {
             "robust_clear_rate": round(rob, 4),
             "sem_div": round(_mean(sem_vals), 4) if sem_vals else None,
             "human_like": round(1.0 - _mean(hum_vals), 4) if hum_vals else None,
             "n": n,
+            "unverified": unverified,
         }
 
     def _scalarize(self, axis: dict, w: tuple[float, float, float]) -> float | None:
+        """scalarize."""
         removal = axis.get("robust_clear_rate")
         sem = axis.get("sem_div")
         human = axis.get("human_like")
@@ -1517,6 +1577,7 @@ class Benchmark:
         return w[0] * removal + w[1] * (1.0 - sem) + w[2] * human
 
     def recipe_search(self, samples: list[dict[str, Any]], workdir: Path) -> dict[str, Any]:
+        """Recipe search."""
         a = self.args
         strengths: tuple[str, ...] = (
             "paraphrase",
@@ -1531,6 +1592,7 @@ class Benchmark:
         cands: list[dict] = []
 
         def _eval(recipe: list[tuple[str, float]]) -> dict | None:
+            """eval."""
             key = tuple(recipe)
             if key in seen:
                 return None
@@ -1620,6 +1682,7 @@ class Benchmark:
 
 
 def _mean(values: list[float]) -> float | None:
+    """Calculate arithmetic mean of a numeric sequence."""
     if not values:
         return None
     return sum(values) / len(values)
@@ -1723,6 +1786,7 @@ def _pareto_frontier(cands: list[dict]) -> list[dict]:
 
 
 def aggregate(rows: list[dict[str, Any]], variants: list[tuple[str, int]]) -> dict[str, Any]:
+    """Aggregate benchmark run statistics across variants."""
     by_variant: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = ["control", "layer-a"]
     order += [f"rewrite-{s}:{c}" for s, c in variants]
@@ -1863,6 +1927,7 @@ def aggregate_minimal(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _fmt(value: Any, default: str = "—") -> str:
+    """Format numeric value for markdown table output."""
     if value is None:
         return default
     if isinstance(value, float):
@@ -1877,6 +1942,7 @@ def render_markdown(
     agg: dict[str, Any],
     auroc: dict[str, Any] | None = None,
 ) -> str:
+    """Render benchmark results summary as markdown report."""
     L: list[str] = []
     L.append(f"# SynthID-text removal benchmark — {config['tag']}")
     L.append("")
@@ -2005,6 +2071,7 @@ def render_markdown_minimal(
     rows: list[dict[str, Any]],
     agg: dict[str, Any],
 ) -> str:
+    """Render minimal-mode search results as markdown report."""
     L: list[str] = []
     L.append(f"# SynthID-text minimal-rewrite-level benchmark — {config['tag']}")
     L.append("")
@@ -2098,12 +2165,14 @@ def render_markdown_minimal(
 
 
 def _steps_str(steps: list[tuple[str, float]]) -> str:
+    """Format recipe steps into human-readable string."""
     return " → ".join(f"{s}@{level:g}" for s, level in steps)
 
 
 def render_markdown_recipe(
     config: dict[str, Any], samples: list[dict[str, Any]], res: dict[str, Any]
 ) -> str:
+    """Render recipe search results as markdown report."""
     L: list[str] = []
     L.append(f"# SynthID-text recipe search — {config['tag']}")
     L.append("")
@@ -2208,6 +2277,7 @@ def render_markdown_recipe(
 
 
 def _recipe_csv(res: dict[str, Any]) -> list[str]:
+    """Export recipe search results to CSV format."""
     import io
 
     front = {id(c) for c in (res.get("frontier") or [])}
@@ -2256,6 +2326,7 @@ def _csv_cell(value: Any) -> Any:
 
 
 def _minimal_csv(rows: list[dict[str, Any]]) -> list[str]:
+    """minimal csv."""
     import io
 
     out = io.StringIO()
@@ -2303,6 +2374,7 @@ def _minimal_csv(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser for text rewrite tool."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--markllm-dir", default=os.environ.get("MARKLLM_DIR"))
     p.add_argument(
@@ -2526,6 +2598,7 @@ def _semantic_startup_probe(bench: Benchmark, semantic_model: str, require: bool
 
 
 def main() -> int:
+    """CLI entry point."""
     args = build_parser().parse_args()
 
     if not args.markllm_dir:
@@ -2655,6 +2728,21 @@ def main() -> int:
             rows = bench.minimal_search(samples, workdir)
         elif args.mode == "recipe":
             rows = []
+            if args.recipes:
+                recipe = parse_recipe(args.recipes)
+                candid = bench._eval_recipe(recipe, samples)
+                if candid.get("n", 0) == 0:
+                    eprint("error: recipe produced no evaluable samples (watermark not detected?)")
+                    return 2
+                candid["steps"] = recipe
+                res = {
+                    "candidates": [candid],
+                    "recommended": candid,
+                    "frontier": [candid],
+                    "intensity_curves": {},
+                }
+            else:
+                res = bench.recipe_search(samples, workdir)
         else:
             rows = bench.run_variants(samples, workdir)
     finally:
@@ -2665,21 +2753,6 @@ def main() -> int:
         report = render_markdown_minimal(config, samples, rows, agg)
         csv_lines = _minimal_csv(rows)
     elif args.mode == "recipe":
-        if args.recipes:
-            recipe = parse_recipe(args.recipes)
-            candid = bench._eval_recipe(recipe, samples)
-            if candid.get("n", 0) == 0:
-                eprint("error: recipe produced no evaluable samples (watermark not detected?)")
-                return 2
-            candid["steps"] = recipe
-            res = {
-                "candidates": [candid],
-                "recommended": candid,
-                "frontier": [candid],
-                "intensity_curves": {},
-            }
-        else:
-            res = bench.recipe_search(samples, workdir)
         report = render_markdown_recipe(config, samples, res)
         agg = {}
         csv_lines = _recipe_csv(res)

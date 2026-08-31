@@ -124,10 +124,12 @@ PROMPTS = {
 
 
 def _tokens(text: str) -> list[str]:
+    """Extract lowercase alphanumeric tokens from text."""
     return re.findall(r"[A-Za-z0-9]+", text.lower())
 
 
 def _bigrams(tokens: list[str]) -> set[tuple[str, str]]:
+    """Extract consecutive token pairs as bigrams."""
     return set(itertools.pairwise(tokens))
 
 
@@ -162,6 +164,7 @@ def _select_candidate(original: str, candidates: list[str]) -> tuple[str, list[f
 
 
 def _env(name: str, default: str | None = None) -> str | None:
+    """Read an environment variable with fallback."""
     v = os.environ.get(name)
     if v is None or v == "":
         return default
@@ -169,10 +172,12 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def _flag_env(name: str) -> bool:
+    """Read an environment variable as a boolean flag."""
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read an environment variable as an integer."""
     try:
         return int(_env(name, str(default)) or str(default))
     except ValueError:
@@ -218,6 +223,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Custom redirect handler for URL requests."""
         raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
 
 
@@ -321,6 +327,7 @@ def build_prompt(
     original_lang: str = "English",
     rewrite_level: float | None = None,
 ) -> str:
+    """Construct the LLM rewrite prompt for a given strength and intensity."""
     if strength is None:
         if rewrite_level is not None:
             return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
@@ -357,6 +364,7 @@ def _split_units(text: str) -> list[tuple[str, str]]:
 
 
 def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
+    """Perform an HTTP POST request and return JSON response."""
     if urlparse(url).scheme not in ("http", "https"):
         raise ValueError(f"refusing non-http(s) rewrite endpoint: {url}")
     body = json.dumps(payload).encode("utf-8")
@@ -373,6 +381,7 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
 
 
 def call_ollama(base_url: str, model: str, prompt: str, timeout: float, temperature: float) -> str:
+    """Call Ollama API endpoint for text rewrite."""
     url = base_url.rstrip("/") + "/api/chat"
     data = _http_json(
         url,
@@ -401,6 +410,7 @@ def call_openai_compatible(
     temperature: float,
     reasoning_effort: str | None = None,
 ) -> str:
+    """Call OpenAI-compatible chat completions API."""
     url = base_url.rstrip("/") + "/v1/chat/completions"
     headers: dict[str, str] = {}
     if api_key:
@@ -474,6 +484,7 @@ def _margin_of(rec: dict) -> tuple[float, float, float]:
     # four decimals, so two candidates can share that rounded value while
     # differing in the raw margin (e.g. 0.12343 vs 0.12344 both round to
     # 0.1234). Preserve the p-value and lexical-divergence tie-breakers.
+    """Compute rankable candidate margin score."""
     raw = rec.get("raw_margin")
     raw_val = float(raw) if raw is not None else -float("inf")
     # For evaluators that report p_value (e.g. Keyed-Gumbel), lower p_value indicates a safer pass
@@ -513,6 +524,7 @@ def rewrite(
     chunk_shuffle: bool = False,
     noop_lex_floor: float = 0.05,
 ) -> tuple[str, dict]:
+    """Execute text rewrite pass across candidates and select best candidate."""
     prompt = build_prompt(
         strength, text, lang=lang, original_lang=original_lang, rewrite_level=rewrite_level
     )
@@ -584,6 +596,7 @@ def rewrite(
     info["chunk_shuffle"] = bool(chunk_shuffle)
 
     def _rewrite_unit(unit: str) -> str:
+        """Rewrite a single text unit with prompt formatting."""
         return _generate_once(
             backend,
             base_url,
@@ -602,6 +615,7 @@ def rewrite(
         )
 
     def _generate_candidate() -> str:
+        """Generate a single rewrite candidate via configured backend."""
         if is_chunk:
             pairs = _split_units(text)
             if chunk_shuffle:
@@ -805,6 +819,7 @@ def rewrite(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser for text rewrite tool."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", nargs="?", default="-", help="Input text file, or - for stdin")
     p.add_argument("-o", "--output", help="Output path (default: stdout or *.rewritten.*)")
@@ -956,6 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """CLI entry point."""
     args = build_parser().parse_args()
 
     if args.rewrite_level is not None and not (0 < args.rewrite_level <= 1):

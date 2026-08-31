@@ -315,15 +315,13 @@ applied sequentially - each step's output feeds the next.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
   because the rewrite backend is assumed watermark-safe.
 
-```bash
-python3 service/scripts/bench_synthid_text.py \
-  --markllm-dir ~/MarkLLM \
-  --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
-  --mode recipe --target-margin 0.03 --restamp-control --require-semantic \
-  --rewrite-backend openai-compatible --rewrite-model <model> \
-  --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
-```
+    python3 service/scripts/bench_synthid_text.py \
+      --markllm-dir ~/MarkLLM \
+      --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
+      --mode recipe --target-margin 0.03 --restamp-control --require-semantic \
+      --rewrite-backend openai-compatible --rewrite-model <model> \
+      --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
 
 A recipe search is expensive (each candidate = a full rewrite chain per sample).
 Run Phase 1 coarsely first with fewer docs/seeds, then confirm the winning
-recipes on a larger powered run.
+recipes on a larger run with adequate statistical power.
