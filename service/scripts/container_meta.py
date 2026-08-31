@@ -814,6 +814,12 @@ DOCX_CUSTOM_PREFIXES = (
 # Provenance fields in docProps/core.xml and docProps/app.xml that always come
 # out empty. dc:title is deliberately not listed: it is the document's own
 # heading, not provenance.
+#
+# Application and AppVersion are NOT scrubbed: they are library signatures
+# (e.g. python-docx writes "Microsoft Macintosh Word / 14.0000"), not AI
+# provenance markers. Emptying them makes Word refuse to open the output
+# ("Word found unreadable content"). OOXML spec (ECMA-376 Part 1, §15.2.12.1)
+# requires AppVersion to match \d+\.\d{4} when present.
 DOCX_SCRUB_FIELDS = (
     ("dc:creator", "dc:creator"),
     ("cp:lastModifiedBy", "cp:lastModifiedBy"),
@@ -821,8 +827,6 @@ DOCX_SCRUB_FIELDS = (
     ("cp:keywords", "cp:keywords"),
     ("dc:subject", "dc:subject"),
     ("cp:category", "cp:category"),
-    ("Application", "Application"),
-    ("AppVersion", "AppVersion"),
     ("Company", "Company"),
     ("Manager", "Manager"),
 )
@@ -836,6 +840,52 @@ def _zip_namelist(data: bytes) -> list[str]:
 def _is_docx_meta_part(name: str) -> bool:
     """Return True for DOCX/XLSX/PPTX parts that carry provenance, not visible content."""
     return name.startswith(("docProps/", "customXml/"))
+
+
+# Application and AppVersion in docProps/app.xml are library signatures
+# (e.g. python-docx writes "Microsoft Macintosh Word / 14.0000"), not AI
+# provenance markers. They should not be flagged as AI metadata.
+_LIBRARY_SIGNATURE_TAGS = frozenset({"Application", "AppVersion"})
+
+
+def _filter_library_signature_hits(raw: bytes, hits: list[str]) -> list[str]:
+    """Remove hits that only appear inside Application/AppVersion tags."""
+    if not hits:
+        return hits
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        return hits
+    filtered = []
+    for hit in hits:
+        # Hits from _blob_hits have format "ai:label" or "marker:label"
+        # Extract the actual label for searching in XML
+        if hit.startswith("ai:") or hit.startswith("marker:"):
+            search_term = hit.split(":", 1)[1]
+        else:
+            search_term = hit
+        search_lower = search_term.lower()
+        in_lib_tag = False
+        for tag in _LIBRARY_SIGNATURE_TAGS:
+            open_tag = f"<{tag}"
+            close_tag = f"</{tag}>"
+            # Find all occurrences of this hit in the text
+            start = 0
+            while True:
+                idx = text.lower().find(search_lower, start)
+                if idx == -1:
+                    break
+                # Check if this occurrence is inside a library signature tag
+                before = text[:idx]
+                after_open = before.rfind(open_tag)
+                after_close = before.rfind(close_tag)
+                if after_open > after_close:
+                    in_lib_tag = True
+                    break
+                start = idx + 1
+        if not in_lib_tag:
+            filtered.append(hit)
+    return filtered
 
 
 def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], dict]:
@@ -890,6 +940,10 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
                     continue
                 raw = _read_zip_member(zf, info, budget)
                 c2, ai, hits = _blob_hits(raw)
+                # Filter out hits that are only in Application/AppVersion tags
+                hits = _filter_library_signature_hits(raw, hits)
+                # Recompute ai based on filtered hits
+                ai = bool(hits)
                 if c2 or ai:
                     if c2:
                         has_c2pa = True

@@ -245,9 +245,9 @@ def test_xlsx_inspect_and_clean():
         assert "<dc:creator></dc:creator>" in core_xml
         assert "ChatGPT" not in core_xml
 
-        # Validate app.xml empties Application/Company
+        # Validate app.xml preserves Application (library signature) but scrubs Company
         app_xml = zf.read("docProps/app.xml").decode("utf-8")
-        assert "<Application></Application>" in app_xml
+        assert "<Application>Microsoft 365 Copilot</Application>" in app_xml
         assert "<Company></Company>" in app_xml
 
         # Validate Layer A removed \u200b
