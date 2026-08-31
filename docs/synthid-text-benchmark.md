@@ -271,3 +271,57 @@ unless you want the raw samples.
   Very short samples are excluded by the sanity gate automatically.
 - Compare variants (strength x candidates) within one run, not across runs
   with different backends - the rewrite model dominates the outcome.
+
+## Measurements you should read together
+
+- **clear % vs robust %.** clear % is the per-sample, single-threshold verdict;
+  robust % only counts samples whose after-score sits at least `--target-margin`
+  below the threshold. At the default `--target-margin 0.0` the two are equal, so
+  a hair-thin crossing still reads as "cleared" - that is why a default-level
+  decision should run with `--target-margin 0.03`.
+- **noop.** A rewrite that changed fewer than `--noop-lex-floor` (default 0.05)
+  of bigrams is reported as a no-op and excluded from the clear-rate denominator.
+  A `backtranslate` row showing ~0% clear with near-zero lex divergence is a
+  **backend no-op**, not evidence that backtranslation is weak - check the noop
+  column before believing a 0% clear.
+- **AUROC (post).** Area Under the ROC curve between the rewritten-watermarked
+  and rewritten-unwatermarked after-scores. 1.0 = perfectly separable, 0.5 =
+  indistinguishable. It is threshold-independent and population-level, so it
+  complements clear %: a row that clears by a hair still moves AUROC little,
+  while a row that erases the mark's distributional signal drives AUROC toward
+  0.5. Requires `--restamp-control`; degrades to `—` otherwise.
+- **human ↓.** AI-likeness under `--human-backend` (stylometry by default, or an
+  optional offline detector). A gauge, not a proof of human authorship.
+
+## Recipe search mode (`--mode recipe`)
+
+Instead of a per-variant table, this mode answers "what is the best combination
+of strategies, and at what intensity for each?" A recipe is an ordered list of
+`strength@intensity` steps, each a Layer B rewrite with a numeric intensity that
+modulates that strength's prompt (e.g. `chunk@0.6,paraphrase@0.3,humanize@1.0`),
+applied sequentially - each step's output feeds the next.
+
+- Phase 1 sweeps each strength over `--intensity-grid` (single-step recipes) and
+  produces the per-strength intensity curves (robust %, sem div, human_like vs
+  intensity).
+- Phase 2 runs a beam search (`--beam`, `--max-passes`) once per weight vector in
+  `--weight-grid`, appending the best single steps. The scalarized objective
+  (`0.5 removal / 0.3 meaning / 0.2 human`) only drives the search.
+- The report's **Pareto frontier** is computed by dominance (no weights) over the
+  union of all candidates, so it is weight-independent. The "recommended" recipe
+  is one highlighted point on it.
+- `--recipes "chunk@0.6,paraphrase@0.3"` composes and scores one explicit recipe
+  instead of searching.
+- `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
+  because the rewrite backend is assumed watermark-safe.
+
+    ~/MarkLLM/.venv/bin/python service/scripts/bench_synthid_text.py \
+      --markllm-dir ~/MarkLLM \
+      --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
+      --mode recipe --target-margin 0.03 --restamp-control --require-semantic \
+      --rewrite-backend openai-compatible --rewrite-model <model> \
+      --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
+
+A recipe search is expensive (each candidate = a full rewrite chain per sample).
+Run Phase 1 coarsely first with fewer docs/seeds, then confirm the winning
+recipes on a larger run with adequate statistical power.
