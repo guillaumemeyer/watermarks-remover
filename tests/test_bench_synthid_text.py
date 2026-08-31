@@ -23,8 +23,11 @@ sys.path.insert(0, str(SCRIPTS))
 import bench_synthid_text as bench
 from bench_synthid_text import (
     _auc,
+    _best_on_frontier,
     _pareto_frontier,
     _parse_stats_json,
+    _recipe_verdict,
+    _weighted_score,
     aggregate,
     estimate_tokens,
     load_corpus,
@@ -32,6 +35,7 @@ from bench_synthid_text import (
     parse_recipe,
     parse_variants,
     parse_weight_grid,
+    parse_weight_vec,
 )
 
 DETECT_POS = {"available": True, "is_watermarked": True, "score": 2.0}
@@ -87,10 +91,13 @@ def _args(**overrides):
         noop_lex_floor=0.05,
         human_backend="stylometry",
         human_detector_dir=None,
+        human_pangram_model="pangram-4",
         intensity_grid="0.2,0.4,0.6,0.8,1.0",
-        weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.33/0.33/0.33",
+        weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.34/0.33/0.33",
         beam=4,
         max_passes=3,
+        phase2_levels_per_strength=3,
+        recommend_weight="0.5/0.3/0.2",
         recipes=None,
         layer_a_after=False,
     )
@@ -381,7 +388,9 @@ class _FakeBench:
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
         self.semantic = bench.SemanticEmbedder(args.semantic_model)
-        self.human = bench.HumanLikeness(args.human_backend, args.human_detector_dir)
+        self.human = bench.HumanLikeness(
+            args.human_backend, args.human_detector_dir, pangram_model=args.human_pangram_model
+        )
 
     def close_worker(self):
         pass
@@ -556,6 +565,43 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
         ],
     )
     assert bench.main() == 0
+
+
+def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, capsys):
+    """A --beam or --max-passes below 1 fails fast in recipe mode.
+
+    Otherwise --beam 0 empties the beam (and --max-passes 0 skips all Phase 2
+    expansion) and the run reports a verdict from single-step candidates only.
+    """
+    (tmp_path / "markllm" / "watermark").mkdir(parents=True)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "d1.txt").write_text("prompt", encoding="utf-8")
+    built = []
+
+    class _RecordingBench(_FakeBench):
+        def __init__(self, *args, **kwargs):
+            built.append(True)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(bench, "Benchmark", _RecordingBench)
+    base = [
+        "bench_synthid_text.py",
+        "--markllm-dir",
+        str(tmp_path / "markllm"),
+        "--corpus",
+        str(corpus),
+        "--rewrite-model",
+        "llama3.2",
+        "--mode",
+        "recipe",
+    ]
+    monkeypatch.setattr(sys, "argv", [*base, "--beam", "0"])
+    assert bench.main() == 1
+    monkeypatch.setattr(sys, "argv", [*base, "--max-passes", "0"])
+    assert bench.main() == 1
+    # The validation must fail before Benchmark (worker/semantic backend) starts.
+    assert built == []
 
 
 def test_worker_publishes_port_env(tmp_path, monkeypatch):
@@ -1227,10 +1273,88 @@ def test_parse_recipe_valid_and_invalid():
 
 def test_parse_weight_grid():
     assert parse_weight_grid("0.8/0.1/0.1,0.5/0.3/0.2") == [(0.8, 0.1, 0.1), (0.5, 0.3, 0.2)]
+    # The out-of-the-box default grid must be valid (each vector sums to 1.0);
+    # a 0.33/0.33/0.33 vector sums to 0.99 and is rejected.
+    default_grid = "0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.34/0.33/0.33"
+    assert len(parse_weight_grid(default_grid)) == 5
     with pytest.raises(SystemExit):
         parse_weight_grid("0.5/0.5")  # not three components
     with pytest.raises(SystemExit):
         parse_weight_grid("0.5/0.5/0.5")  # does not sum to 1.0
+    with pytest.raises(SystemExit):
+        parse_weight_grid("0.33/0.33/0.33")  # sums to 0.99
+    # Non-numeric, non-finite, and negative components must be rejected before
+    # (or independently of) the sum check; NaN/negative vectors slip through a
+    # sum-only check because NaN comparisons are false and -1/1/1 sums to 1.0.
+    with pytest.raises(SystemExit):
+        parse_weight_grid("a/0.5/0.5")  # non-numeric
+    with pytest.raises(SystemExit):
+        parse_weight_grid("nan/nan/nan")  # non-finite
+    with pytest.raises(SystemExit):
+        parse_weight_grid("inf/0.5/0.5")  # non-finite
+    with pytest.raises(SystemExit):
+        parse_weight_grid("-1/1/1")  # negative cumulative
+
+
+def test_parse_weight_vec():
+    assert parse_weight_vec("0.5/0.3/0.2") == (0.5, 0.3, 0.2)
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.5/0.3/0.2,0.1/0.2/0.7")  # more than one vector
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.5/0.5")  # not three components
+    with pytest.raises(SystemExit):
+        parse_weight_vec("0.33/0.33/0.33")  # sums to 0.99
+    # A zero weight is a legitimate "ignore this axis" vector.
+    assert parse_weight_vec("0.0/0.5/0.5") == (0.0, 0.5, 0.5)
+
+
+def test_weighted_score():
+    axis = {"robust_clear_rate": 0.8, "sem_div": 0.2, "human_like": 0.7}
+    assert round(_weighted_score(axis, (1.0, 0.0, 0.0)), 4) == 0.8
+    assert round(_weighted_score(axis, (0.0, 1.0, 0.0)), 4) == 0.8  # 1 - sem = 0.8
+    assert round(_weighted_score(axis, (0.0, 0.0, 1.0)), 4) == 0.7
+    assert (
+        _weighted_score({"robust_clear_rate": None, "sem_div": 0.2, "human_like": 0.7}, (1, 0, 0))
+        is None
+    )
+
+
+def test_best_on_frontier_shifts_with_weight():
+    a = {"steps": [("chunk", 0.6)], "robust_clear_rate": 1.0, "sem_div": 0.9, "human_like": 0.1}
+    b = {
+        "steps": [("paraphrase", 0.3)],
+        "robust_clear_rate": 0.0,
+        "sem_div": 0.1,
+        "human_like": 1.0,
+    }
+    pick_removal = _best_on_frontier([a, b], [a, b], (1.0, 0.0, 0.0))
+    pick_human = _best_on_frontier([a, b], [a, b], (0.0, 0.0, 1.0))
+    assert pick_removal["steps"] == [("chunk", 0.6)]
+    assert pick_human["steps"] == [("paraphrase", 0.3)]
+    # Empty frontier falls back to the best candidate under the weight.
+    fallback = _best_on_frontier([], [a, b], (1.0, 0.0, 0.0))
+    assert fallback["steps"] == [("chunk", 0.6)]
+
+
+def test_recipe_verdict():
+    def c(rate):
+        return {"robust_clear_rate": rate, "sem_div": 0.2, "human_like": 0.7}
+
+    assert _recipe_verdict([c(1.0)]) == "removable"
+    assert _recipe_verdict([c(0.5)]) == "partial"
+    assert _recipe_verdict([c(0.0)]) == "resists"
+    assert _recipe_verdict([]) == "undetermined"
+    assert _recipe_verdict([{"sem_div": 0.2, "human_like": 0.7}]) == "undetermined"
+
+
+def test_render_recipe_verdict_resists():
+    res = {
+        "candidates": [{"robust_clear_rate": 0.0, "sem_div": 0.8, "human_like": 0.2}],
+        "verdict": "resists",
+    }
+    text = bench._render_recipe_verdict(res)
+    assert "resists" in text.lower()
+    assert "at this token length" in text.lower()
 
 
 def test_parse_float_grid():
@@ -1343,6 +1467,104 @@ def test_compose_recipe_applies_steps_in_order(tmp_path, monkeypatch):
     assert out == "base|chunk|paraphrase"
 
 
+def _spot_eval(recipe):
+    """Deterministic stand-in for _eval_recipe used by the recipe_search smoke test."""
+    n = len(recipe)
+    max_lv = max(lv for _s, lv in recipe)
+    rob = min(1.0, 0.2 * n + 0.1 * max_lv)
+    sem = 0.1 * n + 0.05 * (1.0 - max_lv)
+    human = 0.4 + 0.1 * min(n, 2)
+    return {
+        "robust_clear_rate": round(rob, 4),
+        "sem_div": round(sem, 4),
+        "human_like": round(human, 4),
+        "n": 2,
+        "unverified": 0,
+    }
+
+
+def test_recipe_search_explores_intensity_and_order(tmp_path, monkeypatch):
+    args = _args(
+        out_dir=tmp_path,
+        intensity_grid="0.2,0.8,1.0",
+        weight_grid="0.5/0.3/0.2",
+        beam=4,
+        max_passes=3,
+        phase2_levels_per_strength=3,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    monkeypatch.setattr(b, "_eval_recipe", lambda recipe, _samples: _spot_eval(recipe))
+    samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
+    res = b.recipe_search(samples, tmp_path / "work")
+
+    # High-intensity levels are actually explored, not frozen to one best level.
+    levels_seen = {lv for c in res["candidates"] for _s, lv in c["steps"]}
+    assert any(lv > 0.2 for lv in levels_seen)
+    # Ordered composition never re-uses a strength.
+    for c in res["candidates"]:
+        strengths = [s for s, _lv in c["steps"]]
+        assert len(strengths) == len(set(strengths))
+    # The recommended recipe comes from the weight-independent frontier.
+    assert res["recommended"] is not None
+    assert res["recommended"]["steps"]
+
+
+def test_recipe_search_reuses_evaluated_recipe_across_weights(tmp_path, monkeypatch):
+    """A recipe shared by two weight vectors stays eligible for the later beam.
+
+    Regression: `_eval` used to return None for a recipe already evaluated under
+    an earlier weight vector, which dropped it from the later vector's beam and
+    left its descendants unexplored. Here chunk is anti-correlated: the removal
+    weight vector picks chunk@0.2 while the semantic weight vector picks
+    chunk@1.0, so both weights share prefixes like paraphrase@1.0+backtranslate
+    @1.0 but diverge on the chunk tail. The cache must return the already-evaluated
+    axis so the semantic vector keeps that prefix in its beam and explores the
+    chunk@1.0 descendants.
+    """
+    axis = {
+        "paraphrase": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "backtranslate": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "structural": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "humanize": {1.0: (1.0, 0.1, 0.9), 0.2: (0.2, 0.9, 0.2)},
+        "chunk": {1.0: (0.1, 0.1, 0.9), 0.2: (1.0, 0.9, 0.2)},
+    }
+
+    def evaluate(recipe, samples=None):
+        robust = []
+        semi = []
+        human = []
+        for strength, level in recipe:
+            r, s, h = axis[strength][level]
+            robust.append(r)
+            semi.append(s)
+            human.append(h)
+        return {
+            "robust_clear_rate": round(sum(robust) / len(robust), 4),
+            "sem_div": round(sum(semi) / len(semi), 4),
+            "human_like": round(sum(human) / len(human), 4),
+            "n": 2,
+            "unverified": 0,
+        }
+
+    args = _args(
+        out_dir=tmp_path,
+        intensity_grid="0.2,1.0",
+        weight_grid="1.0/0.0/0.0,0.0/1.0/0.0",
+        beam=8,
+        max_passes=3,
+        phase2_levels_per_strength=1,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    monkeypatch.setattr(b, "_eval_recipe", evaluate)
+    samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
+    res = b.recipe_search(samples, tmp_path / "work")
+
+    seen = {tuple(c["steps"]) for c in res["candidates"]}
+    assert (("paraphrase", 1.0), ("backtranslate", 1.0), ("chunk", 1.0)) in seen
+
+
 def test_human_likeness_backend_fallback():
     h = bench.HumanLikeness("lastde", None)  # no detector dir -> degrade to stylometry
     assert h.backend_used == "stylometry"
@@ -1351,6 +1573,130 @@ def test_human_likeness_backend_fallback():
     assert s is None or isinstance(s, (int, float))
     h2 = bench.HumanLikeness("stylometry")
     assert h2.backend_used == "stylometry"
+
+
+def test_human_likeness_pangram_requires_key(monkeypatch):
+    monkeypatch.delenv("PANGRAM_API_KEY", raising=False)
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "stylometry"
+    assert h.reason() and "PANGRAM_API_KEY" in h.reason()
+
+
+def test_pangram_answer_score():
+    h = bench.HumanLikeness("stylometry")
+    assert h._pangram_answer_score({"fraction_human": 0.2, "fraction_ai": 0.8}) == 0.8
+    assert h._pangram_answer_score({"fraction_human": None, "fraction_ai": 0.3}) == 0.3
+    assert h._pangram_answer_score({"fraction_ai": -0.1}) == 0.0  # clamped
+    assert h._pangram_answer_score({"fraction_ai": 1.7}) == 1.0  # clamped
+    assert h._pangram_answer_score({}) is None
+    assert h._pangram_answer_score(None) is None
+
+
+def test_human_likeness_pangram_bulk(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+    calls: dict[str, object] = {}
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            calls["submit"] = body
+            return {"bulk_id": "blk_1", "status": "queued"}
+        if method == "GET" and path == "/bulk/blk_1":
+            return {"status": "succeeded", "succeeded": 2}
+        if method == "GET" and path.startswith("/bulk/blk_1/results"):
+            return {
+                "items": [
+                    {"id": "0", "result": {"prediction_short": "AI", "fraction_human": 0.1}},
+                    {"id": "1", "result": {"prediction_short": "Human", "fraction_human": 1.0}},
+                ]
+            }
+        raise AssertionError(f"unexpected pangram call {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    assert h.score_many(["aaa", "bbb"]) == [0.9, 0.0]  # 1 - fraction_human
+    assert calls["submit"]["model"] == "pangram-4"
+    assert len(calls["submit"]["items"]) == 2
+    assert h.reason() is None
+
+
+def test_human_likeness_pangram_batches_in_one_job(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+    submits: list[dict] = []
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            submits.append(body or {})
+            return {"bulk_id": f"blk_{len(submits)}", "status": "queued"}
+        if method == "GET" and "/results" in path:
+            # echo back one result per submitted item id, aligned by index
+            n = len(submits[-1].get("items") or [])
+            return {"items": [{"id": str(i), "result": {"fraction_human": 0.0}} for i in range(n)]}
+        if method == "GET" and path.startswith("/bulk/blk_"):
+            return {"status": "succeeded"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.score_many(["x", "y", "z", ""]) == [1.0, 1.0, 1.0, None]  # empty -> None
+    assert len(submits) == 1  # one bulk job for all non-empty texts
+
+
+def test_human_likeness_pangram_fallback_on_error(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        raise OSError("network down")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    scores = h.score_many(["text here enough words about watermarks"])
+    assert h.backend_used == "stylometry"  # degraded after batch error
+    assert all(s is None or isinstance(s, float) for s in scores)
+
+
+def test_human_likeness_pangram_bulk_failed_falls_back(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            return {"bulk_id": "blk_1", "status": "queued"}
+        if method == "GET" and path == "/bulk/blk_1":
+            return {"status": "failed"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    scores = h.score_many(["short text"])
+    # A job-level "failed" raises, so score_many degrades to stylometry.
+    assert h.backend_used == "stylometry"
+    assert scores == [None]  # short text -> stylometry uncalibrated
+    assert h.reason() and "failed" in h.reason()  # reason persisted for the report
+
+
+def test_human_likeness_pangram_model_fallback_resolved(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["default"]}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None, pangram_model="pangram-4")
+    assert h.backend_used == "pangram"
+    # The resolved (allowed) selector is persisted for the metadata field.
+    assert h.pangram_model == "default"
 
 
 def test_render_markdown_recipe_and_csv():

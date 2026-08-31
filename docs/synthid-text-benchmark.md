@@ -290,8 +290,12 @@ unless you want the raw samples.
   complements clear %: a row that clears by a hair still moves AUROC little,
   while a row that erases the mark's distributional signal drives AUROC toward
   0.5. Requires `--restamp-control`; degrades to `—` otherwise.
-- **human ↓.** AI-likeness under `--human-backend` (stylometry by default, or an
-  optional offline detector). A gauge, not a proof of human authorship.
+- **human_like ↑** (`1 − AI-likeness`) under `--human-backend`: `stylometry`
+  (default, stdlib), `lastde`/`binoculars` (offline `ai_human.py` checkout), or
+  `pangram` (Pangram Labs async **bulk** API; key in `PANGRAM_API_KEY`, model via
+  `--human-pangram-model`). In the variants table the same backend score is
+  shown as raw `AI-likeness ↓`. A gauge, not a proof of human authorship; a
+  missing key/backend degrades to stylometry.
 
 ## Recipe search mode (`--mode recipe`)
 
@@ -305,11 +309,19 @@ applied sequentially - each step's output feeds the next.
   produces the per-strength intensity curves (robust %, sem div, human_like vs
   intensity).
 - Phase 2 runs a beam search (`--beam`, `--max-passes`) once per weight vector in
-  `--weight-grid`, appending the best single steps. The scalarized objective
-  (`0.5 removal / 0.3 meaning / 0.2 human`) only drives the search.
+  `--weight-grid`, combining an order of strengths with the top
+  `--phase2-levels-per-strength` intensities for that weight, so both step order
+  and intensity are explored.
 - The report's **Pareto frontier** is computed by dominance (no weights) over the
   union of all candidates, so it is weight-independent. The "recommended" recipe
-  is one highlighted point on it.
+  is the frontier point best matching `--recommend-weight` (a
+  w_removal/w_semantic/w_human triple summing to 1.0, default `0.5/0.3/0.2`).
+  The report's **Verdict** section distinguishes the no-clear cases rather than
+  calling every empty result `resists`: it reports **resists** only when the
+  best verified robust clear % is 0.0, and **undetermined** when no candidate
+  recipe was evaluable (all three axes missing, so no verified clear rate
+  exists). Either way, an empty or unevaluable search is stated explicitly
+  instead of leaving an empty frontier to interpret.
 - `--recipes "chunk@0.6,paraphrase@0.3"` composes and scores one explicit recipe
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
@@ -324,4 +336,6 @@ applied sequentially - each step's output feeds the next.
 
 A recipe search is expensive (each candidate = a full rewrite chain per sample).
 Run Phase 1 coarsely first with fewer docs/seeds, then confirm the winning
-recipes on a larger run with adequate statistical power.
+recipes on a larger run with adequate statistical power. Lower
+`--phase2-levels-per-strength` (or cut docs/seeds, `--beam`, `--max-passes`) to
+keep a run inside a tight wall-clock budget.
