@@ -747,6 +747,132 @@ def inspect_svg(data: bytes) -> tuple[bool, bool, list[str], dict]:
     return has_c2pa, has_ai or has_c2pa, findings, {}
 
 
+_XML_DECL_KEYWORDS = ("doctype", "entity")
+
+
+def _xml_decl_keyword(text: str, i: int) -> str | None:
+    """Return "doctype"/"entity" if text[i:] opens that declaration, else None."""
+    if text[i : i + 2] != "<!":
+        return None
+    rest = text[i + 2 :]
+    for kw in _XML_DECL_KEYWORDS:
+        if rest.lower().startswith(kw):
+            # Require a word boundary so names like <!DOCTYPEfoo> aren't matched.
+            nxt = rest[len(kw) : len(kw) + 1]
+            if nxt and (nxt.isalnum() or nxt in "_:"):
+                return None
+            return kw
+    return None
+
+
+def _xml_decl_end(text: str, i: int, keyword: str) -> int:
+    """Return the index just past a declaration's closing '>', or -1 if unterminated.
+
+    Quotes and the internal subset are respected, so a '>' inside a quoted
+    external identifier or a nested internal subset does not end the
+    declaration early.
+    """
+    j = i + 2 + len(keyword)
+    n = len(text)
+    quote: str | None = None
+    subset_depth = 0
+    while j < n:
+        c = text[j]
+        if quote is not None:
+            # An open quote spanning a newline outside an internal subset does
+            # not occur in a well-formed declaration; treat it as unterminated
+            # rather than deleting content past the declaration.
+            if c == "\n" and subset_depth == 0:
+                return -1
+            if c == quote:
+                quote = None
+            j += 1
+            continue
+        if c in "\"'":
+            quote = c
+            j += 1
+            continue
+        if c == "[":
+            subset_depth += 1
+            j += 1
+            continue
+        if c == "]":
+            if subset_depth:
+                subset_depth -= 1
+            j += 1
+            continue
+        if c == ">" and subset_depth == 0:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _strip_xml_declarations(text: str) -> tuple[str, int]:
+    """Remove top-level <!DOCTYPE ...> and <!ENTITY ...> declarations.
+
+    Only declarations in markup context are stripped, so matching text inside
+    CDATA sections, comments, and quoted attribute values (which do not start a
+    declaration) is preserved. A declaration is consumed through its true
+    terminator: quoted external identifiers and the internal subset, including
+    nested brackets and embedded '>' characters, are respected. An unterminated
+    declaration is left intact rather than partially deleted.
+    """
+    i = 0
+    n = len(text)
+    out: list[str] = []
+    removed = 0
+    in_tag = False
+    quote: str | None = None
+    while i < n:
+        c = text[i]
+        if in_tag:
+            if quote is not None:
+                out.append(c)
+                if c == quote:
+                    quote = None
+            elif c in "\"'":
+                quote = c
+                out.append(c)
+            elif c == ">":
+                in_tag = False
+                out.append(c)
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i)
+            if end == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i : end + 3])
+            i = end + 3
+            continue
+        keyword = _xml_decl_keyword(text, i)
+        if keyword:
+            end = _xml_decl_end(text, i, keyword)
+            if end == -1:
+                out.append(c)
+                i += 1
+                continue
+            removed += 1
+            i = end
+            continue
+        out.append(c)
+        if c == "<":
+            in_tag = True
+        i += 1
+    return "".join(out), removed
+
+
 def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     text = data.decode("utf-8", errors="surrogateescape")
@@ -761,12 +887,10 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
         actions.append(f"drop xmpmeta x{n}")
         text = new
 
-    # Drop XML DOCTYPE and ENTITY declarations
-    text, dt_count = re.subn(r"<!DOCTYPE\s+[^\[>]*(\[[^\]]*\])?\s*>", "", text, flags=re.I)
-    text, ent_count = re.subn(r"<!ENTITY\s+[^>]*>", "", text, flags=re.I)
-    total_cleaned = dt_count + ent_count
-    if total_cleaned:
-        actions.append(f"drop DOCTYPE/entity declarations x{total_cleaned}")
+    # Drop XML DOCTYPE and ENTITY declarations (context-aware)
+    text, decl_count = _strip_xml_declarations(text)
+    if decl_count:
+        actions.append(f"drop DOCTYPE/entity declarations x{decl_count}")
 
     # Drop comments that look like provenance (linear scan)
     def _cmt(block: str) -> bool:
@@ -782,17 +906,18 @@ def clean_svg(data: bytes) -> tuple[bytes, list[str]]:
     if uri_actions:
         actions.extend(uri_actions)
 
-    if not actions:
-        # still strip generator attribute on root if present
-        new, n = re.subn(
-            r'\s(inkscape:version|sodipodi:docname|generator)\s*=\s*"[^"]*"',
-            "",
-            text,
-            flags=re.I,
-        )
-        if n:
-            actions.append(f"drop generator-like attrs x{n}")
-            text = new
+    # Strip generator-like attributes on the root element independently of the
+    # actions above, so they are removed whenever present (not only when nothing
+    # else needed cleaning).
+    new, n = re.subn(
+        r'\s(inkscape:version|sodipodi:docname|generator)\s*=\s*"[^"]*"',
+        "",
+        text,
+        flags=re.I,
+    )
+    if n:
+        actions.append(f"drop generator-like attrs x{n}")
+        text = new
     if not actions:
         actions.append("no SVG metadata removed")
     return text.encode("utf-8", errors="surrogateescape"), actions
