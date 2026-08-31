@@ -157,6 +157,16 @@ class TestSvgSecurityHardening(unittest.TestCase):
         self.assertTrue(any("DOCTYPE" in a for a in actions))
         self.assertTrue(any("generator" in a for a in actions))
 
+    def test_clean_svg_skips_processing_instruction_when_locating_root(self):
+        # A processing instruction containing '<svg' must not be mistaken for
+        # the root start tag, so the real root's generator attr is still removed.
+        svg = b'<?xml-stylesheet type="text/css" href="<svg foo=1>"?>\n<svg xmlns="http://www.w3.org/2000/svg" generator="tool" width="10"/>'
+        cleaned_bytes, actions = clean_svg(svg)
+        cleaned_str = cleaned_bytes.decode("utf-8")
+        self.assertIn("<?xml-stylesheet", cleaned_str)
+        self.assertNotIn('generator="tool"', cleaned_str)
+        self.assertTrue(any("generator" in a for a in actions))
+
 
 if __name__ == "__main__":
     unittest.main()

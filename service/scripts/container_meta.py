@@ -902,6 +902,14 @@ def _strip_root_svg_attrs(text: str) -> tuple[str, int]:
                 return text, 0
             i = end + 3
             continue
+        if text.startswith("<?", i):
+            # A processing instruction may contain "<svg"; skip it so the root
+            # element start tag is what gets cleaned.
+            end = text.find("?>", i)
+            if end == -1:
+                return text, 0
+            i = end + 2
+            continue
         if text[i : i + 4].lower() == "<svg":
             nxt = text[i + 4 : i + 5]
             if not (nxt and (nxt.isalnum() or nxt in "_:.-")):
