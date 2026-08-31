@@ -603,26 +603,63 @@ class HumanLikeness:
     """Human-likeness axis: stylometry (always on) or an optional detector.
 
     ``score(text)`` returns AI-likeness in [0,1] (lower = more human);
-    ``human_like = 1 - score``. For 'lastde'/'binoculars' the caller supplies a
-    checkout via ``--human-detector-dir`` that contains an ``ai_human.py``
-    module exposing ``score(text) -> float`` (AI-likeness). If it cannot be
-    imported the backend degrades to the stdlib stylometry score, reported via
+    ``human_like = 1 - score``. Backends:
+
+    - 'stylometry' (default): stdlib-only burstiness/MATTR/AI-phrase gauge.
+    - 'lastde'/'binoculars': an offline ``ai_human.py`` module in
+      ``--human-detector-dir`` exposing ``score(text) -> float``.
+    - 'pangram': the Pangram Labs async **bulk** API (``--human-pangram-model``,
+      API key in ``PANGRAM_API_KEY``). Batching is via ``score_many`` (one bulk
+      job per call); ``score`` is a one-item bulk job.
+
+    A backend that fails to load or run degrades to stylometry, reported via
     ``reason()``. Stylometry returns ``None`` (uncalibrated) below
     ``MIN_SAMPLE_WORDS`` words; the caller excludes those from averages.
     """
 
-    def __init__(self, backend: str, detector_dir: str | None = None) -> None:
-        """init."""
+    PANGRAM_BASE_URL = "https://text.external-api.pangram.com"
+
+    def __init__(
+        self, backend: str, detector_dir: str | None = None, pangram_model: str | None = None
+    ) -> None:
+        """HumanLikeness."""
         self.backend = backend
         self.detector_dir = detector_dir
+        self.pangram_model = pangram_model or "pangram-4"
         self.backend_used = "stylometry"
         self._failed: str | None = None
         self._detector = None
+        self._pangram_key: str | None = None
+        self._pangram_models: list[str] | None = None
         self._load()
 
     def _load(self) -> None:
-        """load."""
+        """Load the requested backend (fail-soft to stylometry)."""
         if self.backend == "stylometry":
+            return
+        if self.backend == "pangram":
+            key = os.environ.get("PANGRAM_API_KEY")
+            if not key:
+                self._failed = "PANGRAM_API_KEY not set"
+                return
+            self._pangram_key = key
+            try:
+                models = self._pangram_request("GET", "/models") or {}
+                self._pangram_models = list(models.get("models") or [])
+            except Exception as e:  # fail-soft: auth / network / bad key
+                self._pangram_key = None
+                self._failed = f"pangram unavailable: {e}"
+                return
+            allowed = self._pangram_models
+            if self.pangram_model not in allowed:
+                self.pangram_model = (
+                    "default" if "default" in allowed else (allowed[0] if allowed else None)
+                )
+                if self.pangram_model is None:
+                    self._failed = f"no pangram model available ({allowed})"
+                    return
+            self._pangram_key = key
+            self.backend_used = "pangram"
             return
         if not self.detector_dir:
             self._failed = f"{self.backend} requires --human-detector-dir"
@@ -643,21 +680,29 @@ class HumanLikeness:
 
     def available(self) -> bool:
         """Available."""
-        return True  # stylometry fallback always scores
+        return True  # a fallback always scores
 
     def reason(self) -> str | None:
         """Reason."""
         return self._failed
 
-    def score(self, text: str) -> float | None:
-        """Score human-likeness of text."""
-        if self._detector is not None:
-            try:
-                v = self._detector(text)
-                return round(float(v), 4) if isinstance(v, (int, float)) else None
-            except Exception as e:
-                self._detector = None
-                self._failed = f"detector error: {e}"
+    def _pangram_request(self, method: str, path: str, body: dict | None = None) -> dict:
+        """Talk to the Pangram text API over https (no shell; urllib only)."""
+        import urllib.request
+
+        url = self.PANGRAM_BASE_URL + path
+        if not (url.startswith("https://") or url.startswith("http://")):
+            raise ValueError(f"refusing non-http(s) pangram endpoint: {url}")
+        req = urllib.request.Request(url, method=method)  # noqa: S310 - scheme checked above
+        req.add_header("x-api-key", self._pangram_key or "")
+        req.add_header("Content-Type", "application/json")
+        if body is not None:
+            req.data = json.dumps(body).encode("utf-8")
+        with urllib.request.urlopen(req, timeout=30.0) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _stylometry(self, text: str) -> float | None:
+        """Stdlib stylometry score."""
         try:
             from score_stylometry import score_text_stylometry
 
@@ -668,6 +713,93 @@ class HumanLikeness:
         except Exception as e:
             self._failed = f"stylometry failed: {e}"
             return None
+
+    def _pangram_answer_score(self, result: dict | None) -> float | None:
+        """AI-likeness from a Pangram result: 1 - fraction_human (fallback fraction_ai)."""
+        if not isinstance(result, dict):
+            return None
+        fh = result.get("fraction_human")
+        if isinstance(fh, (int, float)):
+            return round(min(1.0, max(0.0, 1.0 - float(fh))), 4)
+        fa = result.get("fraction_ai")
+        if isinstance(fa, (int, float)):
+            return round(min(1.0, max(0.0, float(fa))), 4)
+        return None
+
+    def score_many(self, texts: list[str]) -> list[float | None]:
+        """Score many texts; the Pangram backend uses one async bulk job.
+
+        Non-Pangram backends fall back to per-text ``score``.
+        """
+        if self._pangram_key and self.backend_used == "pangram":
+            try:
+                return self._pangram_batch(texts)
+            except Exception as e:  # fail-soft: disable pangram, fall back to stylometry
+                self._failed = f"pangram error: {e}"
+                self.backend_used = "stylometry"
+                self._pangram_key = None
+        return [self.score(t) for t in texts]
+
+    def _pangram_batch(self, texts: list[str]) -> list[float | None]:
+        """Submit/poll/fetch one bulk job covering all texts; align results by id."""
+        import time
+
+        index_of: dict[str, int] = {}
+        items: list[dict] = []
+        for i, t in enumerate(texts):
+            if not t or not t.strip():
+                continue
+            index_of[str(i)] = i
+            items.append({"id": str(i), "text": t})
+        if not items:
+            return [None] * len(texts)
+        submit = self._pangram_request(
+            "POST", "/bulk", {"items": items, "model": self.pangram_model}
+        )
+        bulk_id = submit.get("bulk_id")
+        if not bulk_id:
+            raise RuntimeError(f"pangram bulk submit returned no bulk_id: {submit}")
+        deadline = time.monotonic() + 60.0  # overall wait before giving up
+        while True:
+            st = self._pangram_request("GET", f"/bulk/{bulk_id}")
+            status = st.get("status")
+            if status in ("succeeded", "failed", "partial"):
+                break
+            if time.monotonic() > deadline:
+                raise TimeoutError("pangram bulk job timed out")
+            time.sleep(2.0)
+        scores: dict[str, float | None] = {}
+        offset = 0
+        while True:
+            page = self._pangram_request(
+                "GET", f"/bulk/{bulk_id}/results?offset={offset}&limit=1000"
+            )
+            entries = page.get("items") or page.get("results") or []
+            if not entries:
+                break
+            for entry in entries:
+                id_ = str(
+                    entry.get("id") if entry.get("id") is not None else entry.get("index") or ""
+                )
+                scores[id_] = self._pangram_answer_score(entry.get("result"))
+            if len(entries) < 1000:
+                break
+            offset += len(entries)
+        return [scores.get(str(i)) for i in range(len(texts))]
+
+    def score(self, text: str) -> float | None:
+        """Score human-likeness of a single text."""
+        if self._pangram_key and self.backend_used == "pangram":
+            return self.score_many([text])[0]
+        if self._detector is not None:
+            try:
+                v = self._detector(text)
+                return round(float(v), 4) if isinstance(v, (int, float)) else None
+            except Exception as e:
+                self._detector = None
+                self.backend_used = "stylometry"
+                self._failed = f"detector error: {e}"
+        return self._stylometry(text)
 
 
 def _quality(
@@ -860,7 +992,9 @@ class Benchmark:
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
         self.semantic = SemanticEmbedder(args.semantic_model)
-        self.human = HumanLikeness(args.human_backend, args.human_detector_dir)
+        self.human = HumanLikeness(
+            args.human_backend, args.human_detector_dir, pangram_model=args.human_pangram_model
+        )
         self.scheme = args.scheme
         self.config = args.config
         self.worker = None
@@ -1522,6 +1656,8 @@ class Benchmark:
         final markllm after-report is available.
         """
         rows_in: list[dict[str, Any]] = []
+        outs: list[str] = []
+        score_at: list[int] = []
         for s in samples:
             if s.get("excluded"):
                 continue
@@ -1545,8 +1681,14 @@ class Benchmark:
                 cleared is True and margin is not None and margin >= self.args.target_margin - 1e-9
             )
             sem = self.semantic.score(orig, out) if self.semantic is not None else None
-            human = self.human.score(out)
-            rows_in.append({"robust": robust, "sem": sem, "human": human})
+            rows_in.append({"robust": robust, "sem": sem, "human": None})
+            outs.append(out)
+            score_at.append(len(rows_in) - 1)
+        if outs:
+            # Batch the human-likeness scoring (one Pangram bulk job per recipe).
+            scored = self.human.score_many(outs)
+            for idx, val in zip(score_at, scored, strict=True):
+                rows_in[idx]["human"] = val
         verified = [r for r in rows_in if r["robust"] is not None]
         n = len(verified)
         unverified = len(rows_in) - n
@@ -2531,18 +2673,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--human-backend",
-        choices=("stylometry", "lastde", "binoculars"),
+        choices=("stylometry", "lastde", "binoculars", "pangram"),
         default="stylometry",
         help="Human-likeness axis. 'stylometry' (default) is the always-on "
         "stdlib-only score; 'lastde'/'binoculars' run an optional offline "
-        "AI-text detector (probed at startup, degrade to stylometry if absent). "
-        "Score is AI-likeness (lower = more human); human_like = 1 - score.",
+        "AI-text detector (probed at startup, degrade to stylometry if absent); "
+        "'pangram' uses the Pangram Labs async **bulk** API (key in "
+        "PANGRAM_API_KEY, model via --human-pangram-model). Score is AI-likeness "
+        "(lower = more human); human_like = 1 - score.",
     )
     p.add_argument(
         "--human-detector-dir",
         default=os.environ.get("HUMAN_DETECTOR_DIR"),
         help="Checkout root for the Lastde/Binoculars detector (default: "
         "$HUMAN_DETECTOR_DIR). Required when --human-backend is a detector.",
+    )
+    p.add_argument(
+        "--human-pangram-model",
+        default=os.environ.get("PANGRAM_MODEL", "pangram-4"),
+        help="Pangram model id (default: pangram-4; falls back to an allowed "
+        "model discovered via GET /models). Key is read from PANGRAM_API_KEY.",
     )
     p.add_argument(
         "--intensity-grid",
@@ -2668,6 +2818,7 @@ def main() -> int:
         "noop_lex_floor": args.noop_lex_floor,
         "human_backend": args.human_backend,
         "human_detector_dir": args.human_detector_dir,
+        "human_pangram_model": args.human_pangram_model,
         "human_backend_used": bench.human.backend_used,
         "intensity_grid": args.intensity_grid,
         "weight_grid": args.weight_grid,
@@ -2702,6 +2853,11 @@ def main() -> int:
                 *(
                     [f"--human-detector-dir {args.human_detector_dir}"]
                     if args.human_detector_dir
+                    else []
+                ),
+                *(
+                    [f"--human-pangram-model {args.human_pangram_model}"]
+                    if args.human_backend == "pangram"
                     else []
                 ),
                 f"--intensity-grid {args.intensity_grid}",

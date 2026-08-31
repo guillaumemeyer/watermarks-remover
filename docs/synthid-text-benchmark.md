@@ -290,8 +290,11 @@ unless you want the raw samples.
   complements clear %: a row that clears by a hair still moves AUROC little,
   while a row that erases the mark's distributional signal drives AUROC toward
   0.5. Requires `--restamp-control`; degrades to `—` otherwise.
-- **human ↓.** AI-likeness under `--human-backend` (stylometry by default, or an
-  optional offline detector). A gauge, not a proof of human authorship.
+- **human ↓.** AI-likeness under `--human-backend`: `stylometry` (default,
+  stdlib), `lastde`/`binoculars` (offline `ai_human.py` checkout), or `pangram`
+  (Pangram Labs async **bulk** API; key in `PANGRAM_API_KEY`, model via
+  `--human-pangram-model`). A gauge, not a proof of human authorship; a missing
+  key/backend degrades to stylometry.
 
 ## Recipe search mode (`--mode recipe`)
 

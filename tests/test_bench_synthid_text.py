@@ -87,6 +87,7 @@ def _args(**overrides):
         noop_lex_floor=0.05,
         human_backend="stylometry",
         human_detector_dir=None,
+        human_pangram_model="pangram-4",
         intensity_grid="0.2,0.4,0.6,0.8,1.0",
         weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.33/0.33/0.33",
         beam=4,
@@ -381,7 +382,9 @@ class _FakeBench:
         self.corpus = load_corpus(args.corpus, args.docs)
         self.chars_per_token = args.chars_per_token
         self.semantic = bench.SemanticEmbedder(args.semantic_model)
-        self.human = bench.HumanLikeness(args.human_backend, args.human_detector_dir)
+        self.human = bench.HumanLikeness(
+            args.human_backend, args.human_detector_dir, pangram_model=args.human_pangram_model
+        )
 
     def close_worker(self):
         pass
@@ -1351,6 +1354,93 @@ def test_human_likeness_backend_fallback():
     assert s is None or isinstance(s, (int, float))
     h2 = bench.HumanLikeness("stylometry")
     assert h2.backend_used == "stylometry"
+
+
+def test_human_likeness_pangram_requires_key(monkeypatch):
+    monkeypatch.delenv("PANGRAM_API_KEY", raising=False)
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "stylometry"
+    assert h.reason() and "PANGRAM_API_KEY" in h.reason()
+
+
+def test_pangram_answer_score():
+    h = bench.HumanLikeness("stylometry")
+    assert h._pangram_answer_score({"fraction_human": 0.2, "fraction_ai": 0.8}) == 0.8
+    assert h._pangram_answer_score({"fraction_human": None, "fraction_ai": 0.3}) == 0.3
+    assert h._pangram_answer_score({"fraction_ai": -0.1}) == 0.0  # clamped
+    assert h._pangram_answer_score({"fraction_ai": 1.7}) == 1.0  # clamped
+    assert h._pangram_answer_score({}) is None
+    assert h._pangram_answer_score(None) is None
+
+
+def test_human_likeness_pangram_bulk(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+    calls: dict[str, object] = {}
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            calls["submit"] = body
+            return {"bulk_id": "blk_1", "status": "queued"}
+        if method == "GET" and path == "/bulk/blk_1":
+            return {"status": "succeeded", "succeeded": 2}
+        if method == "GET" and path.startswith("/bulk/blk_1/results"):
+            return {
+                "items": [
+                    {"id": "0", "result": {"prediction_short": "AI", "fraction_human": 0.1}},
+                    {"id": "1", "result": {"prediction_short": "Human", "fraction_human": 1.0}},
+                ]
+            }
+        raise AssertionError(f"unexpected pangram call {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    assert h.score_many(["aaa", "bbb"]) == [0.9, 0.0]  # 1 - fraction_human
+    assert calls["submit"]["model"] == "pangram-4"
+    assert len(calls["submit"]["items"]) == 2
+    assert h.reason() is None
+
+
+def test_human_likeness_pangram_batches_in_one_job(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+    submits: list[dict] = []
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        if method == "POST" and path == "/bulk":
+            submits.append(body or {})
+            return {"bulk_id": f"blk_{len(submits)}", "status": "queued"}
+        if method == "GET" and "/results" in path:
+            # echo back one result per submitted item id, aligned by index
+            n = len(submits[-1].get("items") or [])
+            return {"items": [{"id": str(i), "result": {"fraction_human": 0.0}} for i in range(n)]}
+        if method == "GET" and path.startswith("/bulk/blk_"):
+            return {"status": "succeeded"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.score_many(["x", "y", "z", ""]) == [1.0, 1.0, 1.0, None]  # empty -> None
+    assert len(submits) == 1  # one bulk job for all non-empty texts
+
+
+def test_human_likeness_pangram_fallback_on_error(monkeypatch):
+    monkeypatch.setenv("PANGRAM_API_KEY", "k")
+
+    def fake(method: str, path: str, body: dict | None = None) -> dict:
+        if path == "/models":
+            return {"models": ["pangram-4"]}
+        raise OSError("network down")
+
+    monkeypatch.setattr(bench.HumanLikeness, "_pangram_request", staticmethod(fake))
+    h = bench.HumanLikeness("pangram", None)
+    assert h.backend_used == "pangram"
+    scores = h.score_many(["text here enough words about watermarks"])
+    assert h.backend_used == "stylometry"  # degraded after batch error
+    assert all(s is None or isinstance(s, float) for s in scores)
 
 
 def test_render_markdown_recipe_and_csv():
