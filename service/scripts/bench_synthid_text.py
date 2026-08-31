@@ -2746,17 +2746,11 @@ def main() -> int:
         )
         return 2
 
-    bench = Benchmark(args, upstream)
-    if not bench.corpus:
-        eprint("error: empty corpus")
-        return 2
-    probe = _semantic_startup_probe(bench, args.semantic_model, args.require_semantic)
-    if probe is not None:
-        return probe
-
-    # Fail fast on a bad recipe grid/spec before spending a full generation
-    # pass (a misconfigured --intensity-grid / --weight-grid would otherwise
-    # waste the whole run only to be rejected when the search starts).
+    # Fail fast on a bad recipe grid/spec and positive-value flags before
+    # constructing Benchmark, which starts MarkLLMWorker and the semantic
+    # backend. A misconfigured --intensity-grid / --weight-grid / --beam /
+    # --max-passes would otherwise only be rejected after the expensive setup
+    # (and before the worker-cleanup path that normally runs on early returns).
     if args.mode == "recipe":
         parse_float_grid(args.intensity_grid)
         parse_weight_grid(args.weight_grid)
@@ -2772,6 +2766,14 @@ def main() -> int:
             return 1
         if args.recipes:
             parse_recipe(args.recipes)
+
+    bench = Benchmark(args, upstream)
+    if not bench.corpus:
+        eprint("error: empty corpus")
+        return 2
+    probe = _semantic_startup_probe(bench, args.semantic_model, args.require_semantic)
+    if probe is not None:
+        return probe
 
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

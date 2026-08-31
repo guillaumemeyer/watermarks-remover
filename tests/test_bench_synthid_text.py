@@ -574,7 +574,14 @@ def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, caps
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "d1.txt").write_text("prompt", encoding="utf-8")
-    monkeypatch.setattr(bench, "Benchmark", _FakeBench)
+    built = []
+
+    class _RecordingBench(_FakeBench):
+        def __init__(self, *args, **kwargs):
+            built.append(True)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(bench, "Benchmark", _RecordingBench)
     base = [
         "bench_synthid_text.py",
         "--markllm-dir",
@@ -590,6 +597,8 @@ def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, caps
     assert bench.main() == 1
     monkeypatch.setattr(sys, "argv", [*base, "--max-passes", "0"])
     assert bench.main() == 1
+    # The validation must fail before Benchmark (worker/semantic backend) starts.
+    assert built == []
 
 
 def test_worker_publishes_port_env(tmp_path, monkeypatch):
