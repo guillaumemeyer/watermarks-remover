@@ -82,6 +82,34 @@ def test_build_prompt_level_alone_keeps_generic_prompt():
     assert "clause order" not in p
 
 
+def test_build_prompt_style_appended_to_humanize():
+    p = build_prompt(
+        "humanize", "ABC 123", lang="French", original_lang="English", style="write like hemingway"
+    )
+    assert "ABC 123" in p
+    assert "human wrote it" in p
+    assert "write like hemingway" in p
+
+
+def test_build_prompt_style_combines_with_level():
+    p = build_prompt(
+        "humanize",
+        "Hello 42.",
+        lang="French",
+        original_lang="English",
+        rewrite_level=0.3,
+        style="terse and plain",
+    )
+    assert "0.30" in p
+    assert "terse and plain" in p
+    assert "human wrote it" in p
+
+
+def test_build_prompt_no_style_when_unset():
+    p = build_prompt("humanize", "ABC 123", lang="French", original_lang="English")
+    assert "Apply this writing style" not in p
+
+
 def test_rewrite_level_modulates_tactic():
     out, info = rewrite(
         "Sample prose about water marks 42.",
@@ -93,6 +121,24 @@ def test_rewrite_level_modulates_tactic():
     assert info["noop"] is False  # print-prompt echoes the prompt; long input
     assert "0.40" in out
     assert "clause order" in out  # paraphrase instruction retained
+
+
+def test_rewrite_style_recorded_and_echoed():
+    out, info = rewrite(
+        "Sample prose about water marks 42.",
+        **_rewrite_kwargs(tactic="humanize", style="terse and plain"),
+    )
+    assert info["mode"] == "print-prompt"
+    assert info["tactic"] == "humanize"
+    assert info["style"] == "terse and plain"
+    assert "terse and plain" in out  # print-prompt echoes the styled prompt
+    assert "human wrote it" in out  # humanize instruction retained
+
+
+def test_rewrite_style_default_is_none():
+    _out, info = rewrite("Sample prose about water marks 42.", **_rewrite_kwargs())
+    assert info["style"] is None
+    assert "Apply this writing style" not in _out
 
 
 def test_rewrite_level_out_of_range_rejected(monkeypatch):

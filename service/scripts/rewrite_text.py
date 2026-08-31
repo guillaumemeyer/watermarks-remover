@@ -31,7 +31,10 @@ The rewrite instruction comes from --tactic (a named prompt) and, when
 --rewrite-level is set, that prompt is further modulated by a numeric rewrite
 intensity in (0,1] that controls how many tokens change (0 — the unchanged
 original — is excluded; 1 rewrites everything). The level is a request: output
-lexical/semantic divergence is measured, not guaranteed.
+lexical/semantic divergence is measured, not guaranteed. --style appends an
+optional writing-style instruction (e.g. "write like Hemingway"), most useful
+with --tactic humanize; it is a request, not a guarantee, and never overrides
+the fact/voice rules.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -319,6 +322,20 @@ def _intensity_clause(level: float) -> str:
     )
 
 
+def _style_clause(style: str) -> str:
+    """The style instruction appended to a rewrite prompt.
+
+    Intended for the humanize / manual-polish tactics (e.g. "write like
+    Hemingway"). A request, not a contract: the model may only approximate a
+    style, and the fact/voice rules still apply.
+    """
+    return (
+        f"Apply this writing style throughout the rewrite: {style}. Keep the "
+        "style subordinate to the content — preserve all facts, numbers, names, "
+        "and technical identifiers, and do not add or remove claims."
+    )
+
+
 def build_prompt(
     tactic: str | None,
     text: str,
@@ -326,18 +343,23 @@ def build_prompt(
     lang: str = "French",
     original_lang: str = "English",
     rewrite_level: float | None = None,
+    style: str | None = None,
 ) -> str:
     """Construct the LLM rewrite prompt for a given tactic and intensity."""
     if tactic is None:
         if rewrite_level is not None:
-            return PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
-        raise ValueError("unknown tactic: None")
-    base = _tactic_prompt(tactic, text, lang, original_lang)
-    # A (tactic, intensity) pair: modulate the named tactic prompt with the
-    # level instead of replacing it with the generic level-only prompt. Code is
-    # exempt — identifier/comment rewrites are not naturally intensity-modulated.
-    if rewrite_level is not None and tactic != "code":
-        return base + "\n\n" + _intensity_clause(rewrite_level)
+            base = PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
+        else:
+            raise ValueError("unknown tactic: None")
+    else:
+        base = _tactic_prompt(tactic, text, lang, original_lang)
+        # A (tactic, intensity) pair: modulate the named tactic prompt with the
+        # level instead of replacing it with the generic level-only prompt. Code is
+        # exempt — identifier/comment rewrites are not naturally intensity-modulated.
+        if rewrite_level is not None and tactic != "code":
+            base = base + "\n\n" + _intensity_clause(rewrite_level)
+    if style:
+        base = base + "\n\n" + _style_clause(style)
     return base
 
 
@@ -519,6 +541,7 @@ def rewrite(
     markllm_timeout: float = 180.0,
     gumbel_key: str | None = None,
     rewrite_level: float | None = None,
+    style: str | None = None,
     target_margin: float = 0.0,
     selection: str = "min-divergence",
     chunk_shuffle: bool = False,
@@ -526,12 +549,18 @@ def rewrite(
 ) -> tuple[str, dict]:
     """Execute text rewrite pass across candidates and select best candidate."""
     prompt = build_prompt(
-        tactic, text, lang=lang, original_lang=original_lang, rewrite_level=rewrite_level
+        tactic,
+        text,
+        lang=lang,
+        original_lang=original_lang,
+        rewrite_level=rewrite_level,
+        style=style,
     )
     info: dict = {
         "backend": backend,
         "tactic": tactic,
         "rewrite_level": rewrite_level,
+        "style": style,
         "target_margin": target_margin,
         "selection": selection,
         "noop_lex_floor": noop_lex_floor,
@@ -608,6 +637,7 @@ def rewrite(
                 lang=lang,
                 original_lang=original_lang,
                 rewrite_level=rewrite_level,
+                style=style,
             ),
             timeout,
             temperature,
@@ -856,6 +886,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="paraphrase",
     )
     p.add_argument(
+        "--style",
+        default=None,
+        help="Optional writing-style instruction appended to the rewrite prompt "
+        "(e.g. 'write like Hemingway'). Most meaningful with --tactic humanize; "
+        "a request, not a guarantee.",
+    )
+    p.add_argument(
         "--noop-lex-floor",
         type=float,
         default=0.05,
@@ -992,6 +1029,7 @@ def main() -> int:
             base_url=args.base_url,
             api_key=_env("WATERMARKS_REWRITE_API_KEY"),
             tactic=args.tactic,
+            style=args.style,
             lang=args.lang,
             original_lang=args.original_lang,
             timeout=args.timeout,

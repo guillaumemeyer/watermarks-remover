@@ -97,6 +97,7 @@ ALLOWED_CLEAN_OPTIONS = {
     "detect_before": bool,
     "detect_after": bool,
     "deep_images": str,
+    "style": str,
 }
 
 
