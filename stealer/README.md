@@ -43,6 +43,22 @@ step, subtract `delta * s*` from the candidate logits to demote green tokens;
 keep only paraphrases that stay similar and fail the detector.  `s*` can be
 applied directly by a caller via `scorer.apply_delta`.
 
+### The three models
+
+The full pipeline involves up to three models, but **`steal.py` only ever queries
+two of them**:
+
+| # | Role | Which model | Used by |
+| --- | --- | --- | --- |
+| 1 | **Target** — the watermarked model whose mark we extract | the model you want to cleanse | `steal.py query` (first run) |
+| 2 | **Baseline** — non-watermarked reference distribution | a *different* model (or old unwatermarked dumps) | `steal.py query` (second run) |
+| 3 | **Scrubber / paraphraser** — applies `s*` to logits at cleanup time | e.g. DIPPER | downstream; **not** called by `steal.py` |
+
+`build` and `detect` are **model-free**: they derive `s*` and score text with
+deterministic counting, so there is no third "analysis" LLM.  The baseline `#2`
+may be a different model from the target `#1` — the question the shared
+conversation started from.
+
 ## Quick start
 
 ```bash
@@ -66,7 +82,26 @@ python3 stealer/steal.py build --replies stealer/replies.jsonl \
 python3 stealer/steal.py detect --text "some text" --s-star stealer/s_star.json --ctx 8
 ```
 
-### Real model query
+### Configuring the target and baseline models
+
+Each `query` run talks to **one** model, so the target and baseline are each
+configured by their own `query` invocation (see the quick start above).  Point
+the target run at the model you want to cleanse and the baseline run at a
+different model:
+
+```bash
+# 1. Target — the watermarked model whose mark we're extracting.
+WATERMARKS_STEAL_BASE_URL=<url> WATERMARKS_STEAL_API_KEY=<key> \
+WATERMARKS_STEAL_MODEL=<target-model> \
+  python3 stealer/steal.py query --prompts stealer/prompts/prompts.jsonl \
+  --out stealer/replies.jsonl
+
+# 2. Baseline — a *different*, non-watermarked model.
+#    A loopback endpoint (e.g. local Ollama) needs no --allow-remote.
+WATERMARKS_STEAL_BASE_URL=<url> WATERMARKS_STEAL_MODEL=<baseline-model> \
+  python3 stealer/steal.py query --prompts stealer/prompts/prompts.jsonl \
+  --out stealer/baseline.jsonl
+```
 
 `query` reads the same env vars the rest of the repo uses for the rewrite
 backend (`WATERMARKS_REWRITE_*`) and mirrors them:
@@ -75,11 +110,13 @@ backend (`WATERMARKS_REWRITE_*`) and mirrors them:
 | --- | --- | --- |
 | `WATERMARKS_STEAL_BASE_URL` | `--base-url` | OpenAI-compatible base (default `https://api.openai.com/v1`) |
 | `WATERMARKS_STEAL_API_KEY` | `--api-key` | Key — env only, never on argv; empty = disable remote |
-| `WATERMARKS_STEAL_MODEL` | `--model` | Model to query |
+| `WATERMARKS_STEAL_MODEL` | `--model` | Model this run queries (target on run 1, baseline on run 2) |
 | `WATERMARKS_STEAL_ALLOW_REMOTE=1` | `--allow-remote` | Required to hit a non-loopback endpoint |
 
 Keys are read from the environment only.  `dry-run` writes deterministic
-placeholder replies so the rest of the pipeline runs without a model.
+placeholder replies so the rest of the pipeline runs without a model.  A
+baseline is optional but recommended — without it `build()` falls back to
+unigram statistics.
 
 ## Downloader
 
