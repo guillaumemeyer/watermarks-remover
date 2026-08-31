@@ -19,7 +19,7 @@
 # merge these pins into the core requirements or the Docker images, and
 # run a scoped pip-audit against this file if you need a report.
 diffusers==0.27.2
-transformers==4.37.2
+transformers==4.57.6
 accelerate==1.14.0
 controlnet-aux==0.0.10
 color-matcher==0.6.0

@@ -16,7 +16,7 @@
 # GPU when nvidia-smi is present), then this file's remaining pins resolve
 # against the already-installed torch.
 torch==2.13.0.*
-transformers==5.15.0
+transformers==4.57.6
 # transformers 5.15.0 caps tokenizers at <=0.23.0; there is no 0.23.0
 # release (0.22.2 -> 0.23.1), so the highest compatible pin is 0.22.2.
 tokenizers==0.22.2
