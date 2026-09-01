@@ -23,6 +23,7 @@ from rewrite_text import (
     _flag_env,
     _lexical_divergence,
     _select_candidate,
+    _tokens,
     build_prompt,
     rewrite,
 )
@@ -181,6 +182,19 @@ def test_lexical_divergence_empty_inputs():
     assert _lexical_divergence("", "") == 0.0
     assert _lexical_divergence("", "text") == 1.0
     assert _lexical_divergence("text", "") == 1.0
+
+
+def test_lexical_divergence_unicode_diacritics_not_shattered():
+    """Non-ASCII diacritics (e.g. Polish, French) must not shatter into single-char fragments."""
+    polish = "Właściwość języka polskiego"
+    tokens = _tokens(polish)
+    assert tokens == ["właściwość", "języka", "polskiego"]
+    assert _lexical_divergence(polish, polish) == 0.0
+    # Modifying one word should yield a clean bigram divergence rather than fragmentation noise
+    modified = "Struktura języka polskiego"
+    div = _lexical_divergence(polish, modified)
+    assert 0.0 < div < 1.0
+    assert div == pytest.approx(2 / 3, rel=1e-3)
 
 
 def test_select_candidate_prefers_more_divergent():

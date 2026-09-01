@@ -127,8 +127,8 @@ PROMPTS = {
 
 
 def _tokens(text: str) -> list[str]:
-    """Extract lowercase alphanumeric tokens from text."""
-    return re.findall(r"[A-Za-z0-9]+", text.lower())
+    """Extract lowercase alphanumeric/word tokens from text."""
+    return re.findall(r"\w+", text.lower())
 
 
 def _bigrams(tokens: list[str]) -> set[tuple[str, str]]:
