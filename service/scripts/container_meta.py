@@ -278,7 +278,16 @@ def _blob_hits(blob: bytes) -> tuple[bool, bool, list[str]]:
 
 
 RE_DATA_IMAGE_URI = re.compile(
-    r"data:image\/(?P<mime>[a-zA-Z0-9\+\-\.]+)(?P<params>;[^\s\"'\)<>]+)?,(?P<payload>[A-Za-z0-9+/=\s%]+)",
+    # Bounded, unambiguous data-URI header. The params section is a bounded
+    # list of ";attr" segments whose content cannot contain ';' or ',', so the
+    # comma separator is matched exactly once. Bounding the header keeps the
+    # match linear even when a large document is full of "data:image/..." that
+    # never reaches a comma (the engine would otherwise rescan the tail for
+    # every prefix - a ReDoS). A trailing, unbounded payload is linear (nothing
+    # follows it) and is allowed to span whitespace for formatted base64.
+    r"data:image/(?P<mime>[A-Za-z0-9+.-]+)"
+    r"(?P<params>(?:;[^,;\s\"'()<>]{1,64}){0,16})"
+    r",(?P<payload>[A-Za-z0-9+/=%\s]+)",
     re.I,
 )
 
@@ -618,10 +627,13 @@ def _is_cms_generator_meta(tag: str) -> bool:
     return not (_GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag))
 
 
-_JSONLD_OPEN_RE = re.compile(
-    r"""<script\b[^>]*type\s*=\s*["']application/ld\+json["'][^>]*>""",
-    re.I,
-)
+_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]{0,2048}>", re.I)
+# The attribute match is kept separate from the script-tag scan. A single
+# "<script\b[^>]*type...[^>]*>" pattern has two unbounded "[^>]*" runs around
+# a repeated literal, so a document full of 'type="application/ld+json"' with no
+# closing '>' backtracks quadratically. Scanning tags linearly and classifying
+# the type on the (bounded) tag keeps the whole pass O(n).
+_JSONLD_TYPE_RE = re.compile(r"""\btype\s*=\s*["']application/ld\+json["']""", re.I)
 _JSONLD_CLOSE_RE = re.compile(r"</script>", re.I)
 
 
@@ -640,7 +652,9 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
         ):
             has_ai = True
             findings.append(f"meta: {tag[:120]}")
-    for os_, _oe, _cs, ce in _iter_tag_blocks(text, _JSONLD_OPEN_RE, _JSONLD_CLOSE_RE):
+    for os_, oe, _cs, ce in _iter_tag_blocks(text, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE):
+        if not _JSONLD_TYPE_RE.search(text[os_:oe]):
+            continue
         blob = text[os_:ce]
         if AI_META_NAME_RE.search(blob) or re.search(
             r"DigitalSourceType|trainedAlgorithmicMedia|SoftwareAgent", blob, re.I
@@ -681,11 +695,15 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out = _META_TAG_RE.sub(_meta_sub, text)
 
     def _jsonld_is_ai(blob: str) -> bool:
+        end = blob.find(">")
+        open_tag = blob if end < 0 else blob[: end + 1]
+        if not _JSONLD_TYPE_RE.search(open_tag):
+            return False
         return AI_META_NAME_RE.search(blob) or re.search(
             r"DigitalSourceType|trainedAlgorithmicMedia|SoftwareAgent", blob, re.I
         )
 
-    new, n = _drop_blocks_if(out, _JSONLD_OPEN_RE, _JSONLD_CLOSE_RE, _jsonld_is_ai)
+    new, n = _drop_blocks_if(out, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE, _jsonld_is_ai)
     if n:
         actions.extend(["drop json-ld provenance-like script"] * n)
         out = new

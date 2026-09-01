@@ -27,6 +27,7 @@ from common import (
     safe_write_text,
 )
 from container_meta import (
+    _JSONLD_TYPE_RE,
     _SVG_METADATA_CLOSE_RE,
     _SVG_METADATA_OPEN_RE,
     MAX_ZIP_DECOMPRESSED_BYTES,
@@ -316,6 +317,38 @@ def test_clean_html_jsonld_flood_is_linear():
     assert "</script>" not in flood
     cleaned, _actions = _assert_completes_fast(clean_html, flood)
     assert cleaned == flood
+
+
+def test_clean_html_jsonld_attr_flood_no_close_is_linear():
+    # CodeQL py/polynomial-redos worst case for the tag scanner: the literal
+    # 'type="application/ld+json"' repeats many times but there is never a '>'.
+    # A single "<script[^>]*type...[^>]*>" regex backtracks quadratically here;
+    # the linear tag scan + separate type check must not.
+    flood = '<script type="application/ld+json"' * (128 * 1024 // 39)
+    assert ">" not in flood
+    cleaned, _actions = _assert_completes_fast(clean_html, flood)
+    assert cleaned == flood
+
+
+def test_clean_html_data_uri_flood_is_linear():
+    # CodeQL py/polynomial-redos worst case for the data-URI matcher: many
+    # 'data:image/+;' prefixes and no comma. The old params class could match
+    # the comma (and ';'), so every prefix rescanned the tail - quadratic. The
+    # bounded, unambiguous header must keep the whole pass linear.
+    flood = "data:image/+;" * (256 * 1024 // 13)
+    assert "," not in flood
+    cleaned, actions = _assert_completes_fast(clean_html, flood)
+    assert cleaned == flood
+    assert not any("embedded data:image" in a for a in actions)
+
+
+def test_jsonld_type_regex_is_linear():
+    # A leading "\s+" before "type" makes the attribute matcher quadratic on a
+    # long whitespace run (search rescans from every position). The fixed
+    # "\btype" anchor must keep it linear.
+    start = time.perf_counter()
+    assert _JSONLD_TYPE_RE.search("  " * (512 * 1024)) is None
+    assert time.perf_counter() - start < 5.0
 
 
 def test_pdf_stream_and_xpacket_floods_are_linear():
