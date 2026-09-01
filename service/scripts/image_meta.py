@@ -176,6 +176,16 @@ AI_GENERATOR_PRODUCTS = (
 # ...) are free text and are never scanned for product names.
 _GENERATOR_TEXT_KEYS = ("software", "creator", "parameters")
 
+# PNG text is metadata, not a document. Zip members cap at 128 MiB and
+# sitemap gzip at 64 MiB; a zTXt/iTXt value of 1 MiB is already far past
+# any legitimate Software/parameters chunk. zlib.decompress() has no
+# max_length, so this budget is enforced via decompressobj.
+MAX_PNG_TEXT_DECOMPRESSED_BYTES = 1 << 20
+
+
+class PngTextBudgetExceeded(Exception):
+    """Decompressed PNG zTXt/iTXt exceeded MAX_PNG_TEXT_DECOMPRESSED_BYTES."""
+
 
 @dataclass
 class ImageInspectReport:
@@ -244,12 +254,36 @@ def _contains_any(blob: bytes, needles: tuple[bytes, ...]) -> list[str]:
     return found
 
 
+def _zlib_decompress_bounded(data: bytes) -> bytes:
+    """Inflate zlib data, refusing output larger than the PNG-text budget.
+
+    ``zlib.decompress`` has no output cap. A crafted zTXt/iTXt chunk of a
+    few hundred KB can expand to hundreds of MB (then several more copies
+    in the marker scan). ``decompressobj.decompress(..., max_length=)``
+    stops before that allocation; callers treat ``PngTextBudgetExceeded``
+    as a refused bomb, distinct from a corrupt stream (``zlib.error``).
+    """
+    limit = MAX_PNG_TEXT_DECOMPRESSED_BYTES
+    dec = zlib.decompressobj()
+    out = dec.decompress(data, max_length=limit)
+    if not dec.eof and len(out) >= limit:
+        raise PngTextBudgetExceeded(f"PNG text decompressed size exceeds cap ({limit} bytes)")
+    extra = dec.flush()
+    if extra:
+        if len(out) + len(extra) > limit:
+            raise PngTextBudgetExceeded(f"PNG text decompressed size exceeds cap ({limit} bytes)")
+        out += extra
+    return out
+
+
 def _png_text_entries(payload: bytes, ctype: bytes) -> list[tuple[str, str]]:
     """Parse a PNG text-chunk payload into (key, value) pairs.
 
     Handles tEXt (latin-1), zTXt (zlib-compressed text), and iTXt
     (UTF-8, optionally compressed). Malformed or undecodable chunks
-    yield whatever pairs are recoverable; nothing is raised.
+    yield whatever pairs are recoverable. Over-budget compressed text
+    raises ``PngTextBudgetExceeded`` so inspect/clean can refuse the
+    chunk without allocating it.
     """
     entries: list[tuple[str, str]] = []
     if ctype == b"tEXt":
@@ -266,7 +300,7 @@ def _png_text_entries(payload: bytes, ctype: bytes) -> list[tuple[str, str]]:
         if not sep or len(rest) < 2:
             return entries
         try:
-            text = zlib.decompress(rest[1:])
+            text = _zlib_decompress_bounded(rest[1:])
         except zlib.error:
             return entries
         entries.append(
@@ -289,7 +323,7 @@ def _png_text_entries(payload: bytes, ctype: bytes) -> list[tuple[str, str]]:
             return entries
         if comp_flag == 1:
             try:
-                text = zlib.decompress(text)
+                text = _zlib_decompress_bounded(text)
             except zlib.error:
                 return entries
         entries.append(
@@ -362,7 +396,13 @@ def inspect_png(data: bytes) -> tuple[bool, bool, list[str]]:
             findings.append(f"PNG chunk {name} (possible C2PA container)")
         if ctype in (b"tEXt", b"zTXt", b"iTXt", b"eXIf"):
             if ctype in (b"tEXt", b"zTXt", b"iTXt"):
-                hits, product_hits = _png_text_hits(payload, ctype)
+                try:
+                    hits, product_hits = _png_text_hits(payload, ctype)
+                except PngTextBudgetExceeded:
+                    findings.append(
+                        f"PNG {name}: not fully inspected (decompressed text exceeds cap)"
+                    )
+                    hits, product_hits = [], []
             else:
                 hits = _contains_any(payload, AI_META_HINTS + C2PA_MARKERS)
                 product_hits = []
@@ -1921,9 +1961,14 @@ def strip_png(data: bytes, *, strip_all_text: bool = True) -> tuple[bytes, list[
             drop = True
             actions.append(f"drop chunk {name}")
         elif ctype in (b"tEXt", b"zTXt", b"iTXt"):
-            if strip_all_text or _text_chunk_is_ai(payload, ctype):
+            try:
+                drop = strip_all_text or _text_chunk_is_ai(payload, ctype)
+            except PngTextBudgetExceeded:
                 drop = True
-                actions.append(f"drop chunk {name}")
+                actions.append(f"drop chunk {name} (decompressed text exceeds cap)")
+            else:
+                if drop:
+                    actions.append(f"drop chunk {name}")
         elif _contains_any(ctype + payload, C2PA_MARKERS) and ctype not in (
             b"IHDR",
             b"IDAT",

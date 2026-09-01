@@ -1145,6 +1145,10 @@ make smoke                          # quick CLI smoke on fixtures
 
 ## Changelog
 
+### Unreleased
+
+- **PNG**: cap decompressed `zTXt` / compressed `iTXt` at 1 MiB (same class of budget as zip members and sitemap gzip). Over-budget chunks are reported on inspect and dropped on clean, including `keep_non_ai_metadata` (GHSA-cfhj-799j-rm4c)
+
 ### [v0.6.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.6.0) — wider format coverage, Layer A hardening, plugin & hook distribution, and detection-guided rewriting
 
 **Format & container coverage**
