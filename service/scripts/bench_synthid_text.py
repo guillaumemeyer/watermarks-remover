@@ -2332,9 +2332,7 @@ def _best_on_frontier(
     recommended. Falls back to the best eligible candidate under w if the frontier
     is empty.
     """
-    ranked = _ranked_on_frontier(
-        frontier, cands, w, coverage_floor, prefer_holdout=prefer_holdout
-    )
+    ranked = _ranked_on_frontier(frontier, cands, w, coverage_floor, prefer_holdout=prefer_holdout)
     return ranked[0] if ranked else None
 
 
@@ -3733,9 +3731,7 @@ def main() -> int:
         print("best strategy (recommended)")
         print("-" * 40)
         if not rec:
-            print(
-                "  none (no strategy still cleared after the final humanize polish)"
-            )
+            print("  none (no strategy still cleared after the final humanize polish)")
         else:
             print(
                 f"  steps         : {' → '.join(f'{s}@{level_i:g}' for s, level_i in rec['steps'])}"
