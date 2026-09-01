@@ -2305,9 +2305,14 @@ def _split_holdout(
 
 
 def _coverage_of(c: dict[str, Any], *, prefer_holdout: bool) -> float | None:
-    """Population robust clear rate for a candidate, optionally preferring holdout."""
-    if prefer_holdout and c.get("holdout_robust_clear_rate") is not None:
-        return c["holdout_robust_clear_rate"]
+    """Population robust clear rate for a candidate, optionally preferring holdout.
+
+    When ``prefer_holdout`` is true, a missing holdout rate is ineligible
+    (``None``). Do not fall back to the all-sample rate: that would skip
+    holdout validation for unverified holdout results.
+    """
+    if prefer_holdout:
+        return c.get("holdout_robust_clear_rate")
     return c.get("robust_clear_rate")
 
 
@@ -2361,7 +2366,15 @@ def _strategy_verdict(cands: list[dict]) -> str:
     'resists'      -> nothing cleared (best robust % == 0.0).
     'undetermined' -> no strategy was evaluable (all three axes missing).
     """
-    rates = [c.get("robust_clear_rate") for c in cands if c.get("robust_clear_rate") is not None]
+    rates: list[float] = []
+    for c in cands:
+        rate = c.get("robust_clear_rate")
+        if rate is None:
+            continue
+        steps = c.get("steps")
+        if steps is not None and not _has_removal_step(steps):
+            continue
+        rates.append(rate)
     if not rates:
         return "undetermined"
     best_rate = max(rates)
@@ -2932,6 +2945,12 @@ def _render_strategy_verdict(res: dict[str, Any]) -> str:
     rates = [c.get("robust_clear_rate") for c in cands if c.get("robust_clear_rate") is not None]
     best = _fmt(max(rates)) if rates else "n/a"
     if verdict == "removable":
+        if not res.get("recommended"):
+            return (
+                f"The searched space contains a strategy that robustly clears the mark "
+                f"(best robust % = {best}), but no shippable default survived the final "
+                "humanize polish. Nothing is recommended; the frontier below is diagnostics only."
+            )
         return (
             "The searched space contains a strategy that robustly clears the mark "
             f"(best robust % = {best}); treat the recommended strategy as the answer "
@@ -3589,13 +3608,20 @@ def main() -> int:
                     )
                     polished["steps"] = [*strategy, ("humanize", humanize_intensity)]
                     cands.append(polished)
+                eval_split = float(getattr(args, "eval_split", 0.0) or 0.0)
+                holdout = _split_holdout(samples, eval_split)[1]
+                if holdout:
+                    h = bench._eval_strategy(polished["steps"], holdout)
+                    polished["holdout_robust_clear_rate"] = h["robust_clear_rate"]
+                    polished["holdout_sem_div"] = h["sem_div"]
+                    polished["holdout_human_like"] = h["human_like"]
                 strategy_outputs_written = bench._persist_strategy_outputs(cands, workdir)
                 # Respect the coverage-floor contract: never publish a strategy that
                 # does not clear enough inputs as the recommendation. Verdict is
                 # measured independently so a below-floor clear is `partial`, not
-                # `resists`.
+                # `resists`. With --eval-split, eligibility uses the holdout rate.
                 floor = float(getattr(args, "coverage_floor", 0.5))
-                rec_rate = polished.get("robust_clear_rate")
+                rec_rate = _coverage_of(polished, prefer_holdout=bool(holdout))
                 rec = polished if rec_rate is not None and rec_rate >= floor - 1e-9 else None
                 if rec is None and polished is not candid:
                     polished["humanize_vetoed"] = True
