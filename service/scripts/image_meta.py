@@ -1645,7 +1645,7 @@ def run_markdiffusion_purify(
     output: Path,
     *,
     upstream_dir: str | None = None,
-    strength: float = 0.3,
+    intensity: float = 0.3,
     model: str | None = None,
     size: int = 512,
     steps: int = 50,
@@ -1676,8 +1676,8 @@ def run_markdiffusion_purify(
         str(path),
         "-o",
         str(output),
-        "--purification-strength",
-        str(strength),
+        "--purification-intensity",
+        str(intensity),
         "--size",
         str(size),
         "--steps",
@@ -1727,7 +1727,7 @@ def run_ctrlregen_clean(
     output: Path,
     *,
     upstream_dir: str | None = None,
-    strength: float = 0.25,
+    intensity: float = 0.25,
     steps: int = 50,
     device: str | None = None,
     seed: int | None = None,
@@ -1760,8 +1760,8 @@ def run_ctrlregen_clean(
         str(output),
         "--upstream-dir",
         str(upstream),
-        "--strength",
-        str(strength),
+        "--intensity",
+        str(intensity),
         "--steps",
         str(steps),
         "--json",
@@ -2171,13 +2171,13 @@ def clean_image(
     synthid_dir: str | None = None,
     remove_pixel: str | None = None,
     ctrlregen_dir: str | None = None,
-    ctrlregen_strength: float = 0.25,
+    ctrlregen_intensity: float = 0.25,
     ctrlregen_steps: int = 50,
     ctrlregen_device: str | None = None,
     ctrlregen_seed: int | None = None,
     ctrlregen_timeout: int = 3600,
     markdiffusion_dir: str | None = None,
-    markdiffusion_strength: float = 0.3,
+    markdiffusion_intensity: float = 0.3,
     markdiffusion_model: str | None = None,
     markdiffusion_size: int = 512,
     markdiffusion_steps: int = 50,
@@ -2234,14 +2234,14 @@ def clean_image(
                 dest,
                 dest,
                 upstream_dir=ctrlregen_dir,
-                strength=ctrlregen_strength,
+                intensity=ctrlregen_intensity,
                 steps=ctrlregen_steps,
                 device=ctrlregen_device,
                 seed=ctrlregen_seed,
                 timeout=ctrlregen_timeout,
             )
             if pixel_removal.get("available"):
-                actions.append(f"CtrlRegen pixel removal (strength {ctrlregen_strength})")
+                actions.append(f"CtrlRegen pixel removal (intensity {ctrlregen_intensity})")
             else:
                 actions.append(
                     "CtrlRegen pixel removal skipped: "
@@ -2252,7 +2252,7 @@ def clean_image(
                 dest,
                 dest,
                 upstream_dir=markdiffusion_dir,
-                strength=markdiffusion_strength,
+                intensity=markdiffusion_intensity,
                 model=markdiffusion_model,
                 size=markdiffusion_size,
                 steps=markdiffusion_steps,
@@ -2261,7 +2261,7 @@ def clean_image(
             )
             if pixel_removal.get("available"):
                 actions.append(
-                    f"DiffusionPurification pixel removal (strength {markdiffusion_strength})"
+                    f"DiffusionPurification pixel removal (intensity {markdiffusion_intensity})"
                 )
             else:
                 actions.append(

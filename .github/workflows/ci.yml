@@ -76,3 +76,28 @@ jobs:
 
       - name: Format check
         run: python -m ruff format --check service tests
+
+  # Optional backends (CtrlRegen, MarkLLM, MarkDiffusion) are installed only by
+  # their own setup_*.sh / Dockerfile.*, which CI never builds. A bad pin in one
+  # of their requirements files (e.g. a transformers bump that no longer resolves
+  # against the pinned huggingface_hub) therefore used to pass silently. pip
+  # --dry-run resolves the full dependency graph without downloading, so a
+  # "ResolutionImpossible" regression now fails the build cheaply. pip-audit is
+  # deliberately NOT used here: these research pins carry known, accepted CVEs.
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Validate optional backend requirements resolve
+        run: |
+          set -euo pipefail
+          python -m pip install --dry-run --ignore-installed -r service/scripts/requirements-ctrlregen.txt
+          python -m pip install --dry-run --ignore-installed \
+            -r service/scripts/requirements-markllm.txt \
+            -r service/scripts/requirements-semantic.txt
+          python -m pip install --dry-run --ignore-installed -r service/scripts/requirements-markdiffusion.txt

@@ -50,10 +50,10 @@ def main() -> int:
         help="noai-watermark checkout root (default: $NOAI_WATERMARK_DIR)",
     )
     p.add_argument(
-        "--ctrlregen-strength",
+        "--ctrlregen-intensity",
         type=float,
         default=0.25,
-        help="CtrlRegen strength in (0, 1] (default: 0.25, conservative)",
+        help="CtrlRegen intensity in (0, 1] (default: 0.25, conservative)",
     )
     p.add_argument(
         "--ctrlregen-steps",
@@ -86,10 +86,10 @@ def main() -> int:
         help="MarkDiffusion bootstrap dir (default: $MARKDIFFUSION_DIR)",
     )
     p.add_argument(
-        "--markdiffusion-strength",
+        "--markdiffusion-intensity",
         type=float,
         default=0.3,
-        help="DiffusionPurification strength in (0, 1] (default: 0.3)",
+        help="DiffusionPurification intensity in (0, 1] (default: 0.3)",
     )
     p.add_argument(
         "--markdiffusion-model",
@@ -147,13 +147,13 @@ def main() -> int:
             synthid_dir=args.synthid_dir,
             remove_pixel=args.remove_pixel,
             ctrlregen_dir=args.ctrlregen_dir,
-            ctrlregen_strength=args.ctrlregen_strength,
+            ctrlregen_intensity=args.ctrlregen_intensity,
             ctrlregen_steps=args.ctrlregen_steps,
             ctrlregen_device=args.ctrlregen_device,
             ctrlregen_seed=args.ctrlregen_seed,
             ctrlregen_timeout=args.ctrlregen_timeout,
             markdiffusion_dir=args.markdiffusion_dir,
-            markdiffusion_strength=args.markdiffusion_strength,
+            markdiffusion_intensity=args.markdiffusion_intensity,
             markdiffusion_model=args.markdiffusion_model,
             markdiffusion_size=args.markdiffusion_size,
             markdiffusion_steps=args.markdiffusion_steps,

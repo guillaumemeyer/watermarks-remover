@@ -325,7 +325,7 @@ def _rewrite_kwargs(**overrides):
         model="m",
         base_url="http://127.0.0.1:11434",
         api_key=None,
-        strength="paraphrase",
+        tactic="paraphrase",
         lang="French",
         original_lang="English",
         timeout=10,

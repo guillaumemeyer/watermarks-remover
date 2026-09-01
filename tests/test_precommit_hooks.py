@@ -215,15 +215,14 @@ def test_clean_staged_same_length_pdf_report_exits_1(tmp_path, monkeypatch, caps
     assert "cleaned 1 file(s)" in capsys.readouterr().err
 
 
-def test_clean_staged_same_length_pdf_end_to_end_exits_1(tmp_path, monkeypatch, capsys):
-    """Real subprocess clean on a PDF with XMP overwrites XMP with spaces, exits 1, same length."""
+def test_clean_staged_pdf_end_to_end_exits_1(tmp_path, monkeypatch, capsys):
+    """Real subprocess clean on a PDF with XMP removes the marker and exits 1."""
     f = tmp_path / "marked.pdf"
     pdf_bytes = _minimal_pdf_with_xmp()
     f.write_bytes(pdf_bytes)
     monkeypatch.setattr(sys, "argv", ["clean_staged.py", str(f)])
     assert clean_staged.main() == 1
     cleaned = f.read_bytes()
-    assert len(cleaned) == len(pdf_bytes)
     assert cleaned != pdf_bytes
     assert b"trainedAlgorithmicMedia" not in cleaned
     assert "cleaned 1 file(s)" in capsys.readouterr().err

@@ -8,7 +8,7 @@ set -a; [ -f "$ROOT/.env" ] && . "$ROOT/.env"; set +a
 export MARKLLM_DIR="${MARKLLM_DIR:-$HOME/MarkLLM}"
 export HF_HOME="${HF_HOME:-$ROOT/.hf-cache}"
 
-# Named-strength variants: does each rewrite remove the mark?
+# Named-tactic variants: does each rewrite remove the mark?
 python3 "$ROOT/service/scripts/bench_synthid_text.py" \
   --markllm-dir "$MARKLLM_DIR" \
   --docs 10 --seeds 3 \

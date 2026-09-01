@@ -23,6 +23,7 @@ from rewrite_text import (
     _flag_env,
     _lexical_divergence,
     _select_candidate,
+    _tokens,
     build_prompt,
     rewrite,
 )
@@ -34,7 +35,7 @@ def _rewrite_kwargs(**overrides):
         model=None,
         base_url=None,
         api_key=None,
-        strength="paraphrase",
+        tactic="paraphrase",
         lang="French",
         original_lang="English",
         timeout=5.0,
@@ -54,45 +55,91 @@ def test_build_prompt_paraphrase_is_word_choice_plus_syntax():
 
 
 def test_build_prompt_humanize_and_code_contain_text():
-    for strength, keyword in (("humanize", "human wrote it"), ("code", "comments")):
-        p = build_prompt(strength, "ABC 123", lang="French", original_lang="English")
+    for tactic, keyword in (("humanize", "human wrote it"), ("code", "comments")):
+        p = build_prompt(tactic, "ABC 123", lang="French", original_lang="English")
         assert "ABC 123" in p
         assert keyword in p
 
 
-def test_build_prompt_unknown_strength_raises():
+def test_build_prompt_unknown_tactic_raises():
     with pytest.raises(ValueError):
         build_prompt("nope", "ABC", lang="French", original_lang="English")
 
 
-def test_build_prompt_level_modulates_strength():
+def test_build_prompt_level_modulates_tactic():
     p = build_prompt(
         "paraphrase", "Hello 42.", lang="French", original_lang="English", rewrite_level=0.3
     )
     assert "Hello 42." in p
     assert "0.30" in p
-    # strength + level keeps the strength-specific instruction AND the clause
+    # tactic + level keeps the tactic-specific instruction AND the clause
     assert "clause order" in p
 
 
 def test_build_prompt_level_alone_keeps_generic_prompt():
-    # A bare intensity (no strength) still yields the generic level-only prompt.
+    # A bare intensity (no tactic) still yields the generic level-only prompt.
     p = build_prompt(None, "Hello 42.", lang="French", original_lang="English", rewrite_level=0.3)
     assert "0.30" in p
     assert "clause order" not in p
 
 
-def test_rewrite_level_modulates_strength():
+def test_build_prompt_style_appended_to_humanize():
+    p = build_prompt(
+        "humanize", "ABC 123", lang="French", original_lang="English", style="write like hemingway"
+    )
+    assert "ABC 123" in p
+    assert "human wrote it" in p
+    assert "write like hemingway" in p
+
+
+def test_build_prompt_style_combines_with_level():
+    p = build_prompt(
+        "humanize",
+        "Hello 42.",
+        lang="French",
+        original_lang="English",
+        rewrite_level=0.3,
+        style="terse and plain",
+    )
+    assert "0.30" in p
+    assert "terse and plain" in p
+    assert "human wrote it" in p
+
+
+def test_build_prompt_no_style_when_unset():
+    p = build_prompt("humanize", "ABC 123", lang="French", original_lang="English")
+    assert "Apply this writing style" not in p
+
+
+def test_rewrite_level_modulates_tactic():
     out, info = rewrite(
         "Sample prose about water marks 42.",
-        **_rewrite_kwargs(strength="paraphrase", rewrite_level=0.4),
+        **_rewrite_kwargs(tactic="paraphrase", rewrite_level=0.4),
     )
     assert info["mode"] == "print-prompt"
-    assert info["strength"] == "paraphrase"
+    assert info["tactic"] == "paraphrase"
     assert info["rewrite_level"] == 0.4
     assert info["noop"] is False  # print-prompt echoes the prompt; long input
     assert "0.40" in out
     assert "clause order" in out  # paraphrase instruction retained
+
+
+def test_rewrite_style_recorded_and_echoed():
+    out, info = rewrite(
+        "Sample prose about water marks 42.",
+        **_rewrite_kwargs(tactic="humanize", style="terse and plain"),
+    )
+    assert info["mode"] == "print-prompt"
+    assert info["tactic"] == "humanize"
+    assert info["style"] == "terse and plain"
+    assert "terse and plain" in out  # print-prompt echoes the styled prompt
+    assert "human wrote it" in out  # humanize instruction retained
+
+
+def test_rewrite_style_default_is_none():
+    _out, info = rewrite("Sample prose about water marks 42.", **_rewrite_kwargs())
+    assert info["style"] is None
+    assert "Apply this writing style" not in _out
 
 
 def test_rewrite_level_out_of_range_rejected(monkeypatch):
@@ -116,8 +163,8 @@ def test_print_prompt_ignores_candidates():
 
 
 def test_structural_and_backtranslate_prompts():
-    for strength in ("structural", "backtranslate"):
-        p = build_prompt(strength, "ABC 123", lang="German", original_lang="English")
+    for tactic in ("structural", "backtranslate"):
+        p = build_prompt(tactic, "ABC 123", lang="German", original_lang="English")
         assert "ABC 123" in p
 
 
@@ -135,6 +182,19 @@ def test_lexical_divergence_empty_inputs():
     assert _lexical_divergence("", "") == 0.0
     assert _lexical_divergence("", "text") == 1.0
     assert _lexical_divergence("text", "") == 1.0
+
+
+def test_lexical_divergence_unicode_diacritics_not_shattered():
+    """Non-ASCII diacritics (e.g. Polish, French) must not shatter into single-char fragments."""
+    polish = "Właściwość języka polskiego"
+    tokens = _tokens(polish)
+    assert tokens == ["właściwość", "języka", "polskiego"]
+    assert _lexical_divergence(polish, polish) == 0.0
+    # Modifying one word should yield a clean bigram divergence rather than fragmentation noise
+    modified = "Struktura języka polskiego"
+    div = _lexical_divergence(polish, modified)
+    assert 0.0 < div < 1.0
+    assert div == pytest.approx(2 / 3, rel=1e-3)
 
 
 def test_select_candidate_prefers_more_divergent():
@@ -185,7 +245,7 @@ def _rewrite_candidates_kwargs(**overrides):
         model="m",
         base_url="http://127.0.0.1:11434",
         api_key=None,
-        strength="paraphrase",
+        tactic="paraphrase",
         lang="French",
         original_lang="English",
         timeout=10,
@@ -562,7 +622,7 @@ def test_select_max_margin_prefers_largest_margin(monkeypatch):
     assert cs[1]["selected"] is True
 
 
-def test_strength_chunk_reassembles_fragments(monkeypatch):
+def test_tactic_chunk_reassembles_fragments(monkeypatch):
     calls = []
 
     def fake_ollama(base_url, model, prompt, timeout, temperature):
@@ -577,7 +637,7 @@ def test_strength_chunk_reassembles_fragments(monkeypatch):
         model="m",
         base_url="http://127.0.0.1:11434",
         api_key=None,
-        strength="chunk",
+        tactic="chunk",
         lang="French",
         original_lang="English",
         timeout=5.0,
@@ -592,7 +652,7 @@ def test_strength_chunk_reassembles_fragments(monkeypatch):
     assert out == "RE: First sentence. RE: Second sentence!\n\nRE: Third paragraph?"
 
 
-def test_strength_chunk_leading_blank_line_kept(monkeypatch):
+def test_tactic_chunk_leading_blank_line_kept(monkeypatch):
     calls = []
 
     def fake_ollama(base_url, model, prompt, timeout, temperature):
@@ -609,7 +669,7 @@ def test_strength_chunk_leading_blank_line_kept(monkeypatch):
         model="m",
         base_url="http://127.0.0.1:11434",
         api_key=None,
-        strength="chunk",
+        tactic="chunk",
         lang="French",
         original_lang="English",
         timeout=5.0,
@@ -621,7 +681,7 @@ def test_strength_chunk_leading_blank_line_kept(monkeypatch):
     assert out == "\n\nRE: First sentence. RE: Second sentence!"
 
 
-def test_strength_chunk_shuffle_reorders_fragments(monkeypatch):
+def test_tactic_chunk_shuffle_reorders_fragments(monkeypatch):
     calls = []
 
     def fake_ollama(base_url, model, prompt, timeout, temperature):
@@ -637,7 +697,7 @@ def test_strength_chunk_shuffle_reorders_fragments(monkeypatch):
         model="m",
         base_url="http://127.0.0.1:11434",
         api_key=None,
-        strength="chunk",
+        tactic="chunk",
         lang="French",
         original_lang="English",
         timeout=5.0,
@@ -662,7 +722,7 @@ def _rewrite_http_kwargs(base_url: str, **overrides):
         model="m",
         base_url=base_url,
         api_key="sk-test-key-123",
-        strength="paraphrase",
+        tactic="paraphrase",
         lang="French",
         original_lang="English",
         timeout=5.0,
