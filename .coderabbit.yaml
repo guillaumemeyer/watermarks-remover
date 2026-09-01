@@ -26,7 +26,12 @@ reviews:
         - Respect references/ethics.md: tool is only for content the user owns.
     - path: "service/**"
       instructions: |
-        - Preserve document body / pixels / waveform; strip provenance metadata only.
+        - Layer A (clean_file, image/AV/container metadata, Unicode scrub):
+          preserve document body / pixels / waveform; strip provenance metadata only.
+        - Layer B (rewrite_text.py, bench_synthid_text.py, clean_text.py, detect_text_watermark.py):
+          statistical watermark removal *requires* rewriting the document body.
+          Do not flag rewrite tactics, strategy search, or a recommended humanize
+          polish as a preserve-body violation.
         - Never use shell=True; guard subprocess args with safe_arg().
     - path: ".github/**"
       instructions: |
