@@ -278,31 +278,28 @@ def _blob_hits(blob: bytes) -> tuple[bool, bool, list[str]]:
     return has_c2pa, has_ai or has_c2pa, findings[:30]
 
 
-RE_DATA_IMAGE_URI = re.compile(
-    # Unambiguous data-URI header: params is a list of ";attr" segments whose
-    # content can contain neither ';' nor ',' so the comma separator is matched
-    # exactly once. No fixed counts or lengths are imposed, so any valid MIME
-    # parameter sequence is accepted. A trailing, unbounded payload is linear
-    # (nothing follows it) and may span whitespace for formatted base64.
-    r"data:image/(?P<mime>[A-Za-z0-9+.-]+)"
-    r"(?P<params>(?:;[^,;\s\"'()<>]+)*)"
-    r",(?P<payload>[A-Za-z0-9+/=%\s]+)",
-    re.I,
-)
-# Characters that can never appear in an unquoted data-URI body, so they bound a
-# candidate span. Matching each candidate once and skipping across it on a
-# non-match keeps the scan linear even when a large document is full of
-# "data:image/..." that never reaches a comma (a finditer over the whole text
-# would rescan the tail for every prefix - the ReDoS).
-_DATA_URI_STOP = frozenset("\"'<>(")
+# Charsets for the hand-written data-URI parser below. Parsing the URI
+# structure with plain string scans (instead of a regex) keeps the pass linear
+# and accepts any MIME parameter sequence with no fixed counts or length limits,
+# while also never feeding a user-controlled string to a regex engine.
+_ASCII_ALNUM = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+_DATA_URI_MIME_CHARS = _ASCII_ALNUM | frozenset("+-.")
+_DATA_URI_PAYLOAD_CHARS = _ASCII_ALNUM | frozenset("+/=%")
+# Characters that can never appear in an unquoted data-URI body; they terminate
+# a candidate span and cannot be part of its header or payload.
+_DATA_URI_BREAK = frozenset("\"'<>()")
+# Characters that end a parameter value: the ';' and ',' separators plus the
+# boundary set above.
+_DATA_URI_PARAM_BREAK = _DATA_URI_BREAK | frozenset(",;")
 
 
 def _iter_data_uris(text: str) -> Iterator[tuple[int, int, str, str, str]]:
     """Yield (start, end, mime, params, payload) for each data:image URI.
 
     Linear regardless of input shape: each candidate ('data:image/' up to the
-    next quote/angle/paren) is scanned once, and a candidate that does not form
-    a URI is skipped across so the cost is bounded by the text length.
+    next quote/angle/paren) is parsed once, and a candidate that does not form a
+    URI is skipped across, so an adversarial "data:image/+;" flood costs one
+    pass, not a rescan per prefix.
     """
     n = len(text)
     pos = 0
@@ -311,15 +308,47 @@ def _iter_data_uris(text: str) -> Iterator[tuple[int, int, str, str, str]]:
         i = low.find("data:image/", pos)
         if i < 0:
             return
-        j = i
-        while j < n and text[j] not in _DATA_URI_STOP:
-            j += 1
-        m = RE_DATA_IMAGE_URI.match(text, i)
-        if m is not None:
-            yield i, m.end(), m.group("mime"), m.group("params") or "", m.group("payload")
-            pos = m.end()
-        else:
-            pos = j if j > i + 1 else i + 1
+        k = i + len("data:image/")
+        mime_start = k
+        while k < n and text[k] in _DATA_URI_MIME_CHARS:
+            k += 1
+        mime = text[mime_start:k]
+        if not mime:
+            pos = i + 1
+            continue
+        params_start = k
+        while k < n and text[k] == ";":
+            k += 1
+            while k < n and text[k] not in _DATA_URI_PARAM_BREAK and not text[k].isspace():
+                k += 1
+        params = text[params_start:k]
+        if k >= n or text[k] != ",":
+            pos = _skip_data_uri_candidate(text, i)
+            continue
+        k += 1  # comma
+        payload_start = k
+        while k < n and (text[k] in _DATA_URI_PAYLOAD_CHARS or text[k].isspace()):
+            k += 1
+        payload = text[payload_start:k]
+        if not payload:
+            pos = _skip_data_uri_candidate(text, i)
+            continue
+        yield i, k, mime, params, payload
+        pos = k
+
+
+def _skip_data_uri_candidate(text: str, start: int) -> int:
+    """Return the position to resume scanning after a non-URI candidate.
+
+    Skips past the current 'data:image/' candidate (to its terminating
+    quote/angle/paren or end of text), so a document full of 'data:image/+;'
+    with no comma costs one pass rather than a rescan per prefix.
+    """
+    n = len(text)
+    j = start
+    while j < n and text[j] not in _DATA_URI_BREAK:
+        j += 1
+    return j if j > start + 1 else start + 1
 
 
 def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
@@ -658,14 +687,72 @@ def _is_cms_generator_meta(tag: str) -> bool:
     return not (_GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag))
 
 
-_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]{0,2048}>", re.I)
-# The attribute match is kept separate from the script-tag scan. A single
-# "<script\b[^>]*type...[^>]*>" pattern has two unbounded "[^>]*" runs around
-# a repeated literal, so a document full of 'type="application/ld+json"' with no
-# closing '>' backtracks quadratically. Scanning tags linearly and classifying
-# the type with a quote-aware parser keeps the whole pass O(n) and avoids
-# matching 'data-type=...' or a 'type=' inside another attribute's quoted value.
 _JSONLD_CLOSE_RE = re.compile(r"</script>", re.I)
+# HTML treats form feed as whitespace; include it wherever attribute separators
+# are checked.
+_HTML_SPACE = " \t\r\n\f"
+
+
+def _find_tag_end(text: str, start: int) -> int:
+    """Return the index just after the closing '>' of the tag at 'start'.
+
+    Quote-aware: a '>' inside a quoted attribute value does not end the tag.
+    Linear; returns len(text) when the tag is unterminated.
+    """
+    n = len(text)
+    i = start + 1
+    while i < n:
+        c = text[i]
+        if c == ">":
+            return i + 1
+        if c in "\"'":
+            quote = c
+            i += 1
+            while i < n and text[i] != quote:
+                i += 1
+            i += 1  # skip closing quote
+        else:
+            i += 1
+    return n
+
+
+def _iter_script_blocks(
+    text: str,
+) -> Iterator[tuple[int, int, int, int]]:
+    """Yield (open_start, open_end, close_start, close_end) for script blocks.
+
+    Linear and quote-aware, with no length cap on the opening tag: each opening
+    tag is scanned to its true boundary and closing tags are advanced by a
+    forward pointer, so an unterminated run of '<script' costs one pass, not a
+    rescan per prefix. Yields the same 4-tuple shape as _iter_tag_blocks.
+    """
+    closes = [m.start() for m in _JSONLD_CLOSE_RE.finditer(text)]
+    ci = 0
+    last_end = 0
+    pos = 0
+    n = len(text)
+    low = text.lower()
+    while True:
+        i = low.find("<script", pos)
+        if i < 0:
+            return
+        after = i + 7
+        if after >= n or text[after] not in ">" + _HTML_SPACE + "/":
+            pos = i + 1
+            continue
+        open_end = _find_tag_end(text, i)
+        if i < last_end:
+            pos = max(open_end, i + 1)
+            continue
+        while ci < len(closes) and closes[ci] < open_end:
+            ci += 1
+        if ci >= len(closes):
+            return
+        close_start = closes[ci]
+        close_end = close_start + len("</script>")
+        yield i, open_end, close_start, close_end
+        last_end = close_end
+        pos = open_end
 
 
 def _script_tag_is_jsonld(open_tag: str) -> bool:
@@ -678,23 +765,23 @@ def _script_tag_is_jsonld(open_tag: str) -> bool:
     i, n = 0, len(open_tag)
     if i < n and open_tag[i] == "<":
         i += 1
-    while i < n and open_tag[i] not in " \t\r\n/>":  # tag name
+    while i < n and open_tag[i] not in _HTML_SPACE + "/>":  # tag name
         i += 1
     while i < n:
-        while i < n and open_tag[i] in " \t\r\n":
+        while i < n and open_tag[i] in _HTML_SPACE:
             i += 1
         if i >= n or open_tag[i] == ">":
             return False
         name_start = i
-        while i < n and open_tag[i] not in "= \t\r\n/>":
+        while i < n and open_tag[i] not in "=" + _HTML_SPACE + "/>":
             i += 1
         name = open_tag[name_start:i]
-        while i < n and open_tag[i] in " \t\r\n":
+        while i < n and open_tag[i] in _HTML_SPACE:
             i += 1
         value = ""
         if i < n and open_tag[i] == "=":
             i += 1
-            while i < n and open_tag[i] in " \t\r\n":
+            while i < n and open_tag[i] in _HTML_SPACE:
                 i += 1
             if i < n and open_tag[i] in "\"'":
                 quote = open_tag[i]
@@ -706,7 +793,7 @@ def _script_tag_is_jsonld(open_tag: str) -> bool:
                 i += 1  # skip closing quote
             else:
                 value_start = i
-                while i < n and open_tag[i] not in " \t\r\n>":
+                while i < n and open_tag[i] not in _HTML_SPACE + ">":
                     i += 1
                 value = open_tag[value_start:i]
         if name.lower() == "type" and value.lower() == "application/ld+json":
@@ -729,7 +816,7 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
         ):
             has_ai = True
             findings.append(f"meta: {tag[:120]}")
-    for os_, oe, _cs, ce in _iter_tag_blocks(text, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE):
+    for os_, oe, _cs, ce in _iter_script_blocks(text):
         if not _script_tag_is_jsonld(text[os_:oe]):
             continue
         blob = text[os_:ce]
@@ -771,19 +858,27 @@ def clean_html(text: str) -> tuple[str, list[str]]:
 
     out = _META_TAG_RE.sub(_meta_sub, text)
 
-    def _jsonld_is_ai(blob: str) -> bool:
-        end = blob.find(">")
-        open_tag = blob if end < 0 else blob[: end + 1]
+    def _block_is_ai(open_tag: str, blob: str) -> bool:
         if not _script_tag_is_jsonld(open_tag):
             return False
         return AI_META_NAME_RE.search(blob) or re.search(
             r"DigitalSourceType|trainedAlgorithmicMedia|SoftwareAgent", blob, re.I
         )
 
-    new, n = _drop_blocks_if(out, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE, _jsonld_is_ai)
+    kept = []
+    last = 0
+    n = 0
+    for os_, oe, _cs, ce in _iter_script_blocks(out):
+        blob = out[os_:ce]
+        if not _block_is_ai(out[os_:oe], blob):
+            continue
+        kept.append(out[last:os_])
+        last = ce
+        n += 1
     if n:
+        kept.append(out[last:])
+        out = "".join(kept)
         actions.extend(["drop json-ld provenance-like script"] * n)
-        out = new
     out2, n = re.subn(r"\sdata-ai[\w-]*\s*=\s*[\"'][^\"']*[\"']", "", out, flags=re.I)
     if n:
         actions.append(f"drop data-ai* attributes x{n}")

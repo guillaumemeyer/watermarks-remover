@@ -171,6 +171,53 @@ def test_html_jsonld_clean_keeps_plain_jsonld_and_regular_scripts():
     assert not any("json-ld" in a for a in actions)
 
 
+def test_html_jsonld_form_feed_is_whitespace():
+    # HTML treats form feed (\f) as whitespace, so it must separate the tag name
+    # from the type attribute rather than being consumed into the tag name.
+    ai = (
+        '<script\ftype="application/ld+json">'
+        '{"@type":"CreativeWork","digitalSourceType":"trainedAlgorithmicMedia"}'
+        "</script>"
+    )
+    _has_c2pa, has_ai, findings, _ = inspect_html(ai)
+    assert has_ai is True
+    assert any("json-ld provenance-like block" in f for f in findings)
+    cleaned, _actions = clean_html(ai)
+    assert "digitalSourceType" not in cleaned
+
+
+def test_html_jsonld_opening_tag_longer_than_2048():
+    # A valid opening tag longer than 2048 characters must still be detected
+    # (no arbitrary length cap on the tag-scan boundary).
+    padding = " ".join(f'data-{i}="x"' for i in range(300))
+    ai = (
+        f'<script {padding} type="application/ld+json">'
+        '{"@type":"Image","digitalSourceType":"trainedAlgorithmicMedia"}'
+        "</script>"
+    )
+    assert len(ai.split(">", 1)[0]) > 2048
+    _has_c2pa, has_ai, findings, _ = inspect_html(ai)
+    assert has_ai is True
+    assert any("json-ld provenance-like block" in f for f in findings)
+    cleaned, _actions = clean_html(ai)
+    assert "digitalSourceType" not in cleaned
+
+
+def test_html_jsonld_gt_in_quoted_attribute_value():
+    # A '>' inside a quoted attribute value must not be treated as the end of
+    # the opening tag.
+    ai = (
+        '<script title="a > b" type="application/ld+json">'
+        '{"@type":"Image","digitalSourceType":"trainedAlgorithmicMedia"}'
+        "</script>"
+    )
+    _has_c2pa, has_ai, findings, _ = inspect_html(ai)
+    assert has_ai is True
+    assert any("json-ld provenance-like block" in f for f in findings)
+    cleaned, _actions = clean_html(ai)
+    assert "digitalSourceType" not in cleaned
+
+
 def test_html_ai_generator_still_dropped():
     html = '<meta name="generator" content="Claude">'
     cleaned, actions = clean_html(html)
