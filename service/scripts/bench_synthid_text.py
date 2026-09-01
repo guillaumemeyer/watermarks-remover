@@ -1854,8 +1854,10 @@ class Benchmark:
         Phase 2 runs a per-weight-vector beam search that combines an *order* of
         tactics with the top `--phase2-levels-per-tactic` intensities for that
         weight vector, so both step order and intensity are explored. The
-        recommended strategy is the point on the weight-independent Pareto frontier
-        that best matches `--recommend-weight`; the frontier itself is unaffected
+        recommended strategy is the first Pareto-frontier point (best under
+        `--recommend-weight`) that still meets `--coverage-floor` after a final
+        humanize polish — production has no detector, so the shipped recipe must
+        include that polish and still clear. The frontier itself is unaffected
         by weights.
         """
         a = self.args
@@ -1947,33 +1949,25 @@ class Benchmark:
                 c["holdout_sem_div"] = h["sem_div"]
                 c["holdout_human_like"] = h["human_like"]
 
-        recommended = _best_on_frontier(
+        # Production has no detector: only a strategy that still clears after the
+        # final humanize polish is a shippable default. Walk the frontier in
+        # `--recommend-weight` order and take the first candidate that survives
+        # that polish (already-humanized frontier points count). Vetoed polishes
+        # stay in `cands` as diagnostics; they are never recommended.
+        ranked = _ranked_on_frontier(
             frontier,
             cands,
             recommend_w,
             coverage_floor=coverage_floor,
             prefer_holdout=bool(holdout),
         )
-
-        # Humanizer always runs last: the recommended default ends with a humanize
-        # polish (re-measured on all inputs so its reported axes reflect the final
-        # output the user actually sees). The humanized result must still clear the
-        # coverage floor, otherwise it is not a recommendable remover.
-        if recommended is not None:
-            steps = [*recommended["steps"]]
-            if not steps or steps[-1][0] != "humanize":
-                steps = [*steps, ("humanize", humanize_intensity)]
-                final = self._eval_strategy(steps, samples)
-                final["steps"] = steps
-                final_rate = final.get("robust_clear_rate")
-                if final_rate is None or final_rate < coverage_floor - 1e-9:
-                    recommended = None
-                else:
-                    recommended = final
-                    # Keep the humanized recommendation in the candidate set so it
-                    # gets a row in results.csv, is marked recommended, and is
-                    # persisted for inspection.
-                    cands.append(final)
+        recommended = self._pick_humanized_recommendation(
+            ranked,
+            samples,
+            cands,
+            humanize_intensity=humanize_intensity,
+            coverage_floor=coverage_floor,
+        )
 
         # Intensity curves per tactic (from Phase 1 single-step strategies).
         curves: dict[str, list] = {}
@@ -1991,11 +1985,12 @@ class Benchmark:
                     )
             curves[tactic] = sorted(curve, key=lambda r: r["level"])
 
+        # Verdict answers "can the mark be removed at all?" and must agree with the
+        # best robust clear rate, independent of whether a recommendable full
+        # pipeline was published. A removal tactic that clears (best robust % > 0)
+        # is never reported as "resists" just because the humanize polish vetoed the
+        # recommendation — that contradicts the measured data.
         verdict = _strategy_verdict(cands)
-        # No recommendable remover: if some strategy was evaluable but none met the
-        # coverage floor, the actionable outcome is that the mark resisted.
-        if recommended is None and any(c.get("robust_clear_rate") is not None for c in cands):
-            verdict = "resists"
 
         # Persist every candidate (including the auto-humanized recommendation, which
         # is now in `cands`), so the reported best strategy is always written for
@@ -2012,6 +2007,55 @@ class Benchmark:
         }
 
     # --- Strategy output persistence -------------------------------------------
+
+    def _pick_humanized_recommendation(
+        self,
+        ranked: list[dict[str, Any]],
+        samples: list[dict[str, Any]],
+        cands: list[dict[str, Any]],
+        *,
+        humanize_intensity: float,
+        coverage_floor: float,
+    ) -> dict[str, Any] | None:
+        """First ranked strategy that still meets the coverage floor after humanize.
+
+        Already-humanized frontier points count as-is. For a removal-only pick,
+        a ``humanize`` polish is appended and re-measured on *samples*. If that
+        drops below the floor, the polish is kept as a diagnostic candidate
+        (``humanize_vetoed``) and the next ranked strategy is tried. Production
+        has no detector, so a removal-only strategy is never recommended.
+        """
+        skipped: list[str] = []
+
+        def _note() -> str:
+            return (
+                "earlier frontier pick(s) "
+                + ", ".join(skipped)
+                + f" dropped below the coverage floor after humanize@{humanize_intensity:g}; "
+                "this is the next candidate that still clears after the final humanize."
+            )
+
+        for cand in ranked:
+            steps = list(cand.get("steps") or [])
+            if not steps:
+                continue
+            if steps[-1][0] == "humanize":
+                if skipped:
+                    cand["humanize_note"] = _note()
+                return cand
+            polished = [*steps, ("humanize", humanize_intensity)]
+            final = self._eval_strategy(polished, samples)
+            final["steps"] = polished
+            final_rate = final.get("robust_clear_rate")
+            if final_rate is not None and final_rate >= coverage_floor - 1e-9:
+                if skipped:
+                    final["humanize_note"] = _note()
+                cands.append(final)
+                return final
+            final["humanize_vetoed"] = True
+            cands.append(final)
+            skipped.append(_steps_str(steps))
+        return None
 
     def _persist_strategy_outputs(self, cands: list[dict[str, Any]], workdir: Path | None) -> int:
         """Write each candidate's per-sample input/output text to disk for inspection.
@@ -2250,6 +2294,29 @@ def _coverage_of(c: dict[str, Any], *, prefer_holdout: bool) -> float | None:
     return c.get("robust_clear_rate")
 
 
+def _ranked_on_frontier(
+    frontier: list[dict],
+    cands: list[dict],
+    w: tuple[float, float, float],
+    coverage_floor: float = 0.0,
+    *,
+    prefer_holdout: bool = False,
+) -> list[dict]:
+    """Frontier (or all cands) meeting ``coverage_floor``, best-first under *w*."""
+    pool = frontier or cands
+    scored: list[tuple[float, dict]] = []
+    for c in pool:
+        cov = _coverage_of(c, prefer_holdout=prefer_holdout)
+        if cov is None or cov < coverage_floor - 1e-9:
+            continue
+        sc = _weighted_score(c, w)
+        if sc is None:
+            continue
+        scored.append((sc, c))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [c for _sc, c in scored]
+
+
 def _best_on_frontier(
     frontier: list[dict],
     cands: list[dict],
@@ -2265,19 +2332,10 @@ def _best_on_frontier(
     recommended. Falls back to the best eligible candidate under w if the frontier
     is empty.
     """
-    pool = frontier or cands
-    best: dict | None = None
-    best_sc: float | None = None
-    for c in pool:
-        cov = _coverage_of(c, prefer_holdout=prefer_holdout)
-        if cov is None or cov < coverage_floor - 1e-9:
-            continue
-        sc = _weighted_score(c, w)
-        if sc is None:
-            continue
-        if best is None or sc > best_sc:
-            best, best_sc = c, sc
-    return best
+    ranked = _ranked_on_frontier(
+        frontier, cands, w, coverage_floor, prefer_holdout=prefer_holdout
+    )
+    return ranked[0] if ranked else None
 
 
 def _strategy_verdict(cands: list[dict]) -> str:
@@ -2755,9 +2813,10 @@ def render_markdown_strategy(
     L.append("")
     if not rec:
         L.append(
-            "No strategy in the searched space removed the mark on enough inputs to be "
-            f"recommendable (population robust clear below the `--coverage-floor` {floor}). "
-            "Nothing is recommended; the frontier below is diagnostics only."
+            "No strategy that still clears after the final humanize polish met the "
+            f"`--coverage-floor` {floor}. Nothing is recommended as a production default "
+            "(cleaning has no detector, so a removal-only tactic is not shippable); "
+            "the frontier below is diagnostics only."
         )
     else:
         L.append(f"- **{_steps_str(rec['steps'])}**")
@@ -2766,6 +2825,8 @@ def render_markdown_strategy(
         L.append(f"- human_like: {_fmt(rec.get('human_like'))}")
         if rec.get("steps") and rec["steps"][-1][0] == "humanize":
             L.append("- final step: `humanize` style polish (runs last by design)")
+        if rec.get("humanize_note"):
+            L.append(f"- note: {rec['humanize_note']}")
     L.append("")
     adaptive = res.get("adaptive")
     if adaptive:
@@ -3672,7 +3733,9 @@ def main() -> int:
         print("best strategy (recommended)")
         print("-" * 40)
         if not rec:
-            print("  none (no strategy removed the mark on enough inputs to be recommendable)")
+            print(
+                "  none (no strategy still cleared after the final humanize polish)"
+            )
         else:
             print(
                 f"  steps         : {' → '.join(f'{s}@{level_i:g}' for s, level_i in rec['steps'])}"
@@ -3680,6 +3743,8 @@ def main() -> int:
             print(f"  robust clear %: {_fmt(rec.get('robust_clear_rate'))}")
             print(f"  semantic div  : {_fmt(rec.get('sem_div'))}")
             print(f"  human_like    : {_fmt(rec.get('human_like'))}")
+            if rec.get("humanize_note"):
+                print(f"  note          : {rec['humanize_note']}")
         adaptive = res.get("adaptive")
         if adaptive:
             print(

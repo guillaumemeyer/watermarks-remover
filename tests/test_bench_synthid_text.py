@@ -1726,6 +1726,87 @@ def test_recommended_humanized_is_search_candidate(tmp_path, monkeypatch):
     assert any(rec is c for c in res["candidates"])
 
 
+def test_strategy_search_no_recommend_when_humanize_always_vetoes(tmp_path, monkeypatch):
+    """Removal-only clears are not recommended: production has no detector, so a
+    strategy that fails after the final humanize is not a shippable default."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        coverage_floor=0.5,
+        humanize_intensity=0.4,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        ends_humanize = bool(strategy) and strategy[-1][0] == "humanize"
+        return {
+            "robust_clear_rate": 0.0 if ends_humanize else 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    assert res["recommended"] is None
+    # The mark is removable; there is just no shippable (humanize-last) default.
+    assert res["verdict"] == "removable"
+    vetoed = [c for c in res["candidates"] if c.get("humanize_vetoed")]
+    assert vetoed and all(c["steps"][-1][0] == "humanize" for c in vetoed)
+
+
+def test_strategy_search_falls_through_frontier_when_humanize_vetoes(tmp_path, monkeypatch):
+    """If appending humanize to the top pick re-introduces the mark, recommend the
+    next frontier candidate that still clears after the final humanize."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        coverage_floor=0.5,
+        humanize_intensity=0.4,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        steps = list(strategy or [])
+        ends_humanize = bool(steps) and steps[-1][0] == "humanize"
+        removal = [t for t, _lv in steps if t != "humanize"]
+        # paraphrase (+ humanize) re-introduces the mark; any other removal
+        # tactic still clears after the polish.
+        paraphrase_polish = ends_humanize and (not removal or removal[0] == "paraphrase")
+        rate = 0.0 if paraphrase_polish else 1.0
+        return {
+            "robust_clear_rate": rate,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    rec = res["recommended"]
+    assert rec is not None
+    assert rec["steps"][-1][0] == "humanize"
+    assert rec["steps"][0][0] != "paraphrase"
+    assert rec.get("humanize_note")
+    assert rec.get("robust_clear_rate") == 1.0
+    assert res["verdict"] == "removable"
+    assert any(c.get("humanize_vetoed") for c in res["candidates"])
+
+
 def test_adaptive_excludes_unverified(tmp_path, monkeypatch):
     """An unavailable detection is recorded as unverified, not as a failed clear."""
     args = _args(
