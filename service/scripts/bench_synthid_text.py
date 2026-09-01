@@ -1967,6 +1967,7 @@ class Benchmark:
             cands,
             humanize_intensity=humanize_intensity,
             coverage_floor=coverage_floor,
+            holdout=holdout,
         )
 
         # Intensity curves per tactic (from Phase 1 single-step strategies).
@@ -2016,16 +2017,22 @@ class Benchmark:
         *,
         humanize_intensity: float,
         coverage_floor: float,
+        holdout: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """First ranked strategy that still meets the coverage floor after humanize.
 
-        Already-humanized frontier points count as-is. For a removal-only pick,
-        a ``humanize`` polish is appended and re-measured on *samples*. If that
-        drops below the floor, the polish is kept as a diagnostic candidate
-        (``humanize_vetoed``) and the next ranked strategy is tried. Production
-        has no detector, so a removal-only strategy is never recommended.
+        Humanize-only strategies are style polish, not removal, and are skipped.
+        Already-humanized frontier points with a removal step count as-is (they
+        were already ranked under the holdout floor when ``holdout`` is set).
+        For a removal-only pick, a ``humanize`` polish is appended and
+        re-measured on *samples*; when ``holdout`` is non-empty the floor is
+        applied to the holdout rate. If that drops below the floor, the polish
+        is kept as a diagnostic candidate (``humanize_vetoed``) and the next
+        ranked strategy is tried. Production has no detector, so a removal-only
+        strategy is never recommended.
         """
         skipped: list[str] = []
+        prefer_holdout = bool(holdout)
 
         def _note() -> str:
             return (
@@ -2037,7 +2044,7 @@ class Benchmark:
 
         for cand in ranked:
             steps = list(cand.get("steps") or [])
-            if not steps:
+            if not steps or not _has_removal_step(steps):
                 continue
             if steps[-1][0] == "humanize":
                 if skipped:
@@ -2046,8 +2053,13 @@ class Benchmark:
             polished = [*steps, ("humanize", humanize_intensity)]
             final = self._eval_strategy(polished, samples)
             final["steps"] = polished
-            final_rate = final.get("robust_clear_rate")
-            if final_rate is not None and final_rate >= coverage_floor - 1e-9:
+            if prefer_holdout:
+                h = self._eval_strategy(polished, holdout)
+                final["holdout_robust_clear_rate"] = h["robust_clear_rate"]
+                final["holdout_sem_div"] = h["sem_div"]
+                final["holdout_human_like"] = h["human_like"]
+            rate = _coverage_of(final, prefer_holdout=prefer_holdout)
+            if rate is not None and rate >= coverage_floor - 1e-9:
                 if skipped:
                     final["humanize_note"] = _note()
                 cands.append(final)
@@ -2259,6 +2271,11 @@ def _normalize_strategy(steps: list[tuple[str, float]]) -> list[tuple[str, float
     if human:
         removal.append(("humanize", min(human)))
     return removal
+
+
+def _has_removal_step(steps: list[tuple[str, float]]) -> bool:
+    """True when *steps* includes a tactic other than style-polish humanize."""
+    return any(tactic != "humanize" for tactic, _ in steps)
 
 
 def _escalate_steps(
@@ -2790,10 +2807,12 @@ def render_markdown_strategy(
             "intensity grid; Phase 2 runs a per-weight-vector beam search that "
             "combines an order of tactics with that weight's top intensities "
             "(`--phase2-levels-per-tactic`), so both step order and intensity are "
-            "explored. The recommended strategy is the point on the weight-independent "
-            "Pareto frontier that best matches the configured recommend weight "
-            f"(`--recommend-weight`, default {config.get('recommend_weight', '0.5/0.3/0.2')}); "
-            "the frontier below is unaffected by weights."
+            "explored. The recommended strategy is the first Pareto-frontier point "
+            "(best under `--recommend-weight`, default "
+            f"{config.get('recommend_weight', '0.5/0.3/0.2')}) that still meets "
+            "`--coverage-floor` after a final humanize polish. If appending humanize "
+            "re-introduces the mark, that pick is vetoed and the next ranked frontier "
+            "candidate is tried. The frontier below is unaffected by weights."
             if not config.get("strategies")
             else "This run composed and scored the explicitly requested strategy."
         )
@@ -3560,31 +3579,31 @@ def main() -> int:
                     )
                     return 2
                 candid["steps"] = strategy
+                cands = [candid]
+                polished = candid
                 # Humanizer always runs last: append the finishing polish and re-measure.
                 if not strategy or strategy[-1][0] != "humanize":
                     humanize_intensity = float(getattr(args, "humanize_intensity", 0.4))
-                    final = bench._eval_strategy(
+                    polished = bench._eval_strategy(
                         [*strategy, ("humanize", humanize_intensity)], samples
                     )
-                    final["steps"] = [*strategy, ("humanize", humanize_intensity)]
-                    candid = final
-                strategy_outputs_written = bench._persist_strategy_outputs([candid], workdir)
+                    polished["steps"] = [*strategy, ("humanize", humanize_intensity)]
+                    cands.append(polished)
+                strategy_outputs_written = bench._persist_strategy_outputs(cands, workdir)
                 # Respect the coverage-floor contract: never publish a strategy that
-                # does not clear enough inputs as the recommendation.
+                # does not clear enough inputs as the recommendation. Verdict is
+                # measured independently so a below-floor clear is `partial`, not
+                # `resists`.
                 floor = float(getattr(args, "coverage_floor", 0.5))
-                rec = (
-                    candid
-                    if (
-                        candid.get("robust_clear_rate") is not None
-                        and candid["robust_clear_rate"] >= floor - 1e-9
-                    )
-                    else None
-                )
-                verdict = _strategy_verdict([candid]) if rec is not None else "resists"
+                rec_rate = polished.get("robust_clear_rate")
+                rec = polished if rec_rate is not None and rec_rate >= floor - 1e-9 else None
+                if rec is None and polished is not candid:
+                    polished["humanize_vetoed"] = True
+                verdict = _strategy_verdict(cands)
                 res = {
-                    "candidates": [candid],
+                    "candidates": cands,
                     "recommended": rec,
-                    "frontier": [candid],
+                    "frontier": [polished],
                     "intensity_curves": {},
                     "verdict": verdict,
                     "strategy_outputs_written": strategy_outputs_written,
@@ -3733,9 +3752,7 @@ def main() -> int:
         if not rec:
             print("  none (no strategy still cleared after the final humanize polish)")
         else:
-            print(
-                f"  steps         : {' → '.join(f'{s}@{level_i:g}' for s, level_i in rec['steps'])}"
-            )
+            print(f"  steps         : {_steps_str(rec['steps'])}")
             print(f"  robust clear %: {_fmt(rec.get('robust_clear_rate'))}")
             print(f"  semantic div  : {_fmt(rec.get('sem_div'))}")
             print(f"  human_like    : {_fmt(rec.get('human_like'))}")
