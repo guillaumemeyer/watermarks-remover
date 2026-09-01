@@ -387,7 +387,7 @@ def _cmd_purify(args: argparse.Namespace, upstream: Path | None) -> int:
         )
         purifier = DiffusionPurification(
             diffusion_config,
-            purification_strength=args.purification_strength,
+            purification_strength=args.purification_intensity,
             prompt=args.prompt or "",
         )
         image = Image.open(args.path).convert("RGB")
@@ -406,13 +406,13 @@ def _cmd_purify(args: argparse.Namespace, upstream: Path | None) -> int:
         "model": args.model,
         "device": device,
         "output": args.output,
-        "purification_strength": args.purification_strength,
+        "purification_intensity": args.purification_intensity,
     }
 
     if args.json:
         emit_json(payload)
     else:
-        print(f"purified image (strength {args.purification_strength}) -> {args.output}")
+        print(f"purified image (intensity {args.purification_intensity}) -> {args.output}")
     return 0
 
 
@@ -500,7 +500,7 @@ def main() -> int:
     pf.add_argument("path", help="Image file to purify")
     pf.add_argument("-o", "--output", required=True, help="Output PNG path")
     pf.add_argument(
-        "--purification-strength",
+        "--purification-intensity",
         type=float,
         default=0.3,
         help="Fraction of the diffusion schedule to regenerate in (0, 1] (default: 0.3)",

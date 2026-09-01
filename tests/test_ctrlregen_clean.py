@@ -102,10 +102,10 @@ def test_cli_bad_input_missing_file(tmp_path: Path):
     assert r.returncode == 2
 
 
-def test_cli_bad_strength(tmp_path: Path):
+def test_cli_bad_intensity(tmp_path: Path):
     dummy = tmp_path / "img.png"
     dummy.write_bytes(b"x")
-    r = _run_adapter(str(dummy), "--strength", "0")
+    r = _run_adapter(str(dummy), "--intensity", "0")
     assert r.returncode == 2
 
 
@@ -211,7 +211,7 @@ def test_run_ctrlregen_clean_success_parses_json(
         Path("x.png"),
         Path("y.png"),
         upstream_dir=str(upstream),
-        strength=0.3,
+        intensity=0.3,
         steps=40,
         device="cpu",
         seed=7,
@@ -284,11 +284,11 @@ def test_clean_image_ctrlregen_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         dest,
         remove_pixel="ctrlregen",
         ctrlregen_dir=str(tmp_path / "upstream"),
-        ctrlregen_strength=0.3,
+        ctrlregen_intensity=0.3,
     )
 
     assert result["pixel_removal"]["available"] is True
     assert any("CtrlRegen pixel removal" in a for a in result["actions"])
     assert captured["path"] == dest
     assert captured["output"] == dest
-    assert captured["kwargs"]["strength"] == 0.3
+    assert captured["kwargs"]["intensity"] == 0.3

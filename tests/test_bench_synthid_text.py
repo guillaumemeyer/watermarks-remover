@@ -26,13 +26,13 @@ from bench_synthid_text import (
     _best_on_frontier,
     _pareto_frontier,
     _parse_stats_json,
-    _recipe_verdict,
+    _strategy_verdict,
     _weighted_score,
     aggregate,
     estimate_tokens,
     load_corpus,
     parse_float_grid,
-    parse_recipe,
+    parse_strategy,
     parse_variants,
     parse_weight_grid,
     parse_weight_vec,
@@ -96,9 +96,10 @@ def _args(**overrides):
         weight_grid="0.8/0.1/0.1,0.5/0.3/0.2,0.2/0.6/0.2,0.2/0.2/0.6,0.34/0.33/0.33",
         beam=4,
         max_passes=3,
-        phase2_levels_per_strength=3,
+        phase2_levels_per_tactic=3,
         recommend_weight="0.5/0.3/0.2",
-        recipes=None,
+        strategies=None,
+        write_strategy_outputs=True,
         layer_a_after=False,
     )
     values.update(overrides)
@@ -117,7 +118,7 @@ def _make_bench(tmp_path, monkeypatch, patch_steps=True, **args_overrides):
         monkeypatch.setattr(
             b,
             "rewrite",
-            lambda text, strength, candidates, **kw: (text + " rewritten", _rewrite_stats()),
+            lambda text, tactic, candidates, **kw: (text + " rewritten", _rewrite_stats()),
         )
     return b, args
 
@@ -353,7 +354,7 @@ def test_run_variants_rows_and_clear_rate(tmp_path, monkeypatch):
 def test_rewrite_failure_is_recorded_not_fatal(tmp_path, monkeypatch):
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
 
-    def _boom(text, strength, candidates, **kw):
+    def _boom(text, tactic, candidates, **kw):
         raise RuntimeError("backend down")
 
     monkeypatch.setattr(b, "rewrite", _boom)
@@ -568,7 +569,7 @@ def test_main_allow_remote_from_env(tmp_path, monkeypatch):
 
 
 def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, capsys):
-    """A --beam or --max-passes below 1 fails fast in recipe mode.
+    """A --beam or --max-passes below 1 fails fast in strategy mode.
 
     Otherwise --beam 0 empties the beam (and --max-passes 0 skips all Phase 2
     expansion) and the run reports a verdict from single-step candidates only.
@@ -594,7 +595,7 @@ def test_main_rejects_nonpositive_beam_or_max_passes(tmp_path, monkeypatch, caps
         "--rewrite-model",
         "llama3.2",
         "--mode",
-        "recipe",
+        "strategy",
     ]
     monkeypatch.setattr(sys, "argv", [*base, "--beam", "0"])
     assert bench.main() == 1
@@ -912,7 +913,7 @@ def test_minimal_search_escalates_until_cleared(tmp_path, monkeypatch):
     samples = b.generate_samples(tmp_path / "work")
     levels_called = []
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+    def fake_rewrite(text, tactic, candidates, rewrite_level=None, **kw):
         levels_called.append(rewrite_level)
         cleared = rewrite_level is not None and rewrite_level >= 0.3
         return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=cleared, attempts_made=1)
@@ -943,7 +944,7 @@ def test_minimal_search_always_evaluates_max_level(tmp_path, monkeypatch):
     samples = b.generate_samples(tmp_path / "work")
     levels_called = []
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+    def fake_rewrite(text, tactic, candidates, rewrite_level=None, **kw):
         levels_called.append(rewrite_level)
         # clears only at the configured maximum
         return f"{text}|{rewrite_level} rewritten", _rewrite_stats(
@@ -986,7 +987,7 @@ def test_minimal_search_picks_min_semantic_among_clearing(tmp_path, monkeypatch)
     samples = b.generate_samples(tmp_path / "work")
     sems = iter([0.9, 0.3, 0.7])
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+    def fake_rewrite(text, tactic, candidates, rewrite_level=None, **kw):
         return f"{text}|{rewrite_level} rewritten", _rewrite_stats(cleared=True, attempts_made=1)
 
     monkeypatch.setattr(b, "rewrite", fake_rewrite)
@@ -1003,7 +1004,7 @@ def test_minimal_search_records_not_cleared_when_no_level_clears(tmp_path, monke
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, mode="minimal", level_attempts=1)
     samples = b.generate_samples(tmp_path / "work")
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+    def fake_rewrite(text, tactic, candidates, rewrite_level=None, **kw):
         return f"{text} rewritten", _rewrite_stats(cleared=False, attempts_made=1)
 
     monkeypatch.setattr(b, "rewrite", fake_rewrite)
@@ -1022,7 +1023,7 @@ def test_minimal_search_target_margin_gates_tiny_clear(tmp_path, monkeypatch):
     samples = b.generate_samples(tmp_path / "work")
     levels_called = []
 
-    def fake_rewrite(text, strength, candidates, rewrite_level=None, **kw):
+    def fake_rewrite(text, tactic, candidates, rewrite_level=None, **kw):
         levels_called.append(rewrite_level)
         # "clears" by the detector (is_watermarked False) but the fake margin
         # is 1.0 < target_margin 2.0, so it is gated out of the clear count.
@@ -1249,26 +1250,26 @@ def test_render_minimal_reports_semantic_status_and_exclusions():
 
 
 # ---------------------------------------------------------------------------
-# Recipe search: parse/validate, AUROC, Pareto, no-op guard, compose, human
+# Strategy search: parse/validate, AUROC, Pareto, no-op guard, compose, human
 # ---------------------------------------------------------------------------
 
 
-def test_parse_recipe_valid_and_invalid():
-    assert parse_recipe("chunk@0.6,paraphrase@0.3,humanize@1.0") == [
+def test_parse_strategy_valid_and_invalid():
+    assert parse_strategy("chunk@0.6,paraphrase@0.3,humanize@1.0") == [
         ("chunk", 0.6),
         ("paraphrase", 0.3),
         ("humanize", 1.0),
     ]
     with pytest.raises(SystemExit):
-        parse_recipe("paraphrase@0")  # intensity 0 is invalid
+        parse_strategy("paraphrase@0")  # intensity 0 is invalid
     with pytest.raises(SystemExit):
-        parse_recipe("paraphrase@1.5")
+        parse_strategy("paraphrase@1.5")
     with pytest.raises(SystemExit):
-        parse_recipe("bogus@0.5")  # unknown strength
+        parse_strategy("bogus@0.5")  # unknown tactic
     with pytest.raises(SystemExit):
-        parse_recipe("humanize@1.0")  # only humanize: not a removal attempt
+        parse_strategy("humanize@1.0")  # only humanize: not a removal attempt
     with pytest.raises(SystemExit):
-        parse_recipe("")  # empty
+        parse_strategy("")  # empty
 
 
 def test_parse_weight_grid():
@@ -1336,23 +1337,23 @@ def test_best_on_frontier_shifts_with_weight():
     assert fallback["steps"] == [("chunk", 0.6)]
 
 
-def test_recipe_verdict():
+def test_strategy_verdict():
     def c(rate):
         return {"robust_clear_rate": rate, "sem_div": 0.2, "human_like": 0.7}
 
-    assert _recipe_verdict([c(1.0)]) == "removable"
-    assert _recipe_verdict([c(0.5)]) == "partial"
-    assert _recipe_verdict([c(0.0)]) == "resists"
-    assert _recipe_verdict([]) == "undetermined"
-    assert _recipe_verdict([{"sem_div": 0.2, "human_like": 0.7}]) == "undetermined"
+    assert _strategy_verdict([c(1.0)]) == "removable"
+    assert _strategy_verdict([c(0.5)]) == "partial"
+    assert _strategy_verdict([c(0.0)]) == "resists"
+    assert _strategy_verdict([]) == "undetermined"
+    assert _strategy_verdict([{"sem_div": 0.2, "human_like": 0.7}]) == "undetermined"
 
 
-def test_render_recipe_verdict_resists():
+def test_render_strategy_verdict_resists():
     res = {
         "candidates": [{"robust_clear_rate": 0.0, "sem_div": 0.8, "human_like": 0.2}],
         "verdict": "resists",
     }
-    text = bench._render_recipe_verdict(res)
+    text = bench._render_strategy_verdict(res)
     assert "resists" in text.lower()
     assert "at this token length" in text.lower()
 
@@ -1439,7 +1440,7 @@ def test_aggregate_robust_and_noop():
 def test_run_variants_noop_guard(tmp_path, monkeypatch):
     b, _ = _make_bench(tmp_path, monkeypatch, docs=1, variants="paraphrase:1")
 
-    def _noop(text, strength, candidates, **kw):
+    def _noop(text, tactic, candidates, **kw):
         return text, {**_rewrite_stats(cleared=False), "noop": True}
 
     monkeypatch.setattr(b, "rewrite", _noop)
@@ -1452,25 +1453,25 @@ def test_run_variants_noop_guard(tmp_path, monkeypatch):
     assert any("no-op" in n for n in rew["notes"])
 
 
-def test_compose_recipe_applies_steps_in_order(tmp_path, monkeypatch):
+def test_compose_strategy_applies_steps_in_order(tmp_path, monkeypatch):
     b, _ = _make_bench(tmp_path, monkeypatch)
     calls = []
 
-    def _rewrite(text, strength, candidates, **kw):
-        calls.append((strength, kw.get("rewrite_level"), text))
-        return text + f"|{strength}", _rewrite_stats()
+    def _rewrite(text, tactic, candidates, **kw):
+        calls.append((tactic, kw.get("rewrite_level"), text))
+        return text + f"|{tactic}", _rewrite_stats()
 
     monkeypatch.setattr(b, "rewrite", _rewrite)
-    out, _stats = b.compose_recipe("base", [("chunk", 0.6), ("paraphrase", 0.3)], 0.0)
+    out, _stats = b.compose_strategy("base", [("chunk", 0.6), ("paraphrase", 0.3)], 0.0)
     assert calls[0] == ("chunk", 0.6, "base")
     assert calls[1] == ("paraphrase", 0.3, "base|chunk")  # step 1 output feeds step 2
     assert out == "base|chunk|paraphrase"
 
 
-def _spot_eval(recipe):
-    """Deterministic stand-in for _eval_recipe used by the recipe_search smoke test."""
-    n = len(recipe)
-    max_lv = max(lv for _s, lv in recipe)
+def _spot_eval(strategy):
+    """Deterministic stand-in for _eval_strategy used by the strategy_search smoke test."""
+    n = len(strategy)
+    max_lv = max(lv for _s, lv in strategy)
     rob = min(1.0, 0.2 * n + 0.1 * max_lv)
     sem = 0.1 * n + 0.05 * (1.0 - max_lv)
     human = 0.4 + 0.1 * min(n, 2)
@@ -1483,37 +1484,37 @@ def _spot_eval(recipe):
     }
 
 
-def test_recipe_search_explores_intensity_and_order(tmp_path, monkeypatch):
+def test_strategy_search_explores_intensity_and_order(tmp_path, monkeypatch):
     args = _args(
         out_dir=tmp_path,
         intensity_grid="0.2,0.8,1.0",
         weight_grid="0.5/0.3/0.2",
         beam=4,
         max_passes=3,
-        phase2_levels_per_strength=3,
+        phase2_levels_per_tactic=3,
         recommend_weight="0.5/0.3/0.2",
     )
     b = bench.Benchmark(args, Path(args.markllm_dir))
-    monkeypatch.setattr(b, "_eval_recipe", lambda recipe, _samples: _spot_eval(recipe))
+    monkeypatch.setattr(b, "_eval_strategy", lambda strategy, _samples: _spot_eval(strategy))
     samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
-    res = b.recipe_search(samples, tmp_path / "work")
+    res = b.strategy_search(samples, tmp_path / "work")
 
     # High-intensity levels are actually explored, not frozen to one best level.
     levels_seen = {lv for c in res["candidates"] for _s, lv in c["steps"]}
     assert any(lv > 0.2 for lv in levels_seen)
-    # Ordered composition never re-uses a strength.
+    # Ordered composition never re-uses a tactic.
     for c in res["candidates"]:
-        strengths = [s for s, _lv in c["steps"]]
-        assert len(strengths) == len(set(strengths))
-    # The recommended recipe comes from the weight-independent frontier.
+        tactics = [s for s, _lv in c["steps"]]
+        assert len(tactics) == len(set(tactics))
+    # The recommended strategy comes from the weight-independent frontier.
     assert res["recommended"] is not None
     assert res["recommended"]["steps"]
 
 
-def test_recipe_search_reuses_evaluated_recipe_across_weights(tmp_path, monkeypatch):
-    """A recipe shared by two weight vectors stays eligible for the later beam.
+def test_strategy_search_reuses_evaluated_strategy_across_weights(tmp_path, monkeypatch):
+    """A strategy shared by two weight vectors stays eligible for the later beam.
 
-    Regression: `_eval` used to return None for a recipe already evaluated under
+    Regression: `_eval` used to return None for a strategy already evaluated under
     an earlier weight vector, which dropped it from the later vector's beam and
     left its descendants unexplored. Here chunk is anti-correlated: the removal
     weight vector picks chunk@0.2 while the semantic weight vector picks
@@ -1530,12 +1531,12 @@ def test_recipe_search_reuses_evaluated_recipe_across_weights(tmp_path, monkeypa
         "chunk": {1.0: (0.1, 0.1, 0.9), 0.2: (1.0, 0.9, 0.2)},
     }
 
-    def evaluate(recipe, samples=None):
+    def evaluate(strategy, samples=None):
         robust = []
         semi = []
         human = []
-        for strength, level in recipe:
-            r, s, h = axis[strength][level]
+        for tactic, level in strategy:
+            r, s, h = axis[tactic][level]
             robust.append(r)
             semi.append(s)
             human.append(h)
@@ -1553,16 +1554,380 @@ def test_recipe_search_reuses_evaluated_recipe_across_weights(tmp_path, monkeypa
         weight_grid="1.0/0.0/0.0,0.0/1.0/0.0",
         beam=8,
         max_passes=3,
-        phase2_levels_per_strength=1,
+        phase2_levels_per_tactic=1,
         recommend_weight="0.5/0.3/0.2",
+        humanize_intensity=1.0,
     )
     b = bench.Benchmark(args, Path(args.markllm_dir))
-    monkeypatch.setattr(b, "_eval_recipe", evaluate)
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
     samples = [{"excluded": False, "watermarked": "watermarked:1", "before": DETECT_POS}]
-    res = b.recipe_search(samples, tmp_path / "work")
+    res = b.strategy_search(samples, tmp_path / "work")
 
     seen = {tuple(c["steps"]) for c in res["candidates"]}
     assert (("paraphrase", 1.0), ("backtranslate", 1.0), ("chunk", 1.0)) in seen
+
+
+def test_normalize_strategy_humanize_last():
+    """humanize steps are moved to the end (collapsed to one at min intensity)."""
+    assert bench._normalize_strategy([("chunk", 0.6), ("humanize", 0.5), ("paraphrase", 0.3)]) == [
+        ("chunk", 0.6),
+        ("paraphrase", 0.3),
+        ("humanize", 0.5),
+    ]
+    assert bench._normalize_strategy(
+        [("humanize", 0.8), ("paraphrase", 0.3), ("humanize", 0.5)]
+    ) == [("paraphrase", 0.3), ("humanize", 0.5)]
+    assert bench._normalize_strategy([("paraphrase", 0.3), ("structural", 1.0)]) == [
+        ("paraphrase", 0.3),
+        ("structural", 1.0),
+    ]
+
+
+def test_split_holdout():
+    """_split_holdout keeps `fraction` of docs for search, the rest for validation."""
+    samples = [{"doc": f"d{i}", "seed": 1} for i in range(5)]
+    train, hold = bench._split_holdout(samples, 0.6)
+    assert len(train) == 3 and len(hold) == 2
+    assert train and hold
+    assert bench._split_holdout(samples, 0.0) == (samples, [])
+
+
+def test_strategy_search_no_recommend_when_nothing_clears(tmp_path, monkeypatch):
+    """When no strategy clears the mark, nothing is recommended."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        coverage_floor=0.5,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 0.0,
+            "sem_div": 0.2,
+            "human_like": 0.8,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    assert res["recommended"] is None
+    assert res["verdict"] == "resists"
+
+
+def test_strategy_search_recommended_ends_humanize(tmp_path, monkeypatch):
+    """The recommended strategy is automatically finished with a humanize step."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+        humanize_intensity=0.4,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    rec = res["recommended"]
+    assert rec is not None
+    assert rec["steps"][-1][0] == "humanize"
+
+
+def test_adaptive_escalates_until_clear(tmp_path, monkeypatch):
+    """A resistant input is re-run with raised intensity until it robustly clears."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        target_margin=0.0,
+        escalation_step=0.2,
+        escalation_max=1.0,
+        escalation_attempts=3,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    calls: list[list[tuple[str, float]]] = []
+
+    def fake_compose(text, steps, target_margin):
+        calls.append(list(steps))
+        max_lv = max(lv for _t, lv in steps)
+        cleared = max_lv >= 0.7
+        return text, {
+            "markllm": {
+                "after": {
+                    "available": True,
+                    "is_watermarked": not cleared,
+                    "score": -0.5 if cleared else 0.2,
+                    "threshold": 0.5,
+                },
+                "cleared": cleared,
+            }
+        }
+
+    monkeypatch.setattr(b, "compose_strategy", fake_compose)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b._adaptive_apply_strategy([("paraphrase", 0.5)], samples)
+    assert res["n"] == 1
+    assert res["base_clear_rate"] == 0.0
+    assert res["adapt_clear_rate"] == 1.0
+    assert res["rows"][0]["cleared"] is True
+    assert res["rows"][0]["escalation_level"] == 1
+    # It escalated once: 0.5 -> 0.7 (max level reached the clear threshold).
+    assert calls[0] == [("paraphrase", 0.5)]
+    assert calls[1] == [("paraphrase", 0.7)]
+
+
+def test_recommended_humanized_is_search_candidate(tmp_path, monkeypatch):
+    """The auto-humanized recommendation stays in the candidate set (for CSV marking)."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    rec = res["recommended"]
+    assert rec is not None
+    assert rec["steps"][-1][0] == "humanize"
+    assert any(rec is c for c in res["candidates"])
+
+
+def test_adaptive_excludes_unverified(tmp_path, monkeypatch):
+    """An unavailable detection is recorded as unverified, not as a failed clear."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        target_margin=0.0,
+        escalation_step=0.2,
+        escalation_max=1.0,
+        escalation_attempts=1,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def fake_compose(text, steps, target_margin):
+        return text, {"markllm": {"after": {"available": False}}}
+
+    monkeypatch.setattr(b, "compose_strategy", fake_compose)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b._adaptive_apply_strategy([("paraphrase", 0.5)], samples)
+    assert res["unverified"] == 1
+    assert res["n"] == 0
+    assert res["base_clear_rate"] is None
+    assert res["rows"][0]["note"] == "detection unavailable"
+
+
+def test_persist_strategy_outputs_writes_files(tmp_path):
+    """Each strategy candidate's input/output text is written to disk for inspection."""
+    args = _args(out_dir=tmp_path, mode="strategy")
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    cands = [
+        {
+            "steps": [("chunk", 0.6), ("paraphrase", 0.3)],
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.2,
+            "human_like": 0.7,
+            "n": 1,
+            "unverified": 0,
+            "outputs": [
+                {
+                    "doc": "doc1",
+                    "seed": 1,
+                    "input": "watermarked input",
+                    "output": "rewritten out",
+                    "robust": True,
+                    "margin": 0.4,
+                    "sem": 0.2,
+                    "note": None,
+                }
+            ],
+        },
+        # Candidate whose eval returned no per-sample text (e.g. a monkeypatched
+        # _eval_strategy) is skipped, not crashed on.
+        {
+            "steps": [("humanize", 1.0)],
+            "robust_clear_rate": None,
+            "sem_div": None,
+            "human_like": None,
+            "n": 0,
+            "unverified": 0,
+        },
+    ]
+    workdir = tmp_path / "work"
+    written = b._persist_strategy_outputs(cands, workdir)
+    assert written == 1
+    cand_dir = workdir / "strategies" / "chunk@0.6+paraphrase@0.3"
+    assert (cand_dir / "input_doc1_seed1.txt").read_text() == "watermarked input"
+    assert (cand_dir / "output_doc1_seed1.txt").read_text() == "rewritten out"
+    # Heavy text stripped from the candidate; replaced with on-disk references.
+    assert cands[0]["outputs"] is None
+    assert cands[0]["output_dir"] == "work/strategies/chunk@0.6+paraphrase@0.3"
+    assert (
+        cands[0]["output_files"][0]["input"]
+        == "work/strategies/chunk@0.6+paraphrase@0.3/input_doc1_seed1.txt"
+    )
+    assert cands[1].get("output_dir") is None
+
+
+def test_strategy_search_persists_outputs(tmp_path, monkeypatch):
+    """strategy_search writes every evaluated candidate's output, then strips it."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.2,1.0",
+        weight_grid="0.5/0.3/0.2",
+        beam=2,
+        max_passes=2,
+        phase2_levels_per_tactic=1,
+        recommend_weight="0.5/0.3/0.2",
+        write_strategy_outputs=True,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.6,
+            "n": 1,
+            "unverified": 0,
+            "outputs": [
+                {
+                    "doc": "doc1",
+                    "seed": 1,
+                    "input": "wm input",
+                    "output": "rewritten:" + "+".join(f"{s}@{lv:g}" for s, lv in strategy),
+                    "robust": True,
+                    "margin": 0.4,
+                    "sem": 0.1,
+                    "note": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [
+        {
+            "excluded": False,
+            "doc": "doc1",
+            "seed": 1,
+            "watermarked": "wm input",
+            "before": DETECT_POS,
+        }
+    ]
+    workdir = tmp_path / "work"
+    res = b.strategy_search(samples, workdir)
+
+    strategies_dir = workdir / "strategies"
+    assert strategies_dir.exists()
+    dirs = list(strategies_dir.glob("*"))
+    assert dirs
+    # The auto-humanized recommendation is persisted too (this run found one).
+    rec = res["recommended"]
+    extra = 1 if rec is not None and all(rec is not c for c in res["candidates"]) else 0
+    assert res["strategy_outputs_written"] == len(res["candidates"]) + extra
+    for c in res["candidates"]:
+        assert c["outputs"] is None
+        assert c["output_files"]
+        for f in c["output_files"]:
+            if f.get("output"):
+                assert (workdir.parent / f["output"]).exists()
+            if f.get("input"):
+                assert (workdir.parent / f["input"]).exists()
+    if rec is not None:
+        assert rec["outputs"] is None
+        assert rec["output_files"]
+
+
+def test_strategy_search_no_write_strategy_outputs(tmp_path, monkeypatch):
+    """write_strategy_outputs=False still strips candidate text from results.json."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.2,1.0",
+        weight_grid="0.5/0.3/0.2",
+        beam=2,
+        max_passes=2,
+        phase2_levels_per_tactic=1,
+        recommend_weight="0.5/0.3/0.2",
+        write_strategy_outputs=False,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.6,
+            "n": 1,
+            "unverified": 0,
+            "outputs": [
+                {
+                    "doc": "doc1",
+                    "seed": 1,
+                    "input": "wm input",
+                    "output": "rewritten:" + "+".join(f"{s}@{lv:g}" for s, lv in strategy),
+                    "robust": True,
+                    "margin": 0.4,
+                    "sem": 0.1,
+                    "note": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [
+        {
+            "excluded": False,
+            "doc": "doc1",
+            "seed": 1,
+            "watermarked": "wm input",
+            "before": DETECT_POS,
+        }
+    ]
+    workdir = tmp_path / "work"
+    res = b.strategy_search(samples, workdir)
+
+    # No strategy dirs are written, so results.json stays slim.
+    assert res["strategy_outputs_written"] == 0
+    assert not (workdir / "strategies").exists()
+    for c in res["candidates"]:
+        assert c["outputs"] is None  # heavy per-sample text stripped
+        assert "output_files" not in c
+        assert "output_dir" not in c
 
 
 def test_human_likeness_backend_fallback():
@@ -1699,7 +2064,7 @@ def test_human_likeness_pangram_model_fallback_resolved(monkeypatch):
     assert h.pangram_model == "default"
 
 
-def test_render_markdown_recipe_and_csv():
+def test_render_markdown_strategy_and_csv():
     rec = {
         "steps": [("chunk", 0.6)],
         "robust_clear_rate": 1.0,
@@ -1729,13 +2094,13 @@ def test_render_markdown_recipe_and_csv():
         "human_backend": "stylometry",
         "human_backend_used": "stylometry",
         "semantic_model": "sm",
-        "recipes": None,
+        "strategies": None,
         "command": "cmd",
     }
-    md = bench.render_markdown_recipe(config, [], res)
+    md = bench.render_markdown_strategy(config, [], res)
     assert "Recommend" in md
     assert "chunk@0.6" in md
     assert "Pareto frontier" in md
-    csv = bench._recipe_csv(res)
+    csv = bench._strategy_csv(res)
     assert any("chunk@0.6" in line for line in csv)
-    assert csv[0].startswith("recipe,")  # header
+    assert csv[0].startswith("strategy,")  # header

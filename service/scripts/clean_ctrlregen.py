@@ -27,7 +27,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from common import cleaned_path, safe_write_bytes  # noqa: E402
 
 # Backend default guidance scale (CtrlRegenEngine.run() default). Kept
-# internal: strength is the user-facing knob, not the CFG scale.
+# internal: intensity is the user-facing knob, not the CFG scale.
 DEFAULT_GUIDANCE_SCALE = 2.0
 
 
@@ -84,16 +84,16 @@ def main() -> int:
         help="noai-watermark checkout root (default: $NOAI_WATERMARK_DIR)",
     )
     p.add_argument(
-        "--strength",
+        "--intensity",
         type=float,
         default=0.25,
-        help="Regeneration strength in (0, 1]; lower preserves more detail (default: 0.25)",
+        help="Regeneration intensity in (0, 1]; lower preserves more detail (default: 0.25)",
     )
     p.add_argument(
         "--steps",
         type=int,
         default=50,
-        help="Diffusion inference steps (default: 50; effective steps ~= steps * strength)",
+        help="Diffusion inference steps (default: 50; effective steps ~= steps * intensity)",
     )
     p.add_argument(
         "--device",
@@ -108,8 +108,8 @@ def main() -> int:
     if not args.path.is_file():
         print(f"not a file: {args.path}", file=sys.stderr)
         return 2
-    if not 0 < args.strength <= 1:
-        print(f"strength must be in (0, 1]: {args.strength}", file=sys.stderr)
+    if not 0 < args.intensity <= 1:
+        print(f"intensity must be in (0, 1]: {args.intensity}", file=sys.stderr)
         return 2
     if args.steps < 1:
         print(f"steps must be >= 1: {args.steps}", file=sys.stderr)
@@ -166,7 +166,7 @@ def main() -> int:
     try:
         result = engine.run(
             image,
-            strength=args.strength,
+            strength=args.intensity,
             num_inference_steps=args.steps,
             guidance_scale=DEFAULT_GUIDANCE_SCALE,
             seed=args.seed,
@@ -186,7 +186,7 @@ def main() -> int:
         "available": True,
         "upstream_dir": str(upstream),
         "output": str(output),
-        "strength": args.strength,
+        "intensity": args.intensity,
         "steps": args.steps,
         "device": device,
         "seed": args.seed,
@@ -202,7 +202,7 @@ def main() -> int:
         print(
             f"CtrlRegen removed: {args.path} -> {output} "
             f"({payload['input_size']} -> {payload['output_size']}, "
-            f"strength {args.strength}, device {device})"
+            f"intensity {args.intensity}, device {device})"
         )
 
     return 0

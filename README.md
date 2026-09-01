@@ -278,7 +278,7 @@ python3 "$SCRIPTS/inspect_text.py" draft.md
 python3 "$SCRIPTS/clean_text.py" draft.md -o draft.cleaned.md --stats
 
 # Layer B rewrite hook (default: print prompt only — no model required)
-python3 "$SCRIPTS/rewrite_text.py" draft.md --backend print-prompt --strength paraphrase
+python3 "$SCRIPTS/rewrite_text.py" draft.md --backend print-prompt --tactic paraphrase
 # Optional local Ollama (loopback only by default — remote endpoints require
 # WATERMARKS_REWRITE_ALLOW_REMOTE=1 or --allow-remote):
 # WATERMARKS_REWRITE_BACKEND=ollama WATERMARKS_REWRITE_MODEL=llama3.2 \
@@ -594,11 +594,11 @@ Order of operations: metadata strip first, then CtrlRegen pixel removal, then
 an optional reverse-SynthID before/after score (when `REVERSE_SYNTHID_DIR` is
 also set).
 
-**Strength is conservative by default** (`--ctrlregen-strength 0.25`), because
-higher strength removes more watermark but regenerates more of the image.
+**Intensity is conservative by default** (`--ctrlregen-intensity 0.25`), because
+higher intensity removes more watermark but regenerates more of the image.
 Documented presets: `0.15` minimal / `0.25` default / `0.35` balanced /
 `0.5` aggressive / `0.7` max (backend default is 0.5). `--ctrlregen-steps`
-defaults to 50 (effective denoising steps ≈ steps × strength).
+defaults to 50 (effective denoising steps ≈ steps × intensity).
 
 ### Image size (512×512 native limit)
 
@@ -808,7 +808,7 @@ Layer B as best-effort only.
 effectively a Layer B rewrite clears SynthID-text-class watermarks and at
 what cost. It generates watermarked + unwatermarked samples with the MarkLLM
 SynthID scheme (same-config detection, sanity-gated), runs your rewrite
-variants (strength × max rewrite attempts; the loop stops early on pass) plus
+variants (tactic × max rewrite attempts; the loop stops early on pass) plus
 controls (no-removal, Layer-A-only, optional re-stamp check), and writes a
 shareable `report.md` /
 `results.json` / `results.csv`. Full guide:
@@ -863,7 +863,7 @@ a *generative watermarking* toolkit for latent diffusion models (it embeds marks
    attack is exposed as `clean_image.py --remove-pixel diffusion`, an
    alternative to CtrlRegen. It is **blind** regeneration (no ControlNet
    conditioning), so it drifts image content more than CtrlRegen — conservative
-   strength default (`0.3`), treated as a fallback/comparison, never a
+   intensity default (`0.3`), treated as a fallback/comparison, never a
    guarantee.
 3. **Local same-scheme detector** for Tree-Ring-class marks, partially filling
    the "no local detector for StegaStamp/Tree-Ring/StableSignature" gap (it
@@ -891,7 +891,7 @@ MARKDIFFUSION_DIR=~/markdiffusion \
 # 2. Remove with the DiffusionPurification regeneration attack.
 MARKDIFFUSION_DIR=~/markdiffusion \
   ~/markdiffusion/.venv/bin/python "$SCRIPTS/markdiffusion_harness.py" purify \
-    wm.png -o wm.purified.png --purification-strength 0.3 --json
+    wm.png -o wm.purified.png --purification-intensity 0.3 --json
 
 # 3. Re-detect with the SAME scheme config.
 MARKDIFFUSION_DIR=~/markdiffusion \
@@ -1091,8 +1091,8 @@ Industry two-layer context (C2PA + imperceptible watermark): [Institute of AI PM
 | Unicode scrub (Layer A) | ZWSP, bidi, tags, exotic spaces, … | Safe default for text |
 | Rewrite (Layer B) | Statistical token marks (best-effort) | Always offered by skill; costs style — see [Disclaimer](#disclaimer-what-removing-a-text-watermark-costs) |
 | Container/metadata strip | File provenance | See format table |
-| CtrlRegen pixel removal (optional) | Pixel-domain image marks (SynthID-class, StegaStamp, Tree-Ring, StableSignature) | External backend; heavy compute; conservative strength default |
-| DiffusionPurification pixel removal (optional) | Pixel-domain image marks (Tree-Ring-class) | MarkDiffusion backend; blind regeneration (more drift than CtrlRegen); conservative strength default |
+| CtrlRegen pixel removal (optional) | Pixel-domain image marks (SynthID-class, StegaStamp, Tree-Ring, StableSignature) | External backend; heavy compute; conservative intensity default |
+| DiffusionPurification pixel removal (optional) | Pixel-domain image marks (Tree-Ring-class) | MarkDiffusion backend; blind regeneration (more drift than CtrlRegen); conservative intensity default |
 | Open-weight local models | Avoid re-stamping with origin model | Operational alternative |
 
 Matrix: [`skills/remove-ai-marks/references/removal-matrix.md`](skills/remove-ai-marks/references/removal-matrix.md).
@@ -1220,7 +1220,7 @@ make smoke                          # quick CLI smoke on fixtures
 **MarkDiffusion image-watermark harness (optional)**
 
 - New optional harness (external `THU-BPM/MarkDiffusion`, Apache-2.0): `markdiffusion_harness.py` with `watermark` / `detect` / `purify` subcommands for nine image schemes (Tree-Ring, Ring-ID, ROBIN, WIND, SFW, Gaussian-Shading, GaussMarker, PRC, SEAL)
-- `clean_image.py --remove-pixel diffusion` runs the MarkDiffusion `DiffusionPurification` regeneration attack as an alternative pixel-removal engine (conservative strength 0.3 default)
+- `clean_image.py --remove-pixel diffusion` runs the MarkDiffusion `DiffusionPurification` regeneration attack as an alternative pixel-removal engine (conservative intensity 0.3 default)
 - `setup_markdiffusion.sh` bootstrap (PyPI pin `1.0.2`; `--checkout` editable clone at pinned commit) + `requirements-markdiffusion.txt` + `Dockerfile.markdiffusion` and Makefile `bootstrap-markdiffusion` / `smoke-markdiffusion` / `docker-markdiffusion-build` / `docker-markdiffusion-help`
 - Mock-based tests (`tests/test_markdiffusion_harness.py`) — no torch in CI; `references/markdiffusion.md` reference doc
 - Docs: same-scheme-only verification caveat (not a vendor-detector oracle) and blind-regeneration drift caveat in README, SKILL.md, `removal-matrix.md`, `markdiffusion.md`
@@ -1261,7 +1261,7 @@ make smoke                          # quick CLI smoke on fixtures
 
 - Optional pixel-domain watermark removal via an external `mertizci/noai-watermark` checkout: `clean_ctrlregen.py` adapter + `setup_ctrlregen.sh` bootstrap (pinned commit, sparse checkout, venv, SHA verification), plus `Dockerfile.ctrlregen` and `make bootstrap-ctrlregen` / `docker-ctrlregen-build` / `smoke-ctrlregen`
 - `clean_image.py --remove-pixel ctrlregen` runs metadata strip → CtrlRegen removal → optional reverse-SynthID before/after score; `inspect_image.py` hints at the flag on a high SynthID score
-- Conservative default strength `0.25` (presets 0.15/0.25/0.35/0.5/0.7); the 512×512-native pipeline is auto-tiled by the backend for larger images; the torch subprocess gets higher env-overridable resource caps
+- Conservative default intensity `0.25` (presets 0.15/0.25/0.35/0.5/0.7); the 512×512-native pipeline is auto-tiled by the backend for larger images; the torch subprocess gets higher env-overridable resource caps
 - Backend is never bundled: `noai-watermark` ships no LICENSE file (treated as all-rights-reserved), and its auto-install/restart code paths are bypassed by using `CtrlRegenEngine` directly
 
 **Finding confidence and aggregate audits**
@@ -1300,8 +1300,8 @@ make smoke                          # quick CLI smoke on fixtures
 ### [v0.3.1](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.3.1) — stronger Layer B statistical-watermark rewrite
 
 - `rewrite_text.py` default paraphrase now performs an explicit **word-choice + syntax** attack (clause order, connectors, transition words, sentence boundaries, function words) rather than a generic rewrite
-- New `--strength humanize`: zero-shot "write like a human" pass targeting formulaic AI-style phrasing
-- New `--strength code`: rewrites comments, docstrings, and string literals, and renames local identifiers while preserving behavior and public API names
+- New `--tactic humanize`: zero-shot "write like a human" pass targeting formulaic AI-style phrasing
+- New `--tactic code`: rewrites comments, docstrings, and string literals, and renames local identifiers while preserving behavior and public API names
 - Structural pass now emits "natural, varied human prose" instead of AI-typical "clear professional style"
 - New `--temperature` (default `0.9`) for both Ollama and OpenAI-compatible backends
 - New `--candidates N`: generates N rewrites and selects the most lexically diverged (bigram Jaccard distance) with a length-drift guard
@@ -1364,7 +1364,7 @@ MIT — see [LICENSE](LICENSE).
 - ETH Zurich SRI, [*Probing SynthID*](https://www.sri.inf.ethz.ch/blog/probingsynthid) (research blog on the detectability of SynthID watermarks)
 - Liu et al., [*Image Watermarks are Removable Using Controllable Regeneration from Clean Noise*](https://arxiv.org/abs/2410.05470) (ICLR 2025) — the pixel-regeneration method the optional CtrlRegen backend implements — [code](https://github.com/yepengliu/CtrlRegen)
 - Kassis & Hengartner, [*UnMarker: A Universal Attack on Defensive Image Watermarking*](https://arxiv.org/abs/2405.08363) (arXiv:2405.08363; IEEE S&P 2025) — a universal watermark attack compared on a different metric than CtrlRegen
-- Goonatilake & Ateniese, [*Removing the Watermark Is Not Enough: Forensic Stealth in Generative-AI Watermark Removal*](https://arxiv.org/abs/2605.09203) (arXiv:2605.09203) — motivates the conservative-strength default: removal can still leave forensic traces
+- Goonatilake & Ateniese, [*Removing the Watermark Is Not Enough: Forensic Stealth in Generative-AI Watermark Removal*](https://arxiv.org/abs/2605.09203) (arXiv:2605.09203) — motivates the conservative-intensity default: removal can still leave forensic traces
 - [mertizci/noai-watermark](https://github.com/mertizci/noai-watermark) (CLI/Python toolkit for SynthID/StableSignature/TreeRing removal and AI metadata stripping)
 - [0xROOTPLS/DeSynth](https://github.com/0xROOTPLS/DeSynth) (SynthID removal for OpenAI/Google images)
 - Institute of AI PM, [*AI Content Provenance and Watermarking: The PM's Guide to C2PA and SynthID*](https://www.institutepm.com/knowledge-hub/ai-content-provenance-watermarking) (two-layer industry model: C2PA + imperceptible watermark / soft binding; SB 942 / EU AI Act Art. 50 context)

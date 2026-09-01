@@ -72,7 +72,7 @@ Aug 2026 (DETECT_TEXT_WATERMARK is rejected on current models), so detection
 here is MarkLLM same-config only. A vendor tier can be re-added if Google
 exposes detection again (e.g. via Vertex AI).
 
-**How variants map to rewrites:** each <strength>:<candidates> variant runs
+**How variants map to rewrites:** each <tactic>:<candidates> variant runs
 the Layer B rewrite with candidates as the **variants per evaluation round**;
 `--rewrite-loops` (default 1, mirrors `--max-loops` /
 `WATERMARKS_REWRITE_LOOPS`) sets how many rounds run before the best-effort
@@ -94,25 +94,25 @@ min-divergence`, content-preserving) or the one with the largest margin
 ask for a removal that survives a stricter/vendor detector rather than a
 hair-thin threshold crossing.
 
-**Strengths:** `paraphrase` (same language, rephrase), `backtranslate` (via
+**Tactics:** `paraphrase` (same language, rephrase), `backtranslate` (via
 another language), `structural`, `humanize`, `code`, and `chunk`. `chunk`
 splits the document into sentence/paragraph fragments, rewrites each with a
 fresh context (new per-token watermark keys), and reassembles them. It is the
 strongest removal at a given rewrite cost because every fragment re-keys
-independently; use `--strength chunk` for that, optionally with
+independently; use `--tactic chunk` for that, optionally with
 `--chunk-shuffle` to also shuffle the rewritten fragments (which breaks
 paragraph/line order). Without `--chunk-shuffle`, `chunk` keeps the original
 separators so layout is preserved. `chunk` is accepted wherever a variant
-strength is expected, including `parse_variants` (e.g. `--variants
+tactic is expected, including `parse_variants` (e.g. `--variants
 "chunk:2,paraphrase:3"`).
 
 ## Minimal-rewrite-level mode (`--mode minimal`)
 
-The named-strength variants above answer "does this rewrite remove the mark?"
+The named-tactic variants above answer "does this rewrite remove the mark?"
 The minimal mode answers **"what is the smallest rewrite that removes the
 mark?"** for a given sample, then aggregates that minimum across samples.
 
-- It uses a **numeric rewrite level** instead of a named strength. The level is
+- It uses a **numeric rewrite level** instead of a named tactic. The level is
   a request in `(0, 1]`: 0 (the unchanged original) is excluded, 1 means
   "rewrite everything". The actual lexical/semantic divergence of the output is
   *measured*, not guaranteed — the level is a prompt, not a contract.
@@ -201,7 +201,7 @@ chars / --chars-per-token estimates (default 4.0).
   config, results table, controls, caveats, exact reproduction command.
 - results.json - full per-sample/per-row data + aggregates.
 - results.csv - one row per (doc, seed, variant) for plotting.
-- work/ - generated watermarked/unwatermarked samples (kept for inspection).
+- work/ - generated watermarked/unwatermarked samples (kept for inspection). In strategy mode it also holds `work/strategies/<strategy>/` - one directory per evaluated strategy candidate with `input_<doc>_seed<seed>.txt` and `output_<doc>_seed<seed>.txt` side by side, so each combination's rewritten result can be inspected against its input. Controlled by `--write-strategy-outputs` (default on; `--no-write-strategy-outputs` to disable).
 
 ## Running from Docker (compose)
 
@@ -249,7 +249,7 @@ Two things are easy to mistake for removal but are not, or can silently undo it:
   like a human", which is a different objective from "green-list bias gone".
   Keep it as an optional final style polish, but measure removal with the
   detector score (and `--target-margin`), not with how natural the text reads.
-  In the variant table it is a mid-strength pass, not the removal step.
+  In the variant table it is a moderate-intensity pass, not the removal step.
 - **Cross-model hygiene (correctness).** Rewriting with a model that is the
   generator or is itself watermarked re-stamps the text you just removed. Use a
   rewrite backend that is neither, and run `--restamp-control` to detect when
@@ -269,7 +269,7 @@ unless you want the raw samples.
   (--seeds 3+) so clear-rate differences are distinguishable.
 - Longer text carries more watermark signal: default --max-new-tokens 300.
   Very short samples are excluded by the sanity gate automatically.
-- Compare variants (strength x candidates) within one run, not across runs
+- Compare variants (tactic x candidates) within one run, not across runs
   with different backends - the rewrite model dominates the outcome.
 
 ## Measurements you should read together
@@ -297,45 +297,70 @@ unless you want the raw samples.
   shown as raw `AI-likeness ↓`. A gauge, not a proof of human authorship; a
   missing key/backend degrades to stylometry.
 
-## Recipe search mode (`--mode recipe`)
+## Strategy search mode (`--mode strategy`)
 
 Instead of a per-variant table, this mode answers "what is the best combination
-of strategies, and at what intensity for each?" A recipe is an ordered list of
-`strength@intensity` steps, each a Layer B rewrite with a numeric intensity that
-modulates that strength's prompt (e.g. `chunk@0.6,paraphrase@0.3,humanize@1.0`),
+of tactics, and at what intensity for each?" A strategy is an ordered list of
+`tactic@intensity` steps, each a Layer B rewrite with a numeric intensity that
+modulates that tactic's prompt (e.g. `chunk@0.6,paraphrase@0.3,humanize@1.0`),
 applied sequentially - each step's output feeds the next.
 
-- Phase 1 sweeps each strength over `--intensity-grid` (single-step recipes) and
-  produces the per-strength intensity curves (robust %, sem div, human_like vs
+- Phase 1 sweeps each tactic over `--intensity-grid` (single-step strategies) and
+  produces the per-tactic intensity curves (robust %, sem div, human_like vs
   intensity).
 - Phase 2 runs a beam search (`--beam`, `--max-passes`) once per weight vector in
-  `--weight-grid`, combining an order of strengths with the top
-  `--phase2-levels-per-strength` intensities for that weight, so both step order
+  `--weight-grid`, combining an order of tactics with the top
+  `--phase2-levels-per-tactic` intensities for that weight, so both step order
   and intensity are explored.
+- **Cross-input scoring.** Every candidate is scored on the aggregate **population**
+  (all docs × seeds), so the primary axis is **coverage** = robust clear rate, not a
+  single-sample verdict. A single input tells you almost nothing; use `--docs 10+`
+  and `--seeds 3+` for meaningful coverage.
 - The report's **Pareto frontier** is computed by dominance (no weights) over the
-  union of all candidates, so it is weight-independent. The "recommended" recipe
+  union of all candidates, so it is weight-independent. The "recommended" strategy
   is the frontier point best matching `--recommend-weight` (a
   w_removal/w_semantic/w_human triple summing to 1.0, default `0.5/0.3/0.2`).
-  The report's **Verdict** section distinguishes the no-clear cases rather than
-  calling every empty result `resists`: it reports **resists** only when the
-  best verified robust clear % is 0.0, and **undetermined** when no candidate
-  recipe was evaluable (all three axes missing, so no verified clear rate
-  exists). Either way, an empty or unevaluable search is stated explicitly
-  instead of leaving an empty frontier to interpret.
-- `--recipes "chunk@0.6,paraphrase@0.3"` composes and scores one explicit recipe
+- **A strategy is only recommended if it clears enough inputs.** `--coverage-floor`
+  (default `0.5`) is the minimum population robust clear rate a candidate needs
+  before it can be put forward. If nothing clears the floor, the report says so and
+  shows **no recommended strategy** (the frontier is diagnostics only) - it never
+  recommends a non-removing strategy.
+- **Hold-out validation.** `--eval-split 0.8` keeps 80% of documents for the search
+  and holds the rest out; the frontier candidates are then re-measured on the held-out
+  documents (reported as an extra `holdout %` column and used for the recommendation),
+  so a strategy that only overfits the search subset is not recommended.
+- **`humanize` always runs last.** Any strategy containing `humanize` is ordered so
+  it is the final step, and the recommended strategy is auto-finished with
+  `humanize@--humanize-intensity` (default `0.4`) as the user-facing polish. Its
+  reported axes reflect that final output.
+- **Adaptive escalate-on-resist.** `--adaptive` takes the recommended strategy as a mild
+  default and, for any input that resists it, re-runs with every step's intensity raised
+  by `--escalation-step` (capped at `--escalation-max`, up to `--escalation-attempts`
+  rounds) until the mark is removed. The report shows the default vs. escalated clear rate
+  and the escalation-level distribution, so the resistant tail is reachable without
+  over-rewriting easy inputs.
+- `--strategies "chunk@0.6,paraphrase@0.3"` composes and scores one explicit strategy
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
   because the rewrite backend is assumed watermark-safe.
+- **Every evaluated strategy is written for inspection.** Each candidate directory
+  (`work/strategies/<strategy>/`) contains the per-sample `input_*.txt` and
+  `output_*.txt` rewritten text, so you can eyeball what each combination actually
+  produced relative to its watermarked input. `results.json` keeps the text out
+  and records the `output_dir` / `output_files` paths instead, so the JSON stays
+  readable. Disable with `--no-write-strategy-outputs`.
 
     ~/MarkLLM/.venv/bin/python service/scripts/bench_synthid_text.py \
       --markllm-dir ~/MarkLLM \
       --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
-      --mode recipe --target-margin 0.03 --restamp-control --require-semantic \
+      --mode strategy --target-margin 0.03 --coverage-floor 0.5 \
+      --eval-split 0.8 --humanize-intensity 0.4 --adaptive \
+      --escalation-step 0.1 --escalation-attempts 3 \
       --rewrite-backend openai-compatible --rewrite-model <model> \
       --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
 
-A recipe search is expensive (each candidate = a full rewrite chain per sample).
+A strategy search is expensive (each candidate = a full rewrite chain per sample).
 Run Phase 1 coarsely first with fewer docs/seeds, then confirm the winning
-recipes on a larger run with adequate statistical power. Lower
-`--phase2-levels-per-strength` (or cut docs/seeds, `--beam`, `--max-passes`) to
+strategies on a larger run with adequate statistical power. Lower
+`--phase2-levels-per-tactic` (or cut docs/seeds, `--beam`, `--max-passes`) to
 keep a run inside a tight wall-clock budget.
