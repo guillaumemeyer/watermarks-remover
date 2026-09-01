@@ -1792,6 +1792,7 @@ class Benchmark:
                     break
                 mk = (stats.get("markllm") or {}).get("after") if stats else None
                 if not (mk or {}).get("available"):
+                    best["err"] = "detection unavailable"
                     break
                 cleared = (stats.get("markllm") or {}).get("cleared")
                 if cleared is None:
@@ -1822,12 +1823,18 @@ class Benchmark:
                     "note": best["err"],
                 }
             )
-        n = len(rows)
-        base_clear = sum(1 for r in rows if r["base_cleared"])
-        adapt_clear = sum(1 for r in rows if r["cleared"])
-        levels = [r["escalation_level"] for r in rows if r["cleared"]]
+        # An unavailable detection is NOT a failed clear: exclude it from the rate
+        # denominators while keeping it visible in the rows (matches _eval_strategy,
+        # which counts such cases as unverified).
+        verified = [r for r in rows if r.get("note") is None]
+        n = len(verified)
+        unverified = len(rows) - n
+        base_clear = sum(1 for r in verified if r["base_cleared"])
+        adapt_clear = sum(1 for r in verified if r["cleared"])
+        levels = [r["escalation_level"] for r in verified if r["cleared"]]
         return {
             "n": n,
+            "unverified": unverified,
             "base_clear_rate": round(base_clear / n, 4) if n else None,
             "adapt_clear_rate": round(adapt_clear / n, 4) if n else None,
             "mean_level": round(_mean(levels), 3) if levels else None,
@@ -1963,6 +1970,10 @@ class Benchmark:
                     recommended = None
                 else:
                     recommended = final
+                    # Keep the humanized recommendation in the candidate set so it
+                    # gets a row in results.csv, is marked recommended, and is
+                    # persisted for inspection.
+                    cands.append(final)
 
         # Intensity curves per tactic (from Phase 1 single-step strategies).
         curves: dict[str, list] = {}
@@ -1986,13 +1997,10 @@ class Benchmark:
         if recommended is None and any(c.get("robust_clear_rate") is not None for c in cands):
             verdict = "resists"
 
-        # Persist the searched candidates plus the (possibly auto-humanized)
-        # recommendation, so the reported best strategy is always written for
+        # Persist every candidate (including the auto-humanized recommendation, which
+        # is now in `cands`), so the reported best strategy is always written for
         # inspection and its embedded per-sample text is stripped from results.json.
-        persist_set = list(cands)
-        if recommended is not None and not any(recommended is c for c in cands):
-            persist_set.append(recommended)
-        strategy_outputs_written = self._persist_strategy_outputs(persist_set, workdir)
+        strategy_outputs_written = self._persist_strategy_outputs(cands, workdir)
 
         return {
             "candidates": cands,

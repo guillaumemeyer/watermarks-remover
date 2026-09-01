@@ -1695,6 +1695,61 @@ def test_adaptive_escalates_until_clear(tmp_path, monkeypatch):
     assert calls[1] == [("paraphrase", 0.7)]
 
 
+def test_recommended_humanized_is_search_candidate(tmp_path, monkeypatch):
+    """The auto-humanized recommendation stays in the candidate set (for CSV marking)."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        intensity_grid="0.4,1.0",
+        phase2_levels_per_tactic=1,
+        beam=1,
+        max_passes=1,
+        recommend_weight="0.5/0.3/0.2",
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def evaluate(strategy, samples=None):
+        return {
+            "robust_clear_rate": 1.0,
+            "sem_div": 0.1,
+            "human_like": 0.9,
+            "n": 1,
+            "unverified": 0,
+        }
+
+    monkeypatch.setattr(b, "_eval_strategy", evaluate)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b.strategy_search(samples, tmp_path / "work")
+    rec = res["recommended"]
+    assert rec is not None
+    assert rec["steps"][-1][0] == "humanize"
+    assert any(rec is c for c in res["candidates"])
+
+
+def test_adaptive_excludes_unverified(tmp_path, monkeypatch):
+    """An unavailable detection is recorded as unverified, not as a failed clear."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        target_margin=0.0,
+        escalation_step=0.2,
+        escalation_max=1.0,
+        escalation_attempts=1,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+
+    def fake_compose(text, steps, target_margin):
+        return text, {"markllm": {"after": {"available": False}}}
+
+    monkeypatch.setattr(b, "compose_strategy", fake_compose)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b._adaptive_apply_strategy([("paraphrase", 0.5)], samples)
+    assert res["unverified"] == 1
+    assert res["n"] == 0
+    assert res["base_clear_rate"] is None
+    assert res["rows"][0]["note"] == "detection unavailable"
+
+
 def test_persist_strategy_outputs_writes_files(tmp_path):
     """Each strategy candidate's input/output text is written to disk for inspection."""
     args = _args(out_dir=tmp_path, mode="strategy")
