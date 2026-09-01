@@ -1653,6 +1653,48 @@ def test_strategy_search_recommended_ends_humanize(tmp_path, monkeypatch):
     assert rec["steps"][-1][0] == "humanize"
 
 
+def test_adaptive_escalates_until_clear(tmp_path, monkeypatch):
+    """A resistant input is re-run with raised intensity until it robustly clears."""
+    args = _args(
+        out_dir=tmp_path,
+        mode="strategy",
+        target_margin=0.0,
+        escalation_step=0.2,
+        escalation_max=1.0,
+        escalation_attempts=3,
+    )
+    b = bench.Benchmark(args, Path(args.markllm_dir))
+    calls: list[list[tuple[str, float]]] = []
+
+    def fake_compose(text, steps, target_margin):
+        calls.append(list(steps))
+        max_lv = max(lv for _t, lv in steps)
+        cleared = max_lv >= 0.7
+        return text, {
+            "markllm": {
+                "after": {
+                    "available": True,
+                    "is_watermarked": not cleared,
+                    "score": -0.5 if cleared else 0.2,
+                    "threshold": 0.5,
+                },
+                "cleared": cleared,
+            }
+        }
+
+    monkeypatch.setattr(b, "compose_strategy", fake_compose)
+    samples = [{"excluded": False, "watermarked": "w", "before": DETECT_POS}]
+    res = b._adaptive_apply_strategy([("paraphrase", 0.5)], samples)
+    assert res["n"] == 1
+    assert res["base_clear_rate"] == 0.0
+    assert res["adapt_clear_rate"] == 1.0
+    assert res["rows"][0]["cleared"] is True
+    assert res["rows"][0]["escalation_level"] == 1
+    # It escalated once: 0.5 -> 0.7 (max level reached the clear threshold).
+    assert calls[0] == [("paraphrase", 0.5)]
+    assert calls[1] == [("paraphrase", 0.7)]
+
+
 def test_persist_strategy_outputs_writes_files(tmp_path):
     """Each strategy candidate's input/output text is written to disk for inspection."""
     args = _args(out_dir=tmp_path, mode="strategy")

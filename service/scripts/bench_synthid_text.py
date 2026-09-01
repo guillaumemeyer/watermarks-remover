@@ -1758,6 +1758,84 @@ class Benchmark:
             "outputs": per_sample,
         }
 
+    def _adaptive_apply_strategy(
+        self, strategy: list[tuple[str, float]], samples: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Escalate the strategy per-input until each sample clears (runtime adaptivity).
+
+        Starts at the strategy's base intensities; for any input that does not robustly
+        clear, every step's intensity is raised by ``--escalation-step`` (capped at
+        ``--escalation-max``) and re-run, up to ``--escalation-attempts`` rounds, until it
+        clears. Returns per-sample rows plus the coverage before and after escalation.
+        """
+        a = self.args
+        esc_step = float(getattr(a, "escalation_step", 0.1) or 0.1)
+        esc_max = float(getattr(a, "escalation_max", 1.0) or 1.0)
+        attempts = max(1, int(getattr(a, "escalation_attempts", 3)))
+        base = _normalize_strategy(strategy)
+        rows: list[dict[str, Any]] = []
+        for s in samples:
+            if s.get("excluded"):
+                continue
+            orig = s["watermarked"]
+            if not _detect_positive(s.get("before")):
+                continue
+            level0_robust: bool | None = None
+            best = {"cleared": False, "level": 0, "margin": None, "err": None}
+            current = list(base)
+            level = 0
+            while True:
+                try:
+                    _out, stats = self.compose_strategy(orig, current, a.target_margin)
+                except RuntimeError as e:
+                    best["err"] = str(e)
+                    break
+                mk = (stats.get("markllm") or {}).get("after") if stats else None
+                if not (mk or {}).get("available"):
+                    break
+                cleared = (stats.get("markllm") or {}).get("cleared")
+                if cleared is None:
+                    cleared = bool(_detect_positive(s.get("before")) and not _detect_positive(mk))
+                margin = self._score_margin(mk)
+                robust = bool(
+                    cleared is True and margin is not None and margin >= a.target_margin - 1e-9
+                )
+                if level == 0:
+                    level0_robust = robust
+                if robust:
+                    best = {"cleared": True, "level": level, "margin": margin, "err": None}
+                    break
+                if best["margin"] is None or (margin is not None and margin > best["margin"]):
+                    best = {"cleared": False, "level": level, "margin": margin, "err": None}
+                level += 1
+                if level > attempts or all(lv >= esc_max - 1e-9 for _t, lv in current):
+                    break
+                current = _escalate_steps(current, esc_step, esc_max)
+            rows.append(
+                {
+                    "doc": s.get("doc"),
+                    "seed": s.get("seed"),
+                    "base_cleared": bool(level0_robust),
+                    "cleared": best["cleared"],
+                    "escalation_level": best["level"],
+                    "margin": best["margin"],
+                    "note": best["err"],
+                }
+            )
+        n = len(rows)
+        base_clear = sum(1 for r in rows if r["base_cleared"])
+        adapt_clear = sum(1 for r in rows if r["cleared"])
+        levels = [r["escalation_level"] for r in rows if r["cleared"]]
+        return {
+            "n": n,
+            "base_clear_rate": round(base_clear / n, 4) if n else None,
+            "adapt_clear_rate": round(adapt_clear / n, 4) if n else None,
+            "mean_level": round(_mean(levels), 3) if levels else None,
+            "median_level": round(sorted(levels)[len(levels) // 2], 3) if levels else None,
+            "max_level": max(levels) if levels else None,
+            "rows": rows,
+        }
+
     def _scalarize(self, axis: dict, w: tuple[float, float, float]) -> float | None:
         """Scalarize an axis dict under weight vector w."""
         return _weighted_score(axis, w)
@@ -2118,6 +2196,13 @@ def _normalize_strategy(steps: list[tuple[str, float]]) -> list[tuple[str, float
     if human:
         removal.append(("humanize", min(human)))
     return removal
+
+
+def _escalate_steps(
+    steps: list[tuple[str, float]], step: float, cap: float
+) -> list[tuple[str, float]]:
+    """Raise every step's intensity by ``step`` (capped at ``cap``) for adaptivity."""
+    return [(tactic, min(cap, round(level + step, 4))) for tactic, level in steps]
 
 
 def _split_holdout(
@@ -2663,6 +2748,28 @@ def render_markdown_strategy(
         if rec.get("steps") and rec["steps"][-1][0] == "humanize":
             L.append("- final step: `humanize` style polish (runs last by design)")
     L.append("")
+    adaptive = res.get("adaptive")
+    if adaptive:
+        L.append("## Adaptive escalation (escalate until removed)")
+        L.append("")
+        L.append(
+            f"- default (no escalation): {_fmt(adaptive.get('base_clear_rate'))} "
+            f"| after escalation: {_fmt(adaptive.get('adapt_clear_rate'))} clear (n={adaptive.get('n')})"
+        )
+        L.append(
+            f"- escalation level to clear: mean {_fmt(adaptive.get('mean_level'))}, "
+            f"median {_fmt(adaptive.get('median_level'))}, max {_fmt(adaptive.get('max_level'))}"
+        )
+        L.append("")
+        L.append("| doc | seed | clear @ default | clear after escalation | level |")
+        L.append("| --- | ---: | ---: | ---: | ---: |")
+        for r in adaptive.get("rows") or []:
+            L.append(
+                f"| {r.get('doc')} | {r.get('seed')} | "
+                f"{'yes' if r.get('base_cleared') else 'no'} | "
+                f"{'yes' if r.get('cleared') else 'no'} | {r.get('escalation_level')} |"
+            )
+        L.append("")
     L.append("## Verdict")
     L.append("")
     L.append(_render_strategy_verdict(res))
@@ -2768,12 +2875,17 @@ def _strategy_csv(res: dict[str, Any]) -> list[str]:
             "n",
             "holdout_robust_clear_rate",
             "humanize_last",
+            "adaptive_base_clear",
+            "adaptive_clear",
+            "adaptive_median_level",
             "recommended",
             "in_frontier",
         ]
     )
+    adaptive = res.get("adaptive") or {}
     for c in res.get("candidates") or []:
         steps = c.get("steps") or []
+        is_rec = rec is not None and id(rec) == id(c)
         w.writerow(
             [
                 _steps_str(steps),
@@ -2783,7 +2895,10 @@ def _strategy_csv(res: dict[str, Any]) -> list[str]:
                 c.get("n"),
                 c.get("holdout_robust_clear_rate"),
                 1 if steps and steps[-1][0] == "humanize" else 0,
-                1 if rec is not None and id(rec) == id(c) else 0,
+                adaptive.get("base_clear_rate") if is_rec else "",
+                adaptive.get("adapt_clear_rate") if is_rec else "",
+                adaptive.get("median_level") if is_rec else "",
+                1 if is_rec else 0,
                 1 if id(c) in front else 0,
             ]
         )
@@ -3085,6 +3200,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Intensity of the auto-appended final humanize polish step (default: 0.4).",
     )
     p.add_argument(
+        "--adaptive",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Escalate the recommended strategy per-input until the mark is removed "
+        "(runtime adaptivity). Inputs that resist the default are re-run with every "
+        "step's intensity raised by --escalation-step.",
+    )
+    p.add_argument(
+        "--escalation-step",
+        type=float,
+        default=0.1,
+        help="Intensity increment per adaptive escalation round (default: 0.1).",
+    )
+    p.add_argument(
+        "--escalation-max",
+        type=float,
+        default=1.0,
+        help="Maximum intensity an adaptive escalation may reach (default: 1.0).",
+    )
+    p.add_argument(
+        "--escalation-attempts",
+        type=int,
+        default=3,
+        help="Max adaptive escalation rounds per input (default: 3).",
+    )
+    p.add_argument(
         "--write-strategy-outputs",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -3169,6 +3310,15 @@ def main() -> int:
         if args.max_passes < 1:
             eprint("error: --max-passes must be >= 1")
             return 1
+        if args.escalation_step <= 0:
+            eprint("error: --escalation-step must be positive")
+            return 1
+        if not (0 < args.escalation_max <= 1):
+            eprint("error: --escalation-max must be in (0,1]")
+            return 1
+        if args.escalation_attempts < 1:
+            eprint("error: --escalation-attempts must be >= 1")
+            return 1
         if args.strategies:
             parse_strategy(args.strategies)
 
@@ -3231,6 +3381,10 @@ def main() -> int:
         "coverage_floor": args.coverage_floor,
         "eval_split": args.eval_split,
         "humanize_intensity": args.humanize_intensity,
+        "adaptive": args.adaptive,
+        "escalation_step": args.escalation_step,
+        "escalation_max": args.escalation_max,
+        "escalation_attempts": args.escalation_attempts,
         "strategies": args.strategies,
         "layer_a_after": args.layer_a_after,
         "write_strategy_outputs": args.write_strategy_outputs,
@@ -3279,6 +3433,22 @@ def main() -> int:
                 *(
                     [f"--humanize-intensity {args.humanize_intensity}"]
                     if args.humanize_intensity != 0.4
+                    else []
+                ),
+                *(["--adaptive"] if args.adaptive else []),
+                *(
+                    [f"--escalation-step {args.escalation_step}"]
+                    if args.escalation_step != 0.1
+                    else []
+                ),
+                *(
+                    [f"--escalation-max {args.escalation_max}"]
+                    if args.escalation_max != 1.0
+                    else []
+                ),
+                *(
+                    [f"--escalation-attempts {args.escalation_attempts}"]
+                    if args.escalation_attempts != 3
                     else []
                 ),
                 *([f"--strategies {args.strategies}"] if args.strategies else []),
@@ -3330,6 +3500,10 @@ def main() -> int:
                 }
             else:
                 res = bench.strategy_search(samples, workdir)
+            if getattr(args, "adaptive", False) and res.get("recommended") is not None:
+                res["adaptive"] = bench._adaptive_apply_strategy(
+                    res["recommended"]["steps"], samples
+                )
         else:
             rows = bench.run_variants(samples, workdir)
     finally:
@@ -3474,6 +3648,13 @@ def main() -> int:
             print(f"  robust clear %: {_fmt(rec.get('robust_clear_rate'))}")
             print(f"  semantic div  : {_fmt(rec.get('sem_div'))}")
             print(f"  human_like    : {_fmt(rec.get('human_like'))}")
+        adaptive = res.get("adaptive")
+        if adaptive:
+            print(
+                f"  adaptive clear: default {_fmt(adaptive.get('base_clear_rate'))} -> "
+                f"escalated {_fmt(adaptive.get('adapt_clear_rate'))} "
+                f"(median level {_fmt(adaptive.get('median_level'))})"
+            )
         print(
             f"  frontier size : {len(res.get('frontier') or [])} / candidates {len(res.get('candidates') or [])}"
         )

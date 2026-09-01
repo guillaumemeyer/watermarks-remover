@@ -333,6 +333,12 @@ applied sequentially - each step's output feeds the next.
   it is the final step, and the recommended strategy is auto-finished with
   `humanize@--humanize-intensity` (default `0.4`) as the user-facing polish. Its
   reported axes reflect that final output.
+- **Adaptive escalate-on-resist.** `--adaptive` takes the recommended strategy as a mild
+  default and, for any input that resists it, re-runs with every step's intensity raised
+  by `--escalation-step` (capped at `--escalation-max`, up to `--escalation-attempts`
+  rounds) until the mark is removed. The report shows the default vs. escalated clear rate
+  and the escalation-level distribution, so the resistant tail is reachable without
+  over-rewriting easy inputs.
 - `--strategies "chunk@0.6,paraphrase@0.3"` composes and scores one explicit strategy
   instead of searching.
 - `--layer-a-after` re-runs the Unicode scrub on the final output; default **off**
@@ -348,7 +354,8 @@ applied sequentially - each step's output feeds the next.
       --markllm-dir ~/MarkLLM \
       --corpus benchmarks/corpus-large --docs 20 --seeds 3 --max-new-tokens 300 \
       --mode strategy --target-margin 0.03 --coverage-floor 0.5 \
-      --eval-split 0.8 --humanize-intensity 0.4 \
+      --eval-split 0.8 --humanize-intensity 0.4 --adaptive \
+      --escalation-step 0.1 --escalation-attempts 3 \
       --rewrite-backend openai-compatible --rewrite-model <model> \
       --rewrite-base-url <url> --rewrite-allow-remote --tag <backend>
 
