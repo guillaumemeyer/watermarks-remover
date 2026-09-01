@@ -1800,7 +1800,10 @@ def test_strategy_search_persists_outputs(tmp_path, monkeypatch):
     assert strategies_dir.exists()
     dirs = list(strategies_dir.glob("*"))
     assert dirs
-    assert res["strategy_outputs_written"] == len(res["candidates"])
+    # The auto-humanized recommendation is persisted too (this run found one).
+    rec = res["recommended"]
+    extra = 1 if rec is not None and all(rec is not c for c in res["candidates"]) else 0
+    assert res["strategy_outputs_written"] == len(res["candidates"]) + extra
     for c in res["candidates"]:
         assert c["outputs"] is None
         assert c["output_files"]
@@ -1809,6 +1812,9 @@ def test_strategy_search_persists_outputs(tmp_path, monkeypatch):
                 assert (workdir.parent / f["output"]).exists()
             if f.get("input"):
                 assert (workdir.parent / f["input"]).exists()
+    if rec is not None:
+        assert rec["outputs"] is None
+        assert rec["output_files"]
 
 
 def test_strategy_search_no_write_strategy_outputs(tmp_path, monkeypatch):

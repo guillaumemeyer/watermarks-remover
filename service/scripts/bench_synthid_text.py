@@ -1950,14 +1950,19 @@ class Benchmark:
 
         # Humanizer always runs last: the recommended default ends with a humanize
         # polish (re-measured on all inputs so its reported axes reflect the final
-        # output the user actually sees).
+        # output the user actually sees). The humanized result must still clear the
+        # coverage floor, otherwise it is not a recommendable remover.
         if recommended is not None:
             steps = [*recommended["steps"]]
             if not steps or steps[-1][0] != "humanize":
                 steps = [*steps, ("humanize", humanize_intensity)]
                 final = self._eval_strategy(steps, samples)
                 final["steps"] = steps
-                recommended = final
+                final_rate = final.get("robust_clear_rate")
+                if final_rate is None or final_rate < coverage_floor - 1e-9:
+                    recommended = None
+                else:
+                    recommended = final
 
         # Intensity curves per tactic (from Phase 1 single-step strategies).
         curves: dict[str, list] = {}
@@ -1981,7 +1986,13 @@ class Benchmark:
         if recommended is None and any(c.get("robust_clear_rate") is not None for c in cands):
             verdict = "resists"
 
-        strategy_outputs_written = self._persist_strategy_outputs(cands, workdir)
+        # Persist the searched candidates plus the (possibly auto-humanized)
+        # recommendation, so the reported best strategy is always written for
+        # inspection and its embedded per-sample text is stripped from results.json.
+        persist_set = list(cands)
+        if recommended is not None and not any(recommended is c for c in cands):
+            persist_set.append(recommended)
+        strategy_outputs_written = self._persist_strategy_outputs(persist_set, workdir)
 
         return {
             "candidates": cands,
@@ -3491,11 +3502,24 @@ def main() -> int:
                     final["steps"] = [*strategy, ("humanize", humanize_intensity)]
                     candid = final
                 strategy_outputs_written = bench._persist_strategy_outputs([candid], workdir)
+                # Respect the coverage-floor contract: never publish a strategy that
+                # does not clear enough inputs as the recommendation.
+                floor = float(getattr(args, "coverage_floor", 0.5))
+                rec = (
+                    candid
+                    if (
+                        candid.get("robust_clear_rate") is not None
+                        and candid["robust_clear_rate"] >= floor - 1e-9
+                    )
+                    else None
+                )
+                verdict = _strategy_verdict([candid]) if rec is not None else "resists"
                 res = {
                     "candidates": [candid],
-                    "recommended": candid,
+                    "recommended": rec,
                     "frontier": [candid],
                     "intensity_curves": {},
+                    "verdict": verdict,
                     "strategy_outputs_written": strategy_outputs_written,
                 }
             else:
