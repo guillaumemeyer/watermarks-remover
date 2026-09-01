@@ -143,6 +143,34 @@ def test_html_cms_generator_attribute_names_are_case_insensitive():
     assert clean_html(ai_html)[0] == ""
 
 
+def test_html_jsonld_ai_block_detected_and_cleaned():
+    ai = (
+        '<script type="application/ld+json">'
+        '{"@type":"CreativeWork","digitalSourceType":"trainedAlgorithmicMedia"}'
+        "</script>"
+    )
+    _has_c2pa, has_ai, findings, _ = inspect_html(ai)
+    assert has_ai is True
+    assert any("json-ld provenance-like block" in f for f in findings)
+    cleaned, _actions = clean_html(ai)
+    assert "digitalSourceType" not in cleaned
+
+
+def test_html_jsonld_clean_keeps_plain_jsonld_and_regular_scripts():
+    # Only json-ld blocks that actually carry AI provenance are dropped. A plain
+    # json-ld block and an ordinary <script> that merely mention the marker
+    # text must be preserved (the tag scanner + separate type check must not
+    # over-match non-jsonld scripts).
+    html = (
+        '<script type="application/ld+json">{"@type":"Book","name":"plain"}</script>'
+        '<script>var x = "trainedAlgorithmicMedia";</script>'
+    )
+    _c2, _has_ai, _findings, _ = inspect_html(html)
+    cleaned, actions = clean_html(html)
+    assert cleaned == html
+    assert not any("json-ld" in a for a in actions)
+
+
 def test_html_ai_generator_still_dropped():
     html = '<meta name="generator" content="Claude">'
     cleaned, actions = clean_html(html)

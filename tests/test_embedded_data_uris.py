@@ -133,6 +133,25 @@ def test_already_clean_embedded_image_no_op():
     assert "no HTML AI meta removed" in actions
 
 
+def test_data_uri_with_many_params_is_matched():
+    # No fixed count/length limit on the parameter list: a URI with far more
+    # than 16 short params must still be found and cleaned.
+    png_c2pa = _minimal_png_with_text()
+    png_b64 = base64.b64encode(png_c2pa).decode("ascii")
+    params = "".join(f";p{i}=v{i}" for i in range(40))
+    assert params.count(";") > 16
+    html_text = f'<img src="data:image/png;base64{params},{png_b64}">'
+
+    has_c2pa, has_ai, findings, _ = inspect_html(html_text)
+    assert has_c2pa is True
+    assert has_ai is True
+    assert any("embedded data:image/png" in f for f in findings)
+
+    cleaned_text, actions = clean_html(html_text)
+    assert any("cleaned embedded data:image/png" in a for a in actions)
+    assert "c2pa" not in cleaned_text.lower()
+
+
 def test_corrupted_data_uri_graceful_fallback():
     # Corrupted base64 that shouldn't crash the file cleaner
     bad_html = '<img src="data:image/png;base64,!!!NOT_VALID_BASE64###">'

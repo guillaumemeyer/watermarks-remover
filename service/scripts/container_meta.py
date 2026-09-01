@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import zipfile
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -278,9 +279,47 @@ def _blob_hits(blob: bytes) -> tuple[bool, bool, list[str]]:
 
 
 RE_DATA_IMAGE_URI = re.compile(
-    r"data:image\/(?P<mime>[a-zA-Z0-9\+\-\.]+)(?P<params>;[^\s\"'\)<>]+)?,(?P<payload>[A-Za-z0-9+/=\s%]+)",
+    # Unambiguous data-URI header: params is a list of ";attr" segments whose
+    # content can contain neither ';' nor ',' so the comma separator is matched
+    # exactly once. No fixed counts or lengths are imposed, so any valid MIME
+    # parameter sequence is accepted. A trailing, unbounded payload is linear
+    # (nothing follows it) and may span whitespace for formatted base64.
+    r"data:image/(?P<mime>[A-Za-z0-9+.-]+)"
+    r"(?P<params>(?:;[^,;\s\"'()<>]+)*)"
+    r",(?P<payload>[A-Za-z0-9+/=%\s]+)",
     re.I,
 )
+# Characters that can never appear in an unquoted data-URI body, so they bound a
+# candidate span. Matching each candidate once and skipping across it on a
+# non-match keeps the scan linear even when a large document is full of
+# "data:image/..." that never reaches a comma (a finditer over the whole text
+# would rescan the tail for every prefix - the ReDoS).
+_DATA_URI_STOP = frozenset("\"'<>(")
+
+
+def _iter_data_uris(text: str) -> Iterator[tuple[int, int, str, str, str]]:
+    """Yield (start, end, mime, params, payload) for each data:image URI.
+
+    Linear regardless of input shape: each candidate ('data:image/' up to the
+    next quote/angle/paren) is scanned once, and a candidate that does not form
+    a URI is skipped across so the cost is bounded by the text length.
+    """
+    n = len(text)
+    pos = 0
+    low = text.lower()
+    while True:
+        i = low.find("data:image/", pos)
+        if i < 0:
+            return
+        j = i
+        while j < n and text[j] not in _DATA_URI_STOP:
+            j += 1
+        m = RE_DATA_IMAGE_URI.match(text, i)
+        if m is not None:
+            yield i, m.end(), m.group("mime"), m.group("params") or "", m.group("payload")
+            pos = m.end()
+        else:
+            pos = j if j > i + 1 else i + 1
 
 
 def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
@@ -288,11 +327,10 @@ def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
     has_ai = False
     findings: list[str] = []
 
-    for m in RE_DATA_IMAGE_URI.finditer(text):
-        mime = m.group("mime").lower()
-        params = (m.group("params") or "").lower()
-        payload = m.group("payload")
-        is_b64 = "base64" in params
+    for _start, _end, mime, params, payload in _iter_data_uris(text):
+        mime_l = mime.lower()
+        params_l = params.lower()
+        is_b64 = "base64" in params_l
 
         try:
             if is_b64:
@@ -318,7 +356,7 @@ def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
             sub_c2pa, sub_ai, sub_findings = inspect_webp(data)
         elif fmt in ("avif", "heic"):
             sub_c2pa, sub_ai, sub_findings = inspect_isobmff(data, fmt)
-        elif "svg" in mime or data.lstrip().startswith(b"<"):
+        elif "svg" in mime_l or data.lstrip().startswith(b"<"):
             sub_c2pa, sub_ai, sub_findings, _ = inspect_svg(data)
         else:
             sub_c2pa, sub_ai, sub_findings = _blob_hits(data)
@@ -328,7 +366,7 @@ def _inspect_embedded_data_uris(text: str) -> tuple[bool, bool, list[str]]:
         if sub_ai or sub_c2pa:
             has_ai = True
         for f in sub_findings:
-            findings.append(f"embedded data:image/{mime}: {f}")
+            findings.append(f"embedded data:image/{mime_l}: {f}")
 
     return has_c2pa, has_ai, findings
 
@@ -338,11 +376,8 @@ def _clean_embedded_data_uris(
 ) -> tuple[str, list[str]]:
     actions: list[str] = []
 
-    def _replace_uri(m: re.Match[str]) -> str:
-        full_match = m.group(0)
-        mime = m.group("mime")
-        params = m.group("params") or ""
-        payload = m.group("payload")
+    def _clean_one(mime: str, params: str, payload: str) -> str | None:
+        """Return the rebuilt data URI, or None when nothing changed."""
         is_b64 = "base64" in params.lower()
 
         try:
@@ -355,10 +390,10 @@ def _clean_embedded_data_uris(
             else:
                 data = urllib.parse.unquote_to_bytes(payload)
         except Exception:
-            return full_match
+            return None
 
         if not data:
-            return full_match
+            return None
 
         fmt = detect_image_format(data)
         sub_actions: list[str] = []
@@ -378,22 +413,27 @@ def _clean_embedded_data_uris(
             elif "svg" in mime.lower() or data.lstrip().startswith(b"<"):
                 cleaned_bytes, sub_actions = clean_svg(data)
         except Exception:
-            return full_match
+            return None
 
         if not any("drop" in a.lower() for a in sub_actions) or cleaned_bytes == data:
-            return full_match
+            return None
 
         actions.append(f"cleaned embedded data:image/{mime} ({', '.join(sub_actions[:2])})")
 
         if is_b64:
             new_b64 = base64.b64encode(cleaned_bytes).decode("ascii")
             return f"data:image/{mime}{params},{new_b64}"
-        else:
-            new_payload = urllib.parse.quote_from_bytes(cleaned_bytes)
-            return f"data:image/{mime}{params},{new_payload}"
+        return f"data:image/{mime}{params},{urllib.parse.quote_from_bytes(cleaned_bytes)}"
 
-    out = RE_DATA_IMAGE_URI.sub(_replace_uri, text)
-    return out, actions
+    out: list[str] = []
+    last = 0
+    for start, end, mime, params, payload in _iter_data_uris(text):
+        out.append(text[last:start])
+        rebuilt = _clean_one(mime, params, payload)
+        out.append(text[start:end] if rebuilt is None else rebuilt)
+        last = end
+    out.append(text[last:])
+    return "".join(out), actions
 
 
 # ---------------------------------------------------------------------------
@@ -618,11 +658,60 @@ def _is_cms_generator_meta(tag: str) -> bool:
     return not (_GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag))
 
 
-_JSONLD_OPEN_RE = re.compile(
-    r"""<script\b[^>]*type\s*=\s*["']application/ld\+json["'][^>]*>""",
-    re.I,
-)
+_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]{0,2048}>", re.I)
+# The attribute match is kept separate from the script-tag scan. A single
+# "<script\b[^>]*type...[^>]*>" pattern has two unbounded "[^>]*" runs around
+# a repeated literal, so a document full of 'type="application/ld+json"' with no
+# closing '>' backtracks quadratically. Scanning tags linearly and classifying
+# the type with a quote-aware parser keeps the whole pass O(n) and avoids
+# matching 'data-type=...' or a 'type=' inside another attribute's quoted value.
 _JSONLD_CLOSE_RE = re.compile(r"</script>", re.I)
+
+
+def _script_tag_is_jsonld(open_tag: str) -> bool:
+    """True iff the opening tag has a top-level type="application/ld+json".
+
+    Single-pass and quote-aware: quoted attribute values are skipped as a unit,
+    so only an actual top-level attribute named 'type' with the JSON-LD value
+    is matched. Linear in the tag length.
+    """
+    i, n = 0, len(open_tag)
+    if i < n and open_tag[i] == "<":
+        i += 1
+    while i < n and open_tag[i] not in " \t\r\n/>":  # tag name
+        i += 1
+    while i < n:
+        while i < n and open_tag[i] in " \t\r\n":
+            i += 1
+        if i >= n or open_tag[i] == ">":
+            return False
+        name_start = i
+        while i < n and open_tag[i] not in "= \t\r\n/>":
+            i += 1
+        name = open_tag[name_start:i]
+        while i < n and open_tag[i] in " \t\r\n":
+            i += 1
+        value = ""
+        if i < n and open_tag[i] == "=":
+            i += 1
+            while i < n and open_tag[i] in " \t\r\n":
+                i += 1
+            if i < n and open_tag[i] in "\"'":
+                quote = open_tag[i]
+                i += 1
+                value_start = i
+                while i < n and open_tag[i] != quote:
+                    i += 1
+                value = open_tag[value_start:i]
+                i += 1  # skip closing quote
+            else:
+                value_start = i
+                while i < n and open_tag[i] not in " \t\r\n>":
+                    i += 1
+                value = open_tag[value_start:i]
+        if name.lower() == "type" and value.lower() == "application/ld+json":
+            return True
+    return False
 
 
 def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
@@ -640,7 +729,9 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
         ):
             has_ai = True
             findings.append(f"meta: {tag[:120]}")
-    for os_, _oe, _cs, ce in _iter_tag_blocks(text, _JSONLD_OPEN_RE, _JSONLD_CLOSE_RE):
+    for os_, oe, _cs, ce in _iter_tag_blocks(text, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE):
+        if not _script_tag_is_jsonld(text[os_:oe]):
+            continue
         blob = text[os_:ce]
         if AI_META_NAME_RE.search(blob) or re.search(
             r"DigitalSourceType|trainedAlgorithmicMedia|SoftwareAgent", blob, re.I
@@ -681,11 +772,15 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out = _META_TAG_RE.sub(_meta_sub, text)
 
     def _jsonld_is_ai(blob: str) -> bool:
+        end = blob.find(">")
+        open_tag = blob if end < 0 else blob[: end + 1]
+        if not _script_tag_is_jsonld(open_tag):
+            return False
         return AI_META_NAME_RE.search(blob) or re.search(
             r"DigitalSourceType|trainedAlgorithmicMedia|SoftwareAgent", blob, re.I
         )
 
-    new, n = _drop_blocks_if(out, _JSONLD_OPEN_RE, _JSONLD_CLOSE_RE, _jsonld_is_ai)
+    new, n = _drop_blocks_if(out, _SCRIPT_OPEN_RE, _JSONLD_CLOSE_RE, _jsonld_is_ai)
     if n:
         actions.extend(["drop json-ld provenance-like script"] * n)
         out = new

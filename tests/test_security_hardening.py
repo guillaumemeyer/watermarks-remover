@@ -35,6 +35,7 @@ from container_meta import (
     _drop_tag_blocks,
     _pdf_structured_blob,
     _read_zip_member,
+    _script_tag_is_jsonld,
     clean_html,
     clean_odt,
     clean_svg,
@@ -316,6 +317,46 @@ def test_clean_html_jsonld_flood_is_linear():
     assert "</script>" not in flood
     cleaned, _actions = _assert_completes_fast(clean_html, flood)
     assert cleaned == flood
+
+
+def test_clean_html_jsonld_attr_flood_no_close_is_linear():
+    # CodeQL py/polynomial-redos worst case for the tag scanner: the literal
+    # 'type="application/ld+json"' repeats many times but there is never a '>'.
+    # A single "<script[^>]*type...[^>]*>" regex backtracks quadratically here;
+    # the linear tag scan + separate type check must not.
+    flood = '<script type="application/ld+json"' * (128 * 1024 // 39)
+    assert ">" not in flood
+    cleaned, _actions = _assert_completes_fast(clean_html, flood)
+    assert cleaned == flood
+
+
+def test_clean_html_data_uri_flood_is_linear():
+    # CodeQL py/polynomial-redos worst case for the data-URI matcher: many
+    # 'data:image/+;' prefixes and no comma. The old params class could match
+    # the comma (and ';'), so every prefix rescanned the tail - quadratic. The
+    # bounded, unambiguous header must keep the whole pass linear.
+    flood = "data:image/+;" * (256 * 1024 // 13)
+    assert "," not in flood
+    cleaned, actions = _assert_completes_fast(clean_html, flood)
+    assert cleaned == flood
+    assert not any("embedded data:image" in a for a in actions)
+
+
+def test_jsonld_type_parser_is_linear_on_whitespace():
+    # A whitespace-heavy tag without a type must be rejected quickly (a "\s+"
+    # or search-based matcher here would rescan the run from every position).
+    flood = "<script" + "  " * (512 * 1024) + ">"
+    start = time.perf_counter()
+    assert _script_tag_is_jsonld(flood) is False
+    assert time.perf_counter() - start < 5.0
+
+
+def test_jsonld_type_parser_ignores_decoy_attributes():
+    # A 'type=' inside another attribute's quoted value, and a name that merely
+    # ends in "type" (data-type), are NOT the JSON-LD type attribute.
+    assert _script_tag_is_jsonld('<script data-type="application/ld+json">') is False
+    assert _script_tag_is_jsonld("<script title='x type=\"application/ld+json\" y'>") is False
+    assert _script_tag_is_jsonld('<script id="type" type="application/ld+json">') is True
 
 
 def test_pdf_stream_and_xpacket_floods_are_linear():
