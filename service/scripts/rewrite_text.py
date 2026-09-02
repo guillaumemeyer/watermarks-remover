@@ -34,7 +34,10 @@ original — is excluded; 1 rewrites everything). The level is a request: output
 lexical/semantic divergence is measured, not guaranteed. --style appends an
 optional writing-style instruction (e.g. "write like Hemingway"), most useful
 with --tactic humanize; it is a request, not a guarantee, and never overrides
-the fact/voice rules.
+the fact/voice rules. The humanize tactic additionally runs a deterministic
+humanizer pass (humanize_pass.py) over each generated candidate — straight
+quotes, no em/en dashes or double hyphens, filler-phrase collapses, and the
+utilize->use swap — before evaluation, so the scored text is the text returned.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -60,6 +63,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import cleaned_path, eprint, read_text_input, write_text_output
+from humanize_pass import humanize_pass
 from text_detectors import GumbelTextDetector, MarkLLMTextDetector
 from text_unicode import clean_text
 
@@ -77,10 +81,19 @@ PROMPTS = {
     ),
     "humanize": (
         "Rewrite the following text so it reads as if a human wrote it from scratch. "
-        "Vary sentence rhythm and length, replace formulaic AI-style transitions and "
-        "filler with concrete natural phrasing, and use plain, varied wording. Preserve "
-        "all facts, numbers, names, and technical identifiers. Do not add or remove "
-        "claims. Output only the rewritten text.\n\n---\n{TEXT}"
+        "Vary sentence rhythm and length unevenly — mix short and long sentences instead "
+        "of a steady mid-length cadence — and merge or split paragraphs where a human "
+        "would. Use plain, concrete wording and simple verbs (is/are/has); prefer active "
+        'voice. Cut promotional language and inflated significance ("stands as a '
+        'testament", "pivotal", "vibrant", "a rich tapestry"), superficial '
+        'present-participle analyses ("reflecting", "showcasing", "underscoring"), '
+        'vague attributions ("experts argue"), rule-of-three listing, filler ("in order '
+        'to", "it is important to note"), hedging, and formulaic positive conclusions. '
+        'Avoid AI vocabulary ("additionally", "delve", "crucial", "foster", '
+        '"leverage", "utilize", "interplay", and abstract "landscape"). Do not add '
+        "em dashes, bold text, emojis, or curly quotes. Preserve all facts, numbers, "
+        "names, and technical identifiers. Do not add or remove claims. Output only the "
+        "rewritten text.\n\n---\n{TEXT}"
     ),
     "code": (
         "Rewrite the natural-language parts of this code — comments, docstrings, and "
@@ -673,6 +686,8 @@ def rewrite(
         loop_passed = False
         for _ in range(n_cands):
             cand = _generate_candidate()
+            if tactic == "humanize":
+                cand = humanize_pass(cand)
             cand_stats: dict | None = None
             if layer_a_after:
                 cand, cand_stats = clean_text(cand)

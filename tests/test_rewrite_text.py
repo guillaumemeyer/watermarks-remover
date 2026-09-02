@@ -61,6 +61,13 @@ def test_build_prompt_humanize_and_code_contain_text():
         assert keyword in p
 
 
+def test_build_prompt_humanize_lists_humanizer_rules():
+    p = build_prompt("humanize", "ABC 123", lang="French", original_lang="English")
+    assert "human wrote it" in p
+    for rule in ("active voice", "utilize", "em dashes", "rule-of-three", "in order to"):
+        assert rule in p
+
+
 def test_build_prompt_unknown_tactic_raises():
     with pytest.raises(ValueError):
         build_prompt("nope", "ABC", lang="French", original_lang="English")
@@ -166,6 +173,36 @@ def test_structural_and_backtranslate_prompts():
     for tactic in ("structural", "backtranslate"):
         p = build_prompt(tactic, "ABC 123", lang="German", original_lang="English")
         assert "ABC 123" in p
+
+
+def test_humanize_tactic_applies_deterministic_pass(monkeypatch):
+    """The humanize candidate is cleaned before evaluation: dashes and filler go."""
+    monkeypatch.setattr(
+        rewrite_text,
+        "call_ollama",
+        lambda *a, **k: "In order to see the result\u2014the answer\u2014utilize the tool",
+    )
+    out, info = rewrite(
+        "the cat sat on the mat",
+        **_rewrite_candidates_kwargs(tactic="humanize", candidates=1),
+    )
+    assert out == "To see the result, the answer, use the tool"
+    assert info["tactic"] == "humanize"
+    assert info["evaluator"] == "lexical-divergence"
+
+
+def test_non_humanize_tactic_skips_deterministic_pass(monkeypatch):
+    """Only the humanize tactic runs the humanizer pass."""
+    monkeypatch.setattr(
+        rewrite_text,
+        "call_ollama",
+        lambda *a, **k: "alpha\u2014beta in order to gamma",
+    )
+    out, _info = rewrite(
+        "the cat sat on the mat",
+        **_rewrite_candidates_kwargs(tactic="paraphrase", candidates=1),
+    )
+    assert out == "alpha\u2014beta in order to gamma"
 
 
 def test_lexical_divergence_identical_is_zero():
