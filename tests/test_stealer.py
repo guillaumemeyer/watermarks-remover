@@ -205,3 +205,61 @@ def test_downloader_resume_after_interrupt_does_not_duplicate(monkeypatch, tmp_p
     assert rc == 0
     final = (out / "prompts.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["text"] for line in final] == ["r0", "r1", "r2", "r3"]
+
+
+def test_downloader_start_over_clears_stale_state_before_probe(monkeypatch, tmp_path):
+    """A failed --start-over probe must not leave a stale cursor for the next run."""
+
+    out = tmp_path / "prompts"
+    out.mkdir()
+    (out / "prompts.jsonl").write_text('{"text":"old"}\n', encoding="utf-8")
+    (out / ".download-state.json").write_text(
+        json.dumps({"next_offset": 900, "written": 900}), encoding="utf-8"
+    )
+
+    def fail_probe(*args, **kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(download_prompts, "fetch_rows_retrying", fail_probe)
+    with pytest.raises(RuntimeError, match="offline"):
+        download_prompts.main(
+            [
+                "--count",
+                "1",
+                "--out",
+                str(out),
+                "--base-url",
+                "https://example.invalid",
+                "--delay",
+                "0",
+                "--start-over",
+            ]
+        )
+
+    assert not (out / "prompts.jsonl").exists()
+    assert not (out / ".download-state.json").exists()
+
+    calls = []
+
+    def page(*args, **kwargs):
+        calls.append(args[4])
+        return {"num_rows_per_page": 1, "rows": [{"row": {"text": "fresh"}}]}
+
+    monkeypatch.setattr(download_prompts, "fetch_rows_retrying", page)
+    assert (
+        download_prompts.main(
+            [
+                "--count",
+                "1",
+                "--out",
+                str(out),
+                "--base-url",
+                "https://example.invalid",
+                "--delay",
+                "0",
+            ]
+        )
+        == 0
+    )
+    assert calls == [0, 0]
+    assert json.loads((out / "prompts.jsonl").read_text(encoding="utf-8")) == {"text": "fresh"}

@@ -157,8 +157,9 @@ def main(argv=None) -> int:
     offset, written = (0, 0) if args.start_over else load_state(state_path)
     if args.offset:
         offset = args.offset
-    if args.start_over and prompts_path.exists():
-        prompts_path.unlink()
+    if args.start_over:
+        prompts_path.unlink(missing_ok=True)
+        state_path.unlink(missing_ok=True)
 
     first = fetch_rows_retrying(
         args.base_url, args.dataset, args.config, args.split, offset, 1, token=token
