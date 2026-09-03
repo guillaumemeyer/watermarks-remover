@@ -10,6 +10,8 @@
 !/.github/**
 !/benchmarks/
 !/benchmarks/**
+!/config/
+!/config/**
 !/docs/
 !/docs/**
 !/service/

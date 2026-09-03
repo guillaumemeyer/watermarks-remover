@@ -358,6 +358,13 @@ APIs unless you ask it to:
 - **`/clean`** accepts `"detect_before"` / `"detect_after"` options to
   score the input and the cleaned output, so you can measure what a clean
   actually changed.
+- **`/clean`** also accepts a **`"strategy"`** option (an ordered
+  `tactic@intensity` list, e.g. `"paraphrase@0.8,mlm@0.2"`) that runs the
+  Layer B text rewrite after Layer A. When omitted, the default strategy from
+  the strategy config file is used (see below). If the rewrite backend/model
+  for a step isn't configured, `/clean` returns a 400.
+
+Text detectors (see `/capabilities` → `text_detectors`):
 
 Text detectors (see `/capabilities` → `text_detectors`):
 
@@ -457,9 +464,12 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_REWRITE_API_KEY` | `rewrite_text.py` hook | API key — env only, never on argv |
 | `WATERMARKS_REWRITE_ALLOW_REMOTE` | `rewrite_text.py` hook | `1` to allow non-loopback endpoints |
 | `WATERMARKS_REWRITE_REASONING_EFFORT` | `rewrite_text.py` hook | `none` (default) / `low` / `medium` / `high` / `off` |
+| `WATERMARKS_CLEAN_STRATEGY_FILE` | `server.py` `/clean` | Path to the Layer B strategy config JSON (default `config/clean_strategy.json`) |
 | `WATERMARKS_GUMBEL_KEY` | `detect_gumbel.py` / `text_detectors.py` | Secret key for keyed-Gumbel (EXP) same-key replay (e.g. `0x…`); preferred over argv — never logged |
 
-Layer B is agent-orchestrated in the skill (it rewrites with its own model), so the `WATERMARKS_REWRITE_*` vars are only needed when driving `rewrite_text.py` directly.
+Layer B is agent-orchestrated in the skill (it rewrites with its own model), so the `WATERMARKS_REWRITE_*` vars are only needed when driving `rewrite_text.py` directly, or when `/clean` runs a Layer B strategy that includes an LLM step.
+
+The `/clean` Layer B default comes from `config/clean_strategy.json` (`{"default_strategy": "paraphrase@0.8,mlm@0.2"}`). It is applied to every text clean after Layer A, unless the request passes its own `"strategy"` option. A strategy step is `tactic@intensity`; `mlm` is a local masked-LM edit (requires `transformers` + `roberta-large`), other tactics need the `WATERMARKS_REWRITE_*` LLM config. If a step's backend/model is unavailable, `/clean` rejects with a 400.
 
 Images publish automatically on `v*` tags via [`.github/workflows/release-images.yml`](.github/workflows/release-images.yml).
 

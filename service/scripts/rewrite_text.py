@@ -1052,6 +1052,121 @@ def rewrite(
     return out, info
 
 
+# Tactics accepted by a strategy spec. `mlm` is a local masked-LM edit; the
+# rest go through the configured rewrite backend.
+KNOWN_TACTICS = frozenset(
+    {"paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"}
+)
+LLM_TACTICS = frozenset(KNOWN_TACTICS - {"mlm"})
+
+
+def parse_strategy(spec: str) -> list[tuple[str, float]]:
+    """Parse a strategy like ``"paraphrase@0.8,mlm@0.2"`` -> [(tactic, intensity)].
+
+    Validates tactic names and that intensity lies in (0,1]. Raises ValueError on
+    malformed input (callers treat a bad strategy as a request error).
+    """
+    if not spec or not spec.strip():
+        raise ValueError("strategy must be a non-empty list of tactic@intensity steps")
+    steps: list[tuple[str, float]] = []
+    for raw in spec.split(","):
+        item = raw.strip()
+        if not item:
+            raise ValueError(f"bad strategy step {item!r}; expected tactic@intensity")
+        if "@" not in item:
+            raise ValueError(f"bad strategy step {item!r}; expected tactic@intensity")
+        tactic, raw_level = item.rsplit("@", 1)
+        tactic = tactic.strip()
+        if tactic not in KNOWN_TACTICS:
+            raise ValueError(f"unknown strategy tactic {tactic!r}")
+        try:
+            level = float(raw_level)
+        except ValueError:
+            raise ValueError(f"bad intensity in strategy step {item!r}") from None
+        if not (0 < level <= 1):
+            raise ValueError(f"strategy intensity must be in (0,1], got {level} in {item!r}")
+        steps.append((tactic, level))
+    return steps
+
+
+def apply_strategy(
+    text: str,
+    steps: list[tuple[str, float]],
+    *,
+    backend: str,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    timeout: float = 120.0,
+    temperature: float = 0.9,
+    reasoning_effort: str | None = None,
+    lang: str = "French",
+    original_lang: str = "English",
+    style: str | None = None,
+    layer_a_after: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Apply a strategy's steps sequentially to *text* (best-effort rewrite).
+
+    Unlike ``rewrite()`` this does not run a detection/evaluation loop — each
+    step is applied exactly once and feeds the next, so it suits an operation
+    that wants the rewrite regardless of a removal verdict. ``mlm`` steps use a
+    local masked-LM edit; every other tactic makes one backend generation via
+    ``build_prompt``/``_generate_once``. Returns (final_text, stats) where stats
+    carries per-step tactic/intensity/input-output lengths.
+    """
+    needs_llm = any(t in LLM_TACTICS for t, _ in steps)
+    if needs_llm:
+        if backend not in ("openai-compatible", "ollama"):
+            raise RuntimeError(f"strategy needs an LLM backend, got {backend!r}")
+        if not model or not base_url:
+            raise RuntimeError("strategy needs --model and --base-url for LLM steps")
+
+    cur = text
+    step_stats: list[dict[str, Any]] = []
+    for tactic, intensity in steps:
+        in_chars = len(cur)
+        if tactic == "mlm":
+            cur = _mlm_infill(cur, intensity)
+        else:
+            prompt = build_prompt(
+                tactic,
+                cur,
+                lang=lang,
+                original_lang=original_lang,
+                rewrite_level=intensity,
+                style=style,
+            )
+            cur = _generate_once(
+                backend,
+                base_url,
+                model,
+                api_key,
+                prompt,
+                timeout,
+                temperature,
+                reasoning_effort,
+            )
+            if layer_a_after and cur:
+                cur = clean_text(cur)[0]
+        step_stats.append(
+            {
+                "tactic": tactic,
+                "intensity": round(intensity, 4),
+                "in_chars": in_chars,
+                "out_chars": len(cur),
+            }
+        )
+    return cur, {
+        "backend": backend,
+        "tactic": "strategy",
+        "mode": "strategy",
+        "strategy": [f"{t}@{i:g}" for t, i in steps],
+        "steps": step_stats,
+        "input_chars": len(text),
+        "output_chars": len(cur),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser for text rewrite tool."""
     p = argparse.ArgumentParser(description=__doc__)
@@ -1088,6 +1203,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--tactic",
         choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"),
         default="paraphrase",
+    )
+    p.add_argument(
+        "--strategy",
+        default=None,
+        help="Ordered tactic@intensity strategy to apply (e.g. "
+        "'paraphrase@0.8,mlm@0.2'). When set, applies the whole strategy "
+        "sequentially (each step feeds the next) instead of a single --tactic; "
+        "no detection/evaluation loop.",
     )
     p.add_argument(
         "--style",
@@ -1225,35 +1348,63 @@ def main() -> int:
         if args.allow_remote is not None
         else _flag_env("WATERMARKS_REWRITE_ALLOW_REMOTE")
     )
+    steps: list[tuple[str, float]] | None = None
+    if args.strategy:
+        try:
+            steps = parse_strategy(args.strategy)
+        except ValueError as e:
+            eprint(f"error: {e}")
+            return 2
     try:
-        result, info = rewrite(
-            text,
-            backend=args.backend,
-            model=args.model,
-            base_url=args.base_url,
-            api_key=_env("WATERMARKS_REWRITE_API_KEY"),
-            tactic=args.tactic,
-            style=args.style,
-            lang=args.lang,
-            original_lang=args.original_lang,
-            timeout=args.timeout,
-            layer_a_after=not args.no_layer_a_after,
-            temperature=args.temperature,
-            candidates=args.candidates,
-            max_loops=args.max_loops,
-            allow_remote=allow_remote,
-            reasoning_effort=(None if args.reasoning_effort == "off" else args.reasoning_effort),
-            markllm_scheme=args.markllm_scheme,
-            markllm_dir=args.markllm_dir,
-            markllm_model=args.markllm_model,
-            markllm_timeout=args.markllm_timeout,
-            gumbel_key=args.gumbel_key,
-            rewrite_level=args.rewrite_level,
-            target_margin=args.target_margin,
-            selection=args.select,
-            chunk_shuffle=args.chunk_shuffle,
-            noop_lex_floor=args.noop_lex_floor,
-        )
+        if steps is not None:
+            result, info = apply_strategy(
+                text,
+                steps,
+                backend=args.backend,
+                model=args.model,
+                base_url=args.base_url,
+                api_key=_env("WATERMARKS_REWRITE_API_KEY"),
+                timeout=args.timeout,
+                temperature=args.temperature,
+                reasoning_effort=(
+                    None if args.reasoning_effort == "off" else args.reasoning_effort
+                ),
+                lang=args.lang,
+                original_lang=args.original_lang,
+                style=args.style,
+                layer_a_after=not args.no_layer_a_after,
+            )
+        else:
+            result, info = rewrite(
+                text,
+                backend=args.backend,
+                model=args.model,
+                base_url=args.base_url,
+                api_key=_env("WATERMARKS_REWRITE_API_KEY"),
+                tactic=args.tactic,
+                style=args.style,
+                lang=args.lang,
+                original_lang=args.original_lang,
+                timeout=args.timeout,
+                layer_a_after=not args.no_layer_a_after,
+                temperature=args.temperature,
+                candidates=args.candidates,
+                max_loops=args.max_loops,
+                allow_remote=allow_remote,
+                reasoning_effort=(
+                    None if args.reasoning_effort == "off" else args.reasoning_effort
+                ),
+                markllm_scheme=args.markllm_scheme,
+                markllm_dir=args.markllm_dir,
+                markllm_model=args.markllm_model,
+                markllm_timeout=args.markllm_timeout,
+                gumbel_key=args.gumbel_key,
+                rewrite_level=args.rewrite_level,
+                target_margin=args.target_margin,
+                selection=args.select,
+                chunk_shuffle=args.chunk_shuffle,
+                noop_lex_floor=args.noop_lex_floor,
+            )
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")
         return 1

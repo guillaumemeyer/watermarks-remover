@@ -93,7 +93,10 @@ clients.
 (`auto` | `always` | `lossless` | `never`, PDF: how hard to chase metadata
 carried inside embedded images; anything else is rejected), `detect_before` / `detect_after` (text and
 images: run watermark detection on the input and on the cleaned output,
-included in the report).
+included in the report), and `strategy` (text: an ordered `tactic@intensity`
+list such as `"paraphrase@0.8,mlm@0.2"` that runs the Layer B rewrite after
+Layer A; when omitted the default from `config/clean_strategy.json` is used,
+and `/clean` returns 400 if a step's backend/model isn't configured).
 
 **Inspect first** (decide, don't guess):
 
@@ -197,10 +200,13 @@ curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
 
 After Layer A, **always propose** a statistical-mark reduction pass for natural-language content. Do not skip this step silently.
 
-The service does **not** hold a rewrite model — **you** are the rewrite model.
-Run the prompts below on the cleaned text with a model **≠ suspected origin**
-(Claude text → not Claude; Gemini → not Gemini; etc.). Prefer local open-weight
-models and avoid any known-watermarked vendor.
+If the service is configured with a Layer B strategy (the default from
+`config/clean_strategy.json`, e.g. `paraphrase@0.8,mlm@0.2`, or an explicit
+`options.strategy`), `/clean` performs the rewrite itself and reports
+`report.layer_b` — prefer that when available. Otherwise **you** are the rewrite
+model: run the prompts below on the cleaned text with a model **≠ suspected
+origin** (Claude text → not Claude; Gemini → not Gemini; etc.). Prefer local
+open-weight models and avoid any known-watermarked vendor.
 
 Multi-pass recipe:
 

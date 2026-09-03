@@ -98,7 +98,12 @@ ALLOWED_CLEAN_OPTIONS = {
     "detect_after": bool,
     "deep_images": str,
     "style": str,
+    "strategy": str,
 }
+
+# Default Layer B strategy loaded from the strategy config file (overridable by
+# env/CLI). None means no Layer B rewrite on text.
+_DEFAULT_STRATEGY: str | None = None
 
 
 @cache
@@ -729,7 +734,101 @@ def _parse_clean_options(options: Any) -> dict[str, Any]:
     deep_images = options.get("deep_images")
     if deep_images is not None and deep_images not in DEEP_IMAGE_MODES:
         raise ValueError(f"option 'deep_images' must be one of {sorted(DEEP_IMAGE_MODES)}")
+    # A per-request strategy overrides the default; validate it up front so a bad
+    # tactic/intensity is a 400 rather than a mid-clean failure.
+    if "strategy" in options:
+        from rewrite_text import parse_strategy
+
+        parse_strategy(options["strategy"])
     return options
+
+
+def _load_default_strategy(config_path: Path) -> str | None:
+    """Read the default Layer B strategy from the config file.
+
+    Returns None when the config file is absent (no Layer B on text). A file that
+    is present but malformed (bad JSON, unknown tactic, bad intensity) is a
+    startup error, since the config is explicit in-repo.
+    """
+    try:
+        data = json.loads(config_path.read_text())
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"invalid strategy config {config_path}: {e}") from e
+    spec = data.get("default_strategy")
+    if spec is None:
+        return None
+    from rewrite_text import parse_strategy
+
+    parse_strategy(spec)  # raises ValueError on a bad strategy
+    return spec
+
+
+def _apply_layer_b(text: str, strategy: str, options: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Apply a Layer B rewrite strategy to *text*, rejecting if unavailable.
+
+    Raises ValueError for an unconfigured/unavailable backend or model so the
+    caller surfaces a 400 rather than a 500. Wraps runtime failures the same way.
+    """
+    from rewrite_text import LLM_TACTICS, apply_strategy, parse_strategy
+
+    steps = parse_strategy(strategy)
+    needs_llm = any(t in LLM_TACTICS for t, _ in steps)
+    backend = os.environ.get("WATERMARKS_REWRITE_BACKEND", "print-prompt")
+    if needs_llm:
+        if backend not in ("openai-compatible", "ollama"):
+            raise ValueError(
+                "Layer B strategy needs an LLM rewrite backend (WATERMARKS_REWRITE_BACKEND)"
+            )
+        if (
+            not os.environ.get("WATERMARKS_REWRITE_MODEL")
+            or not os.environ.get("WATERMARKS_REWRITE_BASE_URL")
+            or not os.environ.get("WATERMARKS_REWRITE_API_KEY")
+        ):
+            raise ValueError(
+                "Layer B strategy needs the rewrite backend configured "
+                "(WATERMARKS_REWRITE_MODEL/BASE_URL/API_KEY)"
+            )
+    if any(t == "mlm" for t, _ in steps):
+        import importlib.util
+
+        if importlib.util.find_spec("transformers") is None:
+            raise ValueError("Layer B 'mlm' step requires transformers")
+    base_url = os.environ.get("WATERMARKS_REWRITE_BASE_URL")
+    if needs_llm and base_url:
+        host = urlparse(base_url).hostname or ""
+        allow_remote = os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if host not in ("127.0.0.1", "localhost", "::1") and not allow_remote:
+            raise ValueError(
+                "Layer B strategy uses a remote rewrite endpoint; set "
+                "WATERMARKS_REWRITE_ALLOW_REMOTE=1"
+            )
+    try:
+        out, stats = apply_strategy(
+            text,
+            steps,
+            backend=backend,
+            model=os.environ.get("WATERMARKS_REWRITE_MODEL"),
+            base_url=os.environ.get("WATERMARKS_REWRITE_BASE_URL"),
+            api_key=os.environ.get("WATERMARKS_REWRITE_API_KEY"),
+            temperature=float(os.environ.get("WATERMARKS_REWRITE_TEMPERATURE", "0.9")),
+            reasoning_effort=(
+                None
+                if os.environ.get("WATERMARKS_REWRITE_REASONING_EFFORT") == "off"
+                else os.environ.get("WATERMARKS_REWRITE_REASONING_EFFORT") or None
+            ),
+            style=options.get("style"),
+            layer_a_after=bool(options.get("also_layer_a_text")),
+        )
+    except (RuntimeError, TimeoutError) as e:
+        raise ValueError(f"Layer B rewrite failed: {e}") from e
+    return out, stats
 
 
 def _batch_items(
@@ -946,10 +1045,18 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
+            # Layer B: apply the default (or per-request) rewrite strategy. Raises
+            # ValueError (400) if the backend/model for a step is unavailable.
+            strategy = options.get("strategy") or _DEFAULT_STRATEGY
+            layer_b: dict[str, Any] | None = None
+            if strategy:
+                cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
             report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
+            if layer_b is not None:
+                report["layer_b"] = layer_b
             if detector_reports:
                 report["text_detectors"] = detector_reports
         elif kind == "image":
@@ -1256,6 +1363,13 @@ def main() -> int:
         "--port", type=int, default=int(os.environ.get("WATERMARKS_SERVER_PORT", "8765"))
     )
     p.add_argument("--api-key", default=API_KEY, help="require this bearer token (default: none)")
+    p.add_argument(
+        "--strategy-config",
+        default=os.environ.get("WATERMARKS_CLEAN_STRATEGY_FILE", "config/clean_strategy.json"),
+        help="Path to the Layer B strategy config JSON (default: "
+        "config/clean_strategy.json; WATERMARKS_CLEAN_STRATEGY_FILE). A strategy "
+        "step is 'tactic@intensity' (e.g. 'paraphrase@0.8,mlm@0.2').",
+    )
     p.add_argument("-V", "--version", action="store_true", help="print version and exit")
     args = p.parse_args()
 
@@ -1264,6 +1378,8 @@ def main() -> int:
         return 0
 
     API_KEY = args.api_key
+    global _DEFAULT_STRATEGY  # noqa: PLW0603 — loaded once at startup
+    _DEFAULT_STRATEGY = _load_default_strategy(Path(args.strategy_config))
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         eprint(f"warning: binding {args.host} — intended for a trusted network only")
