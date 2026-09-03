@@ -1494,6 +1494,94 @@ def _scrub_odt_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[st
     return "".join(out), removed, replaced
 
 
+def _inspect_text_runs(
+    xml_text: str, open_re: re.Pattern[str], close_re: re.Pattern[str]
+) -> tuple[int, list[dict]]:
+    """Layer A count/hits over text runs, mirroring _scrub_text_runs().
+
+    Character references are decoded exactly as the scrub decodes them (a
+    carrier written as ``&#x200B;`` is counted too), so /inspect reports the
+    same carriers that /clean will remove for the format (#312).
+    """
+    from text_unicode import inspect_text  # local import to avoid cycles
+
+    total = 0
+    hits: list[dict] = []
+    for _, oe, cs_, _ in _iter_tag_blocks(xml_text, open_re, close_re):
+        ta = inspect_text(_decode_xml_entities(xml_text[oe:cs_])).to_dict()
+        if ta["suspicious_total"]:
+            total += ta["suspicious_total"]
+            hits.extend(ta["hits"])
+    return total, hits
+
+
+def _inspect_odt_text(xml_text: str) -> tuple[int, list[dict]]:
+    """Layer A count/hits over ODF paragraph text, mirroring _scrub_odt_text()."""
+    from text_unicode import inspect_text  # local import to avoid cycles
+
+    total = 0
+    hits: list[dict] = []
+    for _, oe, cs_, _ in _iter_tag_blocks(
+        xml_text, re.compile(r"<text:p\b[^>]*>"), re.compile(r"</text:p>")
+    ):
+        for segment in re.split(r"(<[^>]+>)", xml_text[oe:cs_]):
+            if not segment or segment.startswith("<"):
+                continue
+            ta = inspect_text(_decode_xml_entities(segment)).to_dict()
+            if ta["suspicious_total"]:
+                total += ta["suspicious_total"]
+                hits.extend(ta["hits"])
+    return total, hits
+
+
+def _inspect_container_body_layer_a(data: bytes, fmt: str) -> list[tuple[str, dict]]:
+    """Per-part Layer A findings for the text runs clean_container() scrubs.
+
+    Only the body parts the cleaner touches are scanned (``word``/``xl``/``ppt``
+    XML parts, or ``content.xml`` for ODT) so /inspect predicts /clean rather
+    than contradicting it: the visible body legitimately mentions vendor names,
+    so only invisible/format carriers are relevant here (#312).
+    """
+    if fmt == "odt":
+        part_re = re.compile(r"^content\.xml$", re.I)
+    elif fmt == "docx":
+        part_re = re.compile(r"^word/.+\.xml$", re.I)
+    elif fmt == "xlsx":
+        part_re = re.compile(r"^xl/.+\.xml$", re.I)
+    elif fmt == "pptx":
+        part_re = re.compile(r"^ppt/.+\.xml$", re.I)
+    else:
+        return []
+
+    out: list[tuple[str, dict]] = []
+    budget: list[int] = [0]
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for info in zf.infolist():
+                if not part_re.match(info.filename):
+                    continue
+                text = _read_zip_member(zf, info, budget).decode("utf-8", errors="replace")
+                if fmt == "docx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<w:t\b[^>]*>"), re.compile(r"</w:t>")
+                    )
+                elif fmt == "xlsx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<t\b[^>]*>"), re.compile(r"</t>")
+                    )
+                elif fmt == "pptx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<a:t\b[^>]*>"), re.compile(r"</a:t>")
+                    )
+                else:  # odt
+                    total, hits = _inspect_odt_text(text)
+                if total:
+                    out.append((info.filename, {"suspicious_total": total, "hits": hits}))
+    except _ZIP_PARSE_ERRORS:
+        pass
+    return out
+
+
 def _prune_dangling_relationships(
     rels_name: str, raw: bytes, kept_names: set[str]
 ) -> tuple[bytes, int]:
@@ -1675,6 +1763,12 @@ def _scrub_ooxml_zip(
             if name in DOCX_META_PARTS or name.startswith("docProps/"):
                 if name.endswith("custom.xml"):
                     actions.append(f"drop part {name}")
+                    continue
+                if not name.lower().endswith(".xml"):
+                    # A binary docProps member (e.g. docProps/thumbnail.jpeg)
+                    # must stay byte-safe: decoding it as UTF-8 and re-encoding
+                    # corrupts it into U+FFFD replacement bytes (#312).
+                    kept.append((info, raw))
                     continue
                 text = raw.decode("utf-8", errors="replace")
                 new = text
@@ -2877,6 +2971,15 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
                             )
         except zipfile.BadZipFile:
             pass
+    elif fmt in ("docx", "xlsx", "pptx", "odt"):
+        for part_name, ta in _inspect_container_body_layer_a(data, fmt):
+            layer_a_total += ta["suspicious_total"]
+            for h in ta["hits"]:
+                layer_a_hits.append(h)
+                findings.append(
+                    f"layer-a ({part_name}): {h['codepoint']} {h['label']} "
+                    f"x{h['count']} ({h['kind']})"
+                )
 
     notes: list[str] = []
     if fmt == "pdf":
