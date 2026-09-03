@@ -1045,18 +1045,22 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
-            # Layer B: apply the default (or per-request) rewrite strategy. Raises
-            # ValueError (400) if the backend/model for a step is unavailable.
+            # Layer B is a required step for text cleaning: always apply the
+            # default (or per-request) rewrite strategy and reject (400) when no
+            # strategy is available or a step's backend/model can't run.
             strategy = options.get("strategy") or _DEFAULT_STRATEGY
-            layer_b: dict[str, Any] | None = None
-            if strategy:
-                cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            if not strategy:
+                raise ValueError(
+                    "Layer B rewrite is required for text cleaning; configure a "
+                    "default strategy (config/clean_strategy.json) or pass "
+                    "options.strategy"
+                )
+            cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
             report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
-            if layer_b is not None:
-                report["layer_b"] = layer_b
+            report["layer_b"] = layer_b
             if detector_reports:
                 report["text_detectors"] = detector_reports
         elif kind == "image":

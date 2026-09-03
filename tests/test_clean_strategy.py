@@ -12,6 +12,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import rewrite_text
+import server
 from rewrite_text import apply_strategy, parse_strategy
 from server import _apply_layer_b, _load_default_strategy, _parse_clean_options
 
@@ -143,6 +144,15 @@ def test_load_default_strategy_bad_strategy(tmp_path):
     p.write_text('{"default_strategy": "nope@9"}')
     with pytest.raises(ValueError):
         _load_default_strategy(p)
+
+
+# --- server: Layer B is a required step for text ---------------------------
+
+
+def test_clean_text_requires_layer_b(monkeypatch):
+    monkeypatch.setattr(server, "_DEFAULT_STRATEGY", None)
+    with pytest.raises(ValueError, match="Layer B rewrite is required"):
+        server._clean_payload(b"hello world", "a.txt", {})
 
 
 # --- server: reject when backend/model unavailable --------------------------

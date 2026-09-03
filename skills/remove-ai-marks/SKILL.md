@@ -200,11 +200,13 @@ curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
 
 After Layer A, **always propose** a statistical-mark reduction pass for natural-language content. Do not skip this step silently.
 
-If the service is configured with a Layer B strategy (the default from
-`config/clean_strategy.json`, e.g. `paraphrase@0.8,mlm@0.2`, or an explicit
-`options.strategy`), `/clean` performs the rewrite itself and reports
-`report.layer_b` — prefer that when available. Otherwise **you** are the rewrite
-model: run the prompts below on the cleaned text with a model **≠ suspected
+For text, `/clean` **requires** Layer B: it applies the default strategy
+(`config/clean_strategy.json`, e.g. `paraphrase@0.8,mlm@0.2`) or the
+`options.strategy` override after Layer A, reports `report.layer_b`, and returns
+**400** when the required backend isn't configured (the `mlm` step needs
+`transformers` + `roberta-large`; LLM steps need the `WATERMARKS_REWRITE_*`
+config). If the service is unconfigured for Layer B, `/clean` on text rejects —
+so configure it, or run the prompts below yourself with a model **≠ suspected
 origin** (Claude text → not Claude; Gemini → not Gemini; etc.). Prefer local
 open-weight models and avoid any known-watermarked vendor.
 
