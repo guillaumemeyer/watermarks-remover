@@ -316,6 +316,10 @@ def _tactic_prompt(tactic: str, text: str, lang: str, original_lang: str) -> str
         )
     if tactic == "chunk":
         return PROMPTS["chunk_unit"].format(TEXT=text)
+    if tactic == "mlm":
+        # Local masked-LM edit: the prompt is informational only; generation runs
+        # a non-autoregressive infill (see _mlm_infill) rather than the backend.
+        return "Local masked-LM infill; no LLM prompt is used.\n\n---\n" + text
     raise ValueError(f"unknown tactic: {tactic}")
 
 
@@ -333,6 +337,133 @@ def _intensity_clause(level: float) -> str:
         "intensity change wording substantially at the token level. Preserve all facts, "
         "numbers, names, and technical identifiers. Do not add or remove claims."
     )
+
+
+# Function words / short / technical tokens we never hand to a masked LM.
+_MLM_SKIP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "are",
+    "but",
+    "not",
+    "you",
+    "all",
+    "can",
+    "had",
+    "her",
+    "was",
+    "one",
+    "our",
+    "out",
+    "day",
+    "get",
+    "has",
+    "him",
+    "his",
+    "how",
+    "man",
+    "new",
+    "now",
+    "old",
+    "see",
+    "two",
+    "way",
+    "who",
+    "boy",
+    "did",
+    "its",
+    "let",
+    "put",
+    "say",
+    "she",
+    "too",
+    "use",
+    "that",
+    "with",
+    "have",
+    "this",
+    "will",
+    "your",
+    "from",
+    "they",
+    "been",
+    "were",
+    "would",
+    "there",
+    "their",
+    "what",
+    "when",
+    "which",
+    "also",
+    "into",
+    "than",
+    "then",
+    "them",
+    "these",
+    "those",
+    "such",
+    "only",
+    "very",
+    "just",
+    "about",
+    "some",
+    "more",
+    "most",
+    "other",
+    "over",
+    "under",
+    "through",
+    "between",
+    "while",
+    "where",
+    "because",
+}
+_MLM_TOKEN_RE = re.compile(r"(\s+|[.,;:!?()\"'—-])")
+
+
+def _mlm_infill(text: str, level: float) -> str:
+    """Mask `level` of content words and infill with roberta-large (local edit).
+
+    Non-autoregressive: the output is a mix of the original token stream and
+    masked-LM predictions, not fresh LLM-sampled prose. Loads roberta-large on
+    first use (transformers must be importable); raises if unavailable.
+    """
+    try:
+        from transformers import pipeline
+    except Exception as e:  # fail-soft: optional dependency
+        raise RuntimeError(f"mlm tactic unavailable: {e}") from e
+
+    mlm = pipeline("fill-mask", model="roberta-large", device=0)
+    mask_token = mlm.tokenizer.mask_token
+    tokens = _MLM_TOKEN_RE.split(text)
+    content = [
+        i
+        for i, t in enumerate(tokens)
+        if t.strip()
+        and t.isalpha()
+        and len(t) > 3
+        and t.lower() not in _MLM_SKIP_WORDS
+        and not t[0].isupper()
+    ]
+    k = max(1, round(level * len(content))) if content else 0
+    if k == 0:
+        return text
+    step = len(content) / k
+    mset: set[int] = set()
+    pos = 0.0
+    for _ in range(k):
+        idx = content[int(pos)]
+        mset.add(idx)
+        pos += step
+    masked_idx = sorted(mset)
+    out_parts = [mask_token if i in mset else t for i, t in enumerate(tokens)]
+    preds = mlm("".join(out_parts), top_k=1)
+    picks = [(p if isinstance(p, dict) else p[0]) for p in preds]
+    for k_i, idx in enumerate(masked_idx):
+        if k_i < len(picks):
+            tokens[idx] = picks[k_i]["token_str"].strip()
+    return "".join(tokens)
 
 
 def _style_clause(style: str) -> str:
@@ -619,9 +750,9 @@ def rewrite(
             eprint("note: --candidates ignored in print-prompt mode")
         return prompt, info
 
-    if not model:
+    if not model and tactic != "mlm":
         raise SystemExit("error: --model required for ollama/openai-compatible backends")
-    if not base_url:
+    if not base_url and tactic != "mlm":
         raise SystemExit("error: --base-url required for ollama/openai-compatible backends")
 
     _check_remote(base_url, allow_remote)
@@ -634,8 +765,10 @@ def rewrite(
     info["evaluator"] = evaluator_name
 
     is_chunk = tactic == "chunk"
+    is_mlm = tactic == "mlm"
     info["chunked"] = is_chunk
     info["chunk_shuffle"] = bool(chunk_shuffle)
+    info["mlm"] = is_mlm
 
     def _rewrite_unit(unit: str) -> str:
         """Rewrite a single text unit with prompt formatting."""
@@ -659,6 +792,8 @@ def rewrite(
 
     def _generate_candidate() -> str:
         """Generate a single rewrite candidate via configured backend."""
+        if is_mlm:
+            return _mlm_infill(text, rewrite_level or 0.3)
         if is_chunk:
             pairs = _split_units(text)
             if chunk_shuffle:
@@ -897,7 +1032,7 @@ def build_parser() -> argparse.ArgumentParser:
     # and shell history. Set WATERMARKS_REWRITE_API_KEY instead.
     p.add_argument(
         "--tactic",
-        choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk"),
+        choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"),
         default="paraphrase",
     )
     p.add_argument(

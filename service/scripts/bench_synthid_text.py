@@ -113,7 +113,7 @@ def parse_strategy(spec: str) -> list[tuple[str, float]]:
     names and that intensity lies in (0,1].
     """
     steps: list[tuple[str, float]] = []
-    known = {"paraphrase", "backtranslate", "structural", "humanize", "chunk"}
+    known = {"paraphrase", "backtranslate", "structural", "humanize", "chunk", "mlm"}
     for raw in spec.split(","):
         item = raw.strip()
         if not item:
@@ -1681,6 +1681,7 @@ class Benchmark:
         rows_in: list[dict[str, Any]] = []
         outs: list[str] = []
         score_at: list[int] = []
+        entry_at: list[int] = []
         per_sample: list[dict[str, Any]] = []
         for s in samples:
             if s.get("excluded"):
@@ -1696,6 +1697,7 @@ class Benchmark:
                 "robust": None,
                 "margin": None,
                 "sem": None,
+                "human_like": None,
                 "note": None,
             }
             try:
@@ -1727,11 +1729,14 @@ class Benchmark:
             per_sample.append(entry)
             outs.append(out)
             score_at.append(len(rows_in) - 1)
+            entry_at.append(len(per_sample) - 1)
         if outs:
             # Batch the human-likeness scoring (one Pangram bulk job per strategy).
             scored = self.human.score_many(outs)
-            for idx, val in zip(score_at, scored, strict=True):
+            for idx, eidx, val in zip(score_at, entry_at, scored, strict=True):
                 rows_in[idx]["human"] = val
+                if val is not None:
+                    per_sample[eidx]["human_like"] = round(1.0 - val, 4)
         verified = [r for r in rows_in if r["robust"] is not None]
         n = len(verified)
         unverified = len(rows_in) - n
