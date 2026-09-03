@@ -56,26 +56,32 @@ def _straighten_quotes(text: str) -> str:
 
 
 def _replace_dashes(text: str) -> str:
-    _DBL_HYPHEN = re.compile(r"--")
+    _DASH = re.compile(r"\s*[\u2014\u2013]\s*")
+    _DBL_HYPHEN = re.compile(r"(\s*)--(\s*)")
 
-    def _sub(m: re.Match[str]) -> str:
-        # Preserve a command-line option such as ``--dry-run`` (a `--` that
-        # starts/continues a token after whitespace), replace prose double
-        # hyphens with a comma.
-        start = m.start()
-        before = text[start - 1] if start > 0 else ""
-        after = text[m.end()] if m.end() < len(text) else ""
-        if after and after.isalnum() and (not before or before.isspace()):
+    def _dash_sub(m: re.Match[str]) -> str:
+        # Neighbors just beyond the matched whitespace: if both are digits the
+        # dash is a numeric range (e.g. "2019 - 2020") and stays untouched.
+        left = text[m.start() - 1] if m.start() > 0 else ""
+        right = text[m.end()] if m.end() < len(text) else ""
+        if left.isdigit() and right.isdigit():
             return m.group(0)
         return ", "
 
-    # Spaced dash (an aside or break) first; unspaced em/en dashes become a
-    # comma unless they are part of a numeric range (e.g. 2019-2020).
-    text = re.sub(r"\s+[\u2014\u2013]\s+", ", ", text)
-    text = re.sub(r"\s+--\s+", ", ", text)
-    text = re.sub(r"(?<!\d)[\u2014\u2013](?!\d)", ", ", text)
-    # Double hyphens in prose, preserving CLI options.
-    text = _DBL_HYPHEN.sub(_sub, text)
+    def _dbl_sub(m: re.Match[str]) -> str:
+        leading, trailing = m.group(1), m.group(2)
+        hyphen_start = m.start() + len(leading)
+        hyphen_end = m.end() - len(trailing)
+        before = text[hyphen_start - 1] if hyphen_start > 0 else ""
+        after = text[hyphen_end] if hyphen_end < len(text) else ""
+        # A command-line option is `--word` where `--` directly precedes a word
+        # char after a delimiter (or string start); never a prose double hyphen.
+        if after.isalnum() and (not before or not before.isalnum()):
+            return m.group(0)
+        return ", "
+
+    text = _DASH.sub(_dash_sub, text)
+    text = _DBL_HYPHEN.sub(_dbl_sub, text)
     text = re.sub(r",\s*,\s*", ", ", text)  # collapse adjacent commas
     text = re.sub(r"\s*,\s*([.!?])", r"\1", text)  # "word, ." -> "word."
     return text

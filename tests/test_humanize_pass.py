@@ -78,6 +78,16 @@ def test_preserves_numeric_ranges():
     assert humanize_pass(text) == text
 
 
+def test_preserves_spaced_numeric_ranges():
+    text = "The decade 2019 \u2013 2020 was busy."
+    assert humanize_pass(text) == text
+
+
 def test_preserves_cli_options():
     text = "run the tool --dry-run now"
+    assert humanize_pass(text) == text
+
+
+def test_preserves_delimited_cli_options():
+    text = "pass the flag run(--dry-run) to the runner"
     assert humanize_pass(text) == text
