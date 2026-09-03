@@ -1084,6 +1084,17 @@ Industry two-layer context (C2PA + imperceptible watermark): [Institute of AI PM
 
 ---
 
+## Watermark Detectors
+
+Vendor-provided checkers for verifying whether content carries AI provenance marks:
+
+- **[Claude: Check if a file was made with Claude](https://claude.com/check-content)** — reads C2PA content credentials in images, video, and audio to report whether Claude was involved in producing the file; runs in-browser. Claude's text-watermark detection API is currently in private preview.
+- **[OpenAI: Verify OpenAI-generated content](https://openai.com/research/verify/)** — upload an image or audio file and check for OpenAI provenance signals (C2PA metadata and SynthID watermarks). A programmatic API is also available.
+- **[Google DeepMind: SynthID](https://deepmind.google/models/synthid/)** — Google's watermarking technology for AI-generated images, audio, text, and video, with an overview of how the imperceptible marks are embedded and detected.
+- **[Gemini: Verify AI-generated images, videos, and audio](https://support.google.com/gemini/answer/16722517)** — Google's guide to verifying files in the Gemini app using SynthID watermarks and Content Credentials, including upload limits and how to read results.
+
+---
+
 ## Removal options (summary)
 
 | Option | Removes | Notes |
