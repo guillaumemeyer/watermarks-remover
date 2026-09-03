@@ -37,7 +37,8 @@
 
 ## Code vs prose
 
-- **Prose / Markdown / HTML body:** full A + B.
+- **Plain-text prose (pasted / `.txt`):** full A + B — `/clean` (kind `text`) runs the Layer B strategy and requires the rewrite backend configured (rejects with 400 otherwise).
+- **Markdown / HTML body (container):** `/clean` runs container/metadata clean + Layer A; the Layer B rewrite applies to the prose when it is processed as a text pass (extract the prose or send the content to `/clean` as text), or via the agent rewrite model.
 - **Code:** Layer A + formatter; statistical marks are weak; offer `code` rewrite (comments/docstrings/string-literal wording + local identifier renames) with user OK.
 
 ## Layer B tactics

@@ -423,7 +423,12 @@ Checks `wr-core` via `GET /health` and runs each harness/heavy service with `--h
 
 ### Configuration (env vars for docker compose)
 
-**Nothing is required to clean arbitrary text** — the core service works out of the box:
+**Text cleaning requires Layer B configuration** — the Layer B rewrite is a
+required step for `POST /clean` on text, so the core service needs the rewrite
+backend set up, or text cleaning returns HTTP 400. Image/container metadata
+cleaning works out of the box. For text you must configure the Layer B strategy
+dependencies: `transformers` + `roberta-large` (for the default `mlm` step) and
+the `WATERMARKS_REWRITE_*` LLM config (for the `paraphrase` step):
 
 ```bash
 echo "Hello\u200bWorld\u00ad!" > /tmp/sample.txt
