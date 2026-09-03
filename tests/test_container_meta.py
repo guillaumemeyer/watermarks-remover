@@ -376,11 +376,19 @@ def test_docx_thumbnail_binary_member_preserved():
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "word/document.xml",
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>',
+            (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello</w:t>'
+                "</w:r></w:p></w:body></w:document>"
+            ),
         )
         zf.writestr(
             "docProps/core.xml",
-            "<cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:creator>Bot</dc:creator></cp:coreProperties>",
+            (
+                "<cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/"
+                "2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/"
+                "1.1/'><dc:creator>Bot</dc:creator></cp:coreProperties>"
+            ),
         )
         zf.writestr("docProps/thumbnail.jpeg", jpeg)
 
@@ -402,11 +410,18 @@ def test_docx_inspect_reports_body_layer_a_carriers(tmp_path: Path):
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "word/document.xml",
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello\u200bWorld</w:t></w:r></w:p></w:body></w:document>',
+            (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello\u200bWorld</w:t>'
+                "</w:r></w:p></w:body></w:document>"
+            ),
         )
         zf.writestr(
             "word/footer1.xml",
-            '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Foot\u200bnote</w:t></w:r></w:p></w:ftr>',
+            (
+                '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/'
+                '2006/main"><w:p><w:r><w:t>Foot\u200bnote</w:t></w:r></w:p></w:ftr>'
+            ),
         )
 
     path = tmp_path / "doc.docx"

@@ -1534,31 +1534,38 @@ def _inspect_odt_text(xml_text: str) -> tuple[int, list[dict]]:
     return total, hits
 
 
+def _layer_a_body_part(name: str, fmt: str) -> bool:
+    """True for the body parts a format's cleaner Layer-A scrubs.
+
+    Mirrors the case-sensitive ``startswith``/``endswith`` check used by the
+    OOXML/ODT cleaners, so /inspect selects exactly the archive entries /clean
+    touches (a case-variant name such as ``WORD/document.XML`` is left alone by
+    both) (#312).
+    """
+    if fmt == "odt":
+        return name == "content.xml"
+    if fmt == "docx":
+        return name.startswith("word/") and name.endswith(".xml")
+    if fmt == "xlsx":
+        return name.startswith("xl/") and name.endswith(".xml")
+    if fmt == "pptx":
+        return name.startswith("ppt/") and name.endswith(".xml")
+    return False
+
+
 def _inspect_container_body_layer_a(data: bytes, fmt: str) -> list[tuple[str, dict]]:
     """Per-part Layer A findings for the text runs clean_container() scrubs.
 
-    Only the body parts the cleaner touches are scanned (``word``/``xl``/``ppt``
-    XML parts, or ``content.xml`` for ODT) so /inspect predicts /clean rather
-    than contradicting it: the visible body legitimately mentions vendor names,
-    so only invisible/format carriers are relevant here (#312).
+    Scans the same body parts the cleaner touches (``word``/``xl``/``ppt`` XML
+    parts, or ``content.xml`` for ODT), so /inspect predicts /clean rather than
+    contradicting it (#312).
     """
-    if fmt == "odt":
-        part_re = re.compile(r"^content\.xml$", re.I)
-    elif fmt == "docx":
-        part_re = re.compile(r"^word/.+\.xml$", re.I)
-    elif fmt == "xlsx":
-        part_re = re.compile(r"^xl/.+\.xml$", re.I)
-    elif fmt == "pptx":
-        part_re = re.compile(r"^ppt/.+\.xml$", re.I)
-    else:
-        return []
-
     out: list[tuple[str, dict]] = []
     budget: list[int] = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
-                if not part_re.match(info.filename):
+                if not _layer_a_body_part(info.filename, fmt):
                     continue
                 text = _read_zip_member(zf, info, budget).decode("utf-8", errors="replace")
                 if fmt == "docx":
@@ -1707,6 +1714,14 @@ def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[b
 def _scrub_ooxml_zip(
     data: bytes, fmt: str, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
 ) -> tuple[bytes, list[str]]:
+    """Scrub provenance and Layer-A carriers from an OOXML zip container.
+
+    Rewrites the archive in place: metadata/provenance parts (docProps,
+    customXml, Content_Types overrides) are scrubbed or dropped, embedded media
+    under ``word``/``xl``/``ppt`` are cleaned, and text runs are Layer-A scrubbed
+    when requested. Binary docProps members (e.g. the thumbnail) are kept
+    byte-safe. Returns the rewritten bytes and a list of human-readable actions.
+    """
     actions: list[str] = []
     budget = [0]
     layer_removed = 0
@@ -2901,6 +2916,12 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
 
 
 def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInspectReport:
+    """Inspect a container for provenance, AI metadata, and Layer-A carriers.
+
+    Delegates to the format-specific inspector and unions in a Layer-A scan of
+    the visible text body for exactly the formats ``clean_container()`` scrubs,
+    so /inspect predicts what /clean removes rather than contradicting it.
+    """
     if data is None:
         data = path.read_bytes()
     fmt = detect_container_format(path, data)
