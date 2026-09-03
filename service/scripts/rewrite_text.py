@@ -1146,8 +1146,6 @@ def apply_strategy(
                 temperature,
                 reasoning_effort,
             )
-            if layer_a_after and cur:
-                cur = clean_text(cur)[0]
         step_stats.append(
             {
                 "tactic": tactic,
@@ -1156,6 +1154,9 @@ def apply_strategy(
                 "out_chars": len(cur),
             }
         )
+    # Layer A scrub once, on the complete strategy output (not per step).
+    if layer_a_after and cur:
+        cur = clean_text(cur)[0]
     return cur, {
         "backend": backend,
         "tactic": "strategy",
@@ -1357,6 +1358,10 @@ def main() -> int:
             return 2
     try:
         if steps is not None:
+            # Enforce the remote-endpoint policy for a strategy, same as the
+            # single-tactic rewrite path.
+            if any(t in LLM_TACTICS for t, _ in steps) and args.base_url:
+                _check_remote(args.base_url, allow_remote)
             result, info = apply_strategy(
                 text,
                 steps,

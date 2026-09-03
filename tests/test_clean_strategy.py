@@ -167,6 +167,16 @@ def test_apply_layer_b_llm_backend_unconfigured(monkeypatch):
         _apply_layer_b("x", "paraphrase@0.8", {})
 
 
+def test_apply_layer_b_ollama_does_not_require_api_key(monkeypatch):
+    monkeypatch.setenv("WATERMARKS_REWRITE_BACKEND", "ollama")
+    monkeypatch.setenv("WATERMARKS_REWRITE_MODEL", "m")
+    monkeypatch.setenv("WATERMARKS_REWRITE_BASE_URL", "http://127.0.0.1:11434")
+    monkeypatch.delenv("WATERMARKS_REWRITE_API_KEY", raising=False)
+    monkeypatch.setattr(rewrite_text, "apply_strategy", lambda *a, **k: ("out", {"steps": []}))
+    out, _stats = _apply_layer_b("x", "paraphrase@0.8", {})
+    assert out == "out"
+
+
 def test_apply_layer_b_mlm_needs_transformers(monkeypatch):
     import importlib.util
 

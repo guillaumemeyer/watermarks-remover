@@ -42,6 +42,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
 from datetime import datetime
 from functools import cache
 from http import HTTPStatus
@@ -781,15 +782,17 @@ def _apply_layer_b(text: str, strategy: str, options: dict[str, Any]) -> tuple[s
             raise ValueError(
                 "Layer B strategy needs an LLM rewrite backend (WATERMARKS_REWRITE_BACKEND)"
             )
-        if (
-            not os.environ.get("WATERMARKS_REWRITE_MODEL")
-            or not os.environ.get("WATERMARKS_REWRITE_BASE_URL")
-            or not os.environ.get("WATERMARKS_REWRITE_API_KEY")
-        ):
-            raise ValueError(
-                "Layer B strategy needs the rewrite backend configured "
-                "(WATERMARKS_REWRITE_MODEL/BASE_URL/API_KEY)"
-            )
+        needs_key = backend == "openai-compatible"
+        missing = not os.environ.get("WATERMARKS_REWRITE_MODEL") or not os.environ.get(
+            "WATERMARKS_REWRITE_BASE_URL"
+        )
+        if needs_key:
+            missing = missing or not os.environ.get("WATERMARKS_REWRITE_API_KEY")
+        if missing:
+            required = "WATERMARKS_REWRITE_MODEL/BASE_URL"
+            if needs_key:
+                required += "/API_KEY"
+            raise ValueError(f"Layer B strategy needs the rewrite backend configured ({required})")
     if any(t == "mlm" for t, _ in steps):
         import importlib.util
 
@@ -826,7 +829,7 @@ def _apply_layer_b(text: str, strategy: str, options: dict[str, Any]) -> tuple[s
             style=options.get("style"),
             layer_a_after=bool(options.get("also_layer_a_text")),
         )
-    except (RuntimeError, TimeoutError) as e:
+    except (RuntimeError, TimeoutError, urllib.error.URLError) as e:
         raise ValueError(f"Layer B rewrite failed: {e}") from e
     return out, stats
 
