@@ -975,6 +975,33 @@ def test_inspect_container_shares_zip_budget_across_scans(monkeypatch):
     assert rep.layer_a_total == 0
 
 
+def test_inspect_odt_content_xml_not_rejected_at_budget_boundary(monkeypatch):
+    # ODT content.xml is the visible body. Its bytes must not be charged to the
+    # shared budget by both inspect_odt and the body Layer-A scan, or a
+    # content.xml just under the cap is falsely rejected with ZipBudgetExceeded
+    # (#312 review).
+    import container_meta
+
+    def make_odt(content_len: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+            zf.writestr("meta.xml", "<office:document-meta/>")
+            zf.writestr("META-INF/manifest.xml", "<manifest:manifest/>")
+            zf.writestr(
+                "content.xml",
+                b"<office:document-content>" + b" " * content_len + b"</office:document-content>",
+            )
+        return buf.getvalue()
+
+    cap = 1000
+    content = 600  # fits under the cap once; would exceed it if charged twice
+    assert content < cap and 2 * content > cap
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", cap)
+    rep = inspect_container(Path("x.odt"), data=make_odt(content))
+    assert rep.format == "odt"
+
+
 def test_zip_budget_rejection_propagates_from_detect_container_format_mimetype(monkeypatch):
     import container_meta
 

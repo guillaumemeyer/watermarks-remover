@@ -1917,12 +1917,11 @@ def clean_pptx(
     )
 
 
-def inspect_odt(data: bytes, budget: list[int] | None = None) -> tuple[bool, bool, list[str], dict]:
+def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa = False
     has_ai = False
-    if budget is None:
-        budget = [0]
+    budget = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
@@ -2940,12 +2939,13 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
     fmt = detect_container_format(path, data)
     tools: dict[str, Any] = {}
     details: dict[str, Any] = {}
-    # One shared ZIP decompression budget for the OOXML/ODT inspectors and the
-    # body Layer-A scan, so they cumulatively enforce the cap instead of each
+    # One shared ZIP decompression budget for the OOXML inspectors and the body
+    # Layer-A scan, so they cumulatively enforce the cap instead of each
     # resetting it: an archive with ~128 MiB of metadata/media plus ~128 MiB of
-    # body XML must not decompress both parts (#312 review). EPUB is left on its
-    # own budget because inspect_epub already reads every member, so sharing it
-    # with the Layer-A re-scan would double-charge the same body bytes.
+    # body XML must not decompress both parts (#312 review). ODT/EPUB use their
+    # own budgets because their inspectors already read every member, so sharing
+    # them with the body re-scan would charge content.xml twice and falsely
+    # reject a large but legitimate file.
     zip_budget: list[int] = [0]
 
     if fmt == "svg":
@@ -2960,7 +2960,11 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
     elif fmt == "pptx":
         has_c2pa, has_ai, findings, details = inspect_pptx(data, zip_budget)
     elif fmt == "odt":
-        has_c2pa, has_ai, findings, details = inspect_odt(data, zip_budget)
+        # inspect_odt reads the whole archive (including content.xml), so it
+        # keeps its own budget: sharing the body-scan budget with it would
+        # charge content.xml twice (byte for byte) and falsely reject a large
+        # but legitimate ODT (#312 review).
+        has_c2pa, has_ai, findings, details = inspect_odt(data)
     elif fmt == "epub":
         has_c2pa, has_ai, findings, details = inspect_epub(data)
     elif fmt == "html":
