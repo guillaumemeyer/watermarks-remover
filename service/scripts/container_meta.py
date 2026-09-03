@@ -1239,12 +1239,15 @@ def _is_docx_meta_part(name: str) -> bool:
     return name.startswith(("docProps/", "customXml/"))
 
 
-def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], dict]:
+def _inspect_ooxml_zip(
+    data: bytes, fmt: str, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa = False
     has_ai = False
     parts: list[str] = []
-    budget = [0]
+    if budget is None:
+        budget = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             parts = zf.namelist()
@@ -1317,16 +1320,22 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
 
 
-def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "docx")
+def inspect_docx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "docx", budget)
 
 
-def inspect_xlsx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "xlsx")
+def inspect_xlsx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "xlsx", budget)
 
 
-def inspect_pptx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "pptx")
+def inspect_pptx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "pptx", budget)
 
 
 _XML_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|([0-9]+));|&(amp|lt|gt|quot|apos);")
@@ -1553,7 +1562,9 @@ def _layer_a_body_part(name: str, fmt: str) -> bool:
     return False
 
 
-def _inspect_container_body_layer_a(data: bytes, fmt: str) -> list[tuple[str, dict]]:
+def _inspect_container_body_layer_a(
+    data: bytes, fmt: str, budget: list[int] | None = None
+) -> list[tuple[str, dict]]:
     """Per-part Layer A findings for the text runs clean_container() scrubs.
 
     Scans the same body parts the cleaner touches (``word``/``xl``/``ppt`` XML
@@ -1561,7 +1572,8 @@ def _inspect_container_body_layer_a(data: bytes, fmt: str) -> list[tuple[str, di
     contradicting it (#312).
     """
     out: list[tuple[str, dict]] = []
-    budget: list[int] = [0]
+    if budget is None:
+        budget = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
@@ -1905,11 +1917,12 @@ def clean_pptx(
     )
 
 
-def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
+def inspect_odt(data: bytes, budget: list[int] | None = None) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa = False
     has_ai = False
-    budget = [0]
+    if budget is None:
+        budget = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
@@ -2927,6 +2940,13 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
     fmt = detect_container_format(path, data)
     tools: dict[str, Any] = {}
     details: dict[str, Any] = {}
+    # One shared ZIP decompression budget for the OOXML/ODT inspectors and the
+    # body Layer-A scan, so they cumulatively enforce the cap instead of each
+    # resetting it: an archive with ~128 MiB of metadata/media plus ~128 MiB of
+    # body XML must not decompress both parts (#312 review). EPUB is left on its
+    # own budget because inspect_epub already reads every member, so sharing it
+    # with the Layer-A re-scan would double-charge the same body bytes.
+    zip_budget: list[int] = [0]
 
     if fmt == "svg":
         has_c2pa, has_ai, findings, details = inspect_svg(data)
@@ -2934,13 +2954,13 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
         has_c2pa, has_ai, findings, details = inspect_pdf(path, data)
         tools = details.pop("tools", {})
     elif fmt == "docx":
-        has_c2pa, has_ai, findings, details = inspect_docx(data)
+        has_c2pa, has_ai, findings, details = inspect_docx(data, zip_budget)
     elif fmt == "xlsx":
-        has_c2pa, has_ai, findings, details = inspect_xlsx(data)
+        has_c2pa, has_ai, findings, details = inspect_xlsx(data, zip_budget)
     elif fmt == "pptx":
-        has_c2pa, has_ai, findings, details = inspect_pptx(data)
+        has_c2pa, has_ai, findings, details = inspect_pptx(data, zip_budget)
     elif fmt == "odt":
-        has_c2pa, has_ai, findings, details = inspect_odt(data)
+        has_c2pa, has_ai, findings, details = inspect_odt(data, zip_budget)
     elif fmt == "epub":
         has_c2pa, has_ai, findings, details = inspect_epub(data)
     elif fmt == "html":
@@ -2993,7 +3013,7 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
         except zipfile.BadZipFile:
             pass
     elif fmt in ("docx", "xlsx", "pptx", "odt"):
-        for part_name, ta in _inspect_container_body_layer_a(data, fmt):
+        for part_name, ta in _inspect_container_body_layer_a(data, fmt, zip_budget):
             layer_a_total += ta["suspicious_total"]
             for h in ta["hits"]:
                 layer_a_hits.append(h)

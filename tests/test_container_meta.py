@@ -951,6 +951,30 @@ def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
         inspect_docx(buf.getvalue())
 
 
+def test_inspect_container_shares_zip_budget_across_scans(monkeypatch):
+    # The body Layer-A scan must share the format inspector's decompression
+    # budget, so an archive of ~half-cap metadata + ~half-cap body XML cannot
+    # decompress both past the processing cap (#312 review).
+    import container_meta
+
+    def make_docx(member_len: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("docProps/core.xml", b" " * member_len)
+            zf.writestr("word/document.xml", b"<w:document>" + b" " * member_len + b"</w:document>")
+        return buf.getvalue()
+
+    cap = 1000
+    member = 600  # each member fits under the cap; the two together do not
+    assert member < cap and 2 * member > cap
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", cap)
+    with pytest.raises(container_meta.ZipBudgetExceeded):
+        inspect_container(Path("x.docx"), data=make_docx(member))
+    # A single small member stays under the cumulative cap.
+    rep = inspect_container(Path("x.docx"), data=make_docx(100))
+    assert rep.layer_a_total == 0
+
+
 def test_zip_budget_rejection_propagates_from_detect_container_format_mimetype(monkeypatch):
     import container_meta
 
