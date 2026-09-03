@@ -2116,6 +2116,7 @@ class Benchmark:
                             "robust": entry.get("robust"),
                             "margin": entry.get("margin"),
                             "sem": entry.get("sem"),
+                            "human_like": entry.get("human_like"),
                             "note": entry.get("note"),
                         }
                     )
@@ -2131,6 +2132,7 @@ class Benchmark:
                             "robust": entry.get("robust"),
                             "margin": entry.get("margin"),
                             "sem": entry.get("sem"),
+                            "human_like": entry.get("human_like"),
                             "note": entry.get("note"),
                         }
                     )

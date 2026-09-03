@@ -42,6 +42,8 @@ _WORD_RE = re.compile(r"\b(?:utilize|utilizes|utilized|utilizing)\b", re.IGNOREC
 
 def _capitalize_like(matched: str, replacement: str) -> str:
     """Match the capitalization of *matched*'s first character."""
+    if matched.isupper():
+        return replacement.upper()
     return replacement.capitalize() if matched[0].isupper() else replacement
 
 
@@ -54,11 +56,26 @@ def _straighten_quotes(text: str) -> str:
 
 
 def _replace_dashes(text: str) -> str:
-    # Spaced dash (an aside or break) first, then any unspaced remainder.
+    _DBL_HYPHEN = re.compile(r"--")
+
+    def _sub(m: re.Match[str]) -> str:
+        # Preserve a command-line option such as ``--dry-run`` (a `--` that
+        # starts/continues a token after whitespace), replace prose double
+        # hyphens with a comma.
+        start = m.start()
+        before = text[start - 1] if start > 0 else ""
+        after = text[m.end()] if m.end() < len(text) else ""
+        if after and after.isalnum() and (not before or before.isspace()):
+            return m.group(0)
+        return ", "
+
+    # Spaced dash (an aside or break) first; unspaced em/en dashes become a
+    # comma unless they are part of a numeric range (e.g. 2019-2020).
     text = re.sub(r"\s+[\u2014\u2013]\s+", ", ", text)
     text = re.sub(r"\s+--\s+", ", ", text)
-    text = re.sub(r"[\u2014\u2013]", ", ", text)
-    text = re.sub(r"--", ", ", text)
+    text = re.sub(r"(?<!\d)[\u2014\u2013](?!\d)", ", ", text)
+    # Double hyphens in prose, preserving CLI options.
+    text = _DBL_HYPHEN.sub(_sub, text)
     text = re.sub(r",\s*,\s*", ", ", text)  # collapse adjacent commas
     text = re.sub(r"\s*,\s*([.!?])", r"\1", text)  # "word, ." -> "word."
     return text

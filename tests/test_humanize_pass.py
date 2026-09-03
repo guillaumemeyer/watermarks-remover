@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from humanize_pass import humanize_pass
+from humanize_pass import _capitalize_like, humanize_pass
 
 
 def test_straightens_curly_quotes():
@@ -61,3 +61,23 @@ def test_is_idempotent():
     text = "In order to utilize the tool\u2014the report says\u2014it works."
     once = humanize_pass(text)
     assert humanize_pass(once) == once
+
+
+def test_capitalize_like_preserves_all_uppercase():
+    assert _capitalize_like("UTILIZE", "use") == "USE"
+    assert _capitalize_like("Utilize", "use") == "Use"
+    assert _capitalize_like("utilize", "use") == "use"
+
+
+def test_swaps_all_uppercase_utilize():
+    assert humanize_pass("UTILIZE a tool") == "USE a tool"
+
+
+def test_preserves_numeric_ranges():
+    text = "The decade 2019\u20132020 was busy."
+    assert humanize_pass(text) == text
+
+
+def test_preserves_cli_options():
+    text = "run the tool --dry-run now"
+    assert humanize_pass(text) == text

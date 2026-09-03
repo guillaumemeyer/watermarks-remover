@@ -58,6 +58,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -420,22 +421,70 @@ _MLM_SKIP_WORDS = {
     "because",
 }
 _MLM_TOKEN_RE = re.compile(r"(\s+|[.,;:!?()\"'—-])")
+_MLM_MAX_TOKENS = 512  # roberta-large positional limit
+_MLM_CACHE: dict[str, Any] = {}  # {"pipeline": ..., "mask_token": ...}
+
+
+def _cuda_available() -> bool:
+    """True when a CUDA device is usable; False on CPU-only or no-torch hosts."""
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:  # torch absent; run on CPU/auto
+        return False
+
+
+def _get_mlm() -> tuple[Any, str]:
+    """Return the process-cached roberta-large fill-mask pipeline + mask token.
+
+    Built lazily on first use; a failed import surfaces as RuntimeError (fail-soft
+    optional dependency). The device is chosen at runtime so a CPU-only host still
+    works (architecture selects the accelerator when available).
+    """
+    if "pipeline" not in _MLM_CACHE:
+        try:
+            from transformers import pipeline
+        except Exception as e:  # fail-soft: optional dependency
+            raise RuntimeError(f"mlm tactic unavailable: {e}") from e
+        kwargs: dict[str, Any] = {"model": "roberta-large"}
+        if _cuda_available():
+            kwargs["device"] = 0
+        _MLM_CACHE["pipeline"] = pipeline("fill-mask", **kwargs)
+        _MLM_CACHE["mask_token"] = _MLM_CACHE["pipeline"].tokenizer.mask_token
+    return _MLM_CACHE["pipeline"], _MLM_CACHE["mask_token"]
+
+
+def _mlm_chunks(parts: list[str], tokenizer: Any, max_tokens: int = _MLM_MAX_TOKENS):
+    """Split `parts` into contiguous chunks whose token length stays <= max_tokens.
+
+    Chunk boundaries fall on separator/word edges, so each chunk joins to a clean
+    substring, preserving ordering across chunks. Yields (global_start, chunk).
+    """
+    cur: list[str] = []
+    cur_start = 0
+    for i, part in enumerate(parts):
+        trial = [*cur, part]
+        if cur and len(tokenizer("".join(trial))["input_ids"]) > max_tokens:
+            yield cur_start, cur
+            cur = [part]
+            cur_start = i
+        else:
+            cur = trial
+    if cur:
+        yield cur_start, cur
 
 
 def _mlm_infill(text: str, level: float) -> str:
     """Mask `level` of content words and infill with roberta-large (local edit).
 
     Non-autoregressive: the output is a mix of the original token stream and
-    masked-LM predictions, not fresh LLM-sampled prose. Loads roberta-large on
-    first use (transformers must be importable); raises if unavailable.
+    masked-LM predictions, not fresh LLM-sampled prose. Uses a process-cached,
+    runtime-device pipeline and splits inputs longer than roberta's positional
+    limit into separately-infilled chunks.
     """
-    try:
-        from transformers import pipeline
-    except Exception as e:  # fail-soft: optional dependency
-        raise RuntimeError(f"mlm tactic unavailable: {e}") from e
-
-    mlm = pipeline("fill-mask", model="roberta-large", device=0)
-    mask_token = mlm.tokenizer.mask_token
+    mlm, mask_token = _get_mlm()
+    tokenizer = mlm.tokenizer
     tokens = _MLM_TOKEN_RE.split(text)
     content = [
         i
@@ -456,13 +505,16 @@ def _mlm_infill(text: str, level: float) -> str:
         idx = content[int(pos)]
         mset.add(idx)
         pos += step
-    masked_idx = sorted(mset)
-    out_parts = [mask_token if i in mset else t for i, t in enumerate(tokens)]
-    preds = mlm("".join(out_parts), top_k=1)
-    picks = [(p if isinstance(p, dict) else p[0]) for p in preds]
-    for k_i, idx in enumerate(masked_idx):
-        if k_i < len(picks):
-            tokens[idx] = picks[k_i]["token_str"].strip()
+    out_parts = [mask_token if i in mset else tokens[i] for i in range(len(tokens))]
+    for chunk_start, chunk in _mlm_chunks(out_parts, tokenizer):
+        positions = [chunk_start + j for j, p in enumerate(chunk) if p == mask_token]
+        if not positions:
+            continue
+        preds = mlm("".join(chunk), top_k=1)
+        picks = [(p if isinstance(p, dict) else p[0]) for p in preds]
+        for k_i, global_idx in enumerate(positions):
+            if k_i < len(picks):
+                tokens[global_idx] = picks[k_i]["token_str"].strip()
     return "".join(tokens)
 
 
@@ -755,7 +807,9 @@ def rewrite(
     if not base_url and tactic != "mlm":
         raise SystemExit("error: --base-url required for ollama/openai-compatible backends")
 
-    _check_remote(base_url, allow_remote)
+    # The mlm tactic never talks to a remote endpoint; base_url may be None.
+    if base_url is not None:
+        _check_remote(base_url, allow_remote)
 
     n_cands = max(1, candidates)
     n_loops = max(1, max_loops)
