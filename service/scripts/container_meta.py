@@ -1239,12 +1239,15 @@ def _is_docx_meta_part(name: str) -> bool:
     return name.startswith(("docProps/", "customXml/"))
 
 
-def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], dict]:
+def _inspect_ooxml_zip(
+    data: bytes, fmt: str, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_c2pa = False
     has_ai = False
     parts: list[str] = []
-    budget = [0]
+    if budget is None:
+        budget = [0]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             parts = zf.namelist()
@@ -1317,16 +1320,22 @@ def _inspect_ooxml_zip(data: bytes, fmt: str) -> tuple[bool, bool, list[str], di
     return has_c2pa, has_ai or has_c2pa, findings, {"parts": len(parts)}
 
 
-def inspect_docx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "docx")
+def inspect_docx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "docx", budget)
 
 
-def inspect_xlsx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "xlsx")
+def inspect_xlsx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "xlsx", budget)
 
 
-def inspect_pptx(data: bytes) -> tuple[bool, bool, list[str], dict]:
-    return _inspect_ooxml_zip(data, "pptx")
+def inspect_pptx(
+    data: bytes, budget: list[int] | None = None
+) -> tuple[bool, bool, list[str], dict]:
+    return _inspect_ooxml_zip(data, "pptx", budget)
 
 
 _XML_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|([0-9]+));|&(amp|lt|gt|quot|apos);")
@@ -1494,6 +1503,104 @@ def _scrub_odt_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[st
     return "".join(out), removed, replaced
 
 
+def _inspect_text_runs(
+    xml_text: str, open_re: re.Pattern[str], close_re: re.Pattern[str]
+) -> tuple[int, list[dict]]:
+    """Layer A count/hits over text runs, mirroring _scrub_text_runs().
+
+    Character references are decoded exactly as the scrub decodes them (a
+    carrier written as ``&#x200B;`` is counted too), so /inspect reports the
+    same carriers that /clean will remove for the format (#312).
+    """
+    from text_unicode import inspect_text  # local import to avoid cycles
+
+    total = 0
+    hits: list[dict] = []
+    for _, oe, cs_, _ in _iter_tag_blocks(xml_text, open_re, close_re):
+        ta = inspect_text(_decode_xml_entities(xml_text[oe:cs_])).to_dict()
+        if ta["suspicious_total"]:
+            total += ta["suspicious_total"]
+            hits.extend(ta["hits"])
+    return total, hits
+
+
+def _inspect_odt_text(xml_text: str) -> tuple[int, list[dict]]:
+    """Layer A count/hits over ODF paragraph text, mirroring _scrub_odt_text()."""
+    from text_unicode import inspect_text  # local import to avoid cycles
+
+    total = 0
+    hits: list[dict] = []
+    for _, oe, cs_, _ in _iter_tag_blocks(
+        xml_text, re.compile(r"<text:p\b[^>]*>"), re.compile(r"</text:p>")
+    ):
+        for segment in re.split(r"(<[^>]+>)", xml_text[oe:cs_]):
+            if not segment or segment.startswith("<"):
+                continue
+            ta = inspect_text(_decode_xml_entities(segment)).to_dict()
+            if ta["suspicious_total"]:
+                total += ta["suspicious_total"]
+                hits.extend(ta["hits"])
+    return total, hits
+
+
+def _layer_a_body_part(name: str, fmt: str) -> bool:
+    """True for the body parts a format's cleaner Layer-A scrubs.
+
+    Mirrors the case-sensitive ``startswith``/``endswith`` check used by the
+    OOXML/ODT cleaners, so /inspect selects exactly the archive entries /clean
+    touches (a case-variant name such as ``WORD/document.XML`` is left alone by
+    both) (#312).
+    """
+    if fmt == "odt":
+        return name == "content.xml"
+    if fmt == "docx":
+        return name.startswith("word/") and name.endswith(".xml")
+    if fmt == "xlsx":
+        return name.startswith("xl/") and name.endswith(".xml")
+    if fmt == "pptx":
+        return name.startswith("ppt/") and name.endswith(".xml")
+    return False
+
+
+def _inspect_container_body_layer_a(
+    data: bytes, fmt: str, budget: list[int] | None = None
+) -> list[tuple[str, dict]]:
+    """Per-part Layer A findings for the text runs clean_container() scrubs.
+
+    Scans the same body parts the cleaner touches (``word``/``xl``/``ppt`` XML
+    parts, or ``content.xml`` for ODT), so /inspect predicts /clean rather than
+    contradicting it (#312).
+    """
+    out: list[tuple[str, dict]] = []
+    if budget is None:
+        budget = [0]
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for info in zf.infolist():
+                if not _layer_a_body_part(info.filename, fmt):
+                    continue
+                text = _read_zip_member(zf, info, budget).decode("utf-8", errors="replace")
+                if fmt == "docx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<w:t\b[^>]*>"), re.compile(r"</w:t>")
+                    )
+                elif fmt == "xlsx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<t\b[^>]*>"), re.compile(r"</t>")
+                    )
+                elif fmt == "pptx":
+                    total, hits = _inspect_text_runs(
+                        text, re.compile(r"<a:t\b[^>]*>"), re.compile(r"</a:t>")
+                    )
+                else:  # odt
+                    total, hits = _inspect_odt_text(text)
+                if total:
+                    out.append((info.filename, {"suspicious_total": total, "hits": hits}))
+    except _ZIP_PARSE_ERRORS:
+        pass
+    return out
+
+
 def _prune_dangling_relationships(
     rels_name: str, raw: bytes, kept_names: set[str]
 ) -> tuple[bytes, int]:
@@ -1619,6 +1726,14 @@ def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[b
 def _scrub_ooxml_zip(
     data: bytes, fmt: str, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
 ) -> tuple[bytes, list[str]]:
+    """Scrub provenance and Layer-A carriers from an OOXML zip container.
+
+    Rewrites the archive in place: metadata/provenance parts (docProps,
+    customXml, Content_Types overrides) are scrubbed or dropped, embedded media
+    under ``word``/``xl``/``ppt`` are cleaned, and text runs are Layer-A scrubbed
+    when requested. Binary docProps members (e.g. the thumbnail) are kept
+    byte-safe. Returns the rewritten bytes and a list of human-readable actions.
+    """
     actions: list[str] = []
     budget = [0]
     layer_removed = 0
@@ -1675,6 +1790,12 @@ def _scrub_ooxml_zip(
             if name in DOCX_META_PARTS or name.startswith("docProps/"):
                 if name.endswith("custom.xml"):
                     actions.append(f"drop part {name}")
+                    continue
+                if not name.lower().endswith(".xml"):
+                    # A binary docProps member (e.g. docProps/thumbnail.jpeg)
+                    # must stay byte-safe: decoding it as UTF-8 and re-encoding
+                    # corrupts it into U+FFFD replacement bytes (#312).
+                    kept.append((info, raw))
                     continue
                 text = raw.decode("utf-8", errors="replace")
                 new = text
@@ -2807,11 +2928,25 @@ def clean_pdf(path: Path, dest: Path, *, deep_images: str = "auto") -> tuple[lis
 
 
 def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInspectReport:
+    """Inspect a container for provenance, AI metadata, and Layer-A carriers.
+
+    Delegates to the format-specific inspector and unions in a Layer-A scan of
+    the visible text body for exactly the formats ``clean_container()`` scrubs,
+    so /inspect predicts what /clean removes rather than contradicting it.
+    """
     if data is None:
         data = path.read_bytes()
     fmt = detect_container_format(path, data)
     tools: dict[str, Any] = {}
     details: dict[str, Any] = {}
+    # One shared ZIP decompression budget for the OOXML inspectors and the body
+    # Layer-A scan, so they cumulatively enforce the cap instead of each
+    # resetting it: an archive with ~128 MiB of metadata/media plus ~128 MiB of
+    # body XML must not decompress both parts (#312 review). ODT/EPUB use their
+    # own budgets because their inspectors already read every member, so sharing
+    # them with the body re-scan would charge content.xml twice and falsely
+    # reject a large but legitimate file.
+    zip_budget: list[int] = [0]
 
     if fmt == "svg":
         has_c2pa, has_ai, findings, details = inspect_svg(data)
@@ -2819,12 +2954,16 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
         has_c2pa, has_ai, findings, details = inspect_pdf(path, data)
         tools = details.pop("tools", {})
     elif fmt == "docx":
-        has_c2pa, has_ai, findings, details = inspect_docx(data)
+        has_c2pa, has_ai, findings, details = inspect_docx(data, zip_budget)
     elif fmt == "xlsx":
-        has_c2pa, has_ai, findings, details = inspect_xlsx(data)
+        has_c2pa, has_ai, findings, details = inspect_xlsx(data, zip_budget)
     elif fmt == "pptx":
-        has_c2pa, has_ai, findings, details = inspect_pptx(data)
+        has_c2pa, has_ai, findings, details = inspect_pptx(data, zip_budget)
     elif fmt == "odt":
+        # inspect_odt reads the whole archive (including content.xml), so it
+        # keeps its own budget: sharing the body-scan budget with it would
+        # charge content.xml twice (byte for byte) and falsely reject a large
+        # but legitimate ODT (#312 review).
         has_c2pa, has_ai, findings, details = inspect_odt(data)
     elif fmt == "epub":
         has_c2pa, has_ai, findings, details = inspect_epub(data)
@@ -2877,6 +3016,15 @@ def inspect_container(path: Path, *, data: bytes | None = None) -> ContainerInsp
                             )
         except zipfile.BadZipFile:
             pass
+    elif fmt in ("docx", "xlsx", "pptx", "odt"):
+        for part_name, ta in _inspect_container_body_layer_a(data, fmt, zip_budget):
+            layer_a_total += ta["suspicious_total"]
+            for h in ta["hits"]:
+                layer_a_hits.append(h)
+                findings.append(
+                    f"layer-a ({part_name}): {h['codepoint']} {h['label']} "
+                    f"x{h['count']} ({h['kind']})"
+                )
 
     notes: list[str] = []
     if fmt == "pdf":

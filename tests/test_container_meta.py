@@ -368,6 +368,78 @@ def test_docx_dropped_customxml_prunes_dangling_relationships():
     assert any("prune dangling relationships" in a for a in actions)
 
 
+def test_docx_thumbnail_binary_member_preserved():
+    """docProps/thumbnail.jpeg must stay byte-safe: decoding it as UTF-8 text and
+    re-encoding corrupts a binary member into U+FFFD replacement bytes (#312)."""
+    jpeg = bytes.fromhex("FFD8FFE0") + b"\x00\x10JFIF\x00" + b"\xde\xad\xbe\xef" * 64
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "word/document.xml",
+            (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello</w:t>'
+                "</w:r></w:p></w:body></w:document>"
+            ),
+        )
+        zf.writestr(
+            "docProps/core.xml",
+            (
+                "<cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/"
+                "2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/"
+                "1.1/'><dc:creator>Bot</dc:creator></cp:coreProperties>"
+            ),
+        )
+        zf.writestr("docProps/thumbnail.jpeg", jpeg)
+
+    cleaned, _actions = clean_docx(buf.getvalue())
+    with zipfile.ZipFile(io.BytesIO(cleaned)) as zf:
+        out = zf.read("docProps/thumbnail.jpeg")
+        core = zf.read("docProps/core.xml").decode("utf-8")
+    assert out == jpeg
+    assert out.startswith(b"\xff\xd8\xff\xe0")
+    assert b"\xef\xbf\xbd" not in out
+    # XML provenance scrubbing on the same tree still works
+    assert "Bot" not in core
+
+
+def test_docx_inspect_reports_body_layer_a_carriers(tmp_path: Path):
+    """/inspect must report the Layer A carriers /clean removes from the visible
+    body text runs (word/*.xml), not only provenance/media parts (#312)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "word/document.xml",
+            (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello\u200bWorld</w:t>'
+                "</w:r></w:p></w:body></w:document>"
+            ),
+        )
+        zf.writestr(
+            "word/footer1.xml",
+            (
+                '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/'
+                '2006/main"><w:p><w:r><w:t>Foot\u200bnote</w:t></w:r></w:p></w:ftr>'
+            ),
+        )
+
+    path = tmp_path / "doc.docx"
+    path.write_bytes(buf.getvalue())
+
+    rep = inspect_container(path)
+    assert rep.layer_a_total == 2
+    assert rep.layer_a_hits
+    assert any("word/document.xml" in f for f in rep.findings)
+    assert any("word/footer1.xml" in f for f in rep.findings)
+
+    out = tmp_path / "doc_clean.docx"
+    clean_container(path, out)
+    after = inspect_container(out)
+    assert after.layer_a_total == 0
+    assert after.layer_a_hits == []
+
+
 def _make_docx_with_body_text(body_text: str = "Claude wrote this.") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -877,6 +949,57 @@ def test_zip_budget_rejection_propagates_from_inspect(monkeypatch):
     monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", 1)
     with pytest.raises(container_meta.ZipBudgetExceeded):
         inspect_docx(buf.getvalue())
+
+
+def test_inspect_container_shares_zip_budget_across_scans(monkeypatch):
+    # The body Layer-A scan must share the format inspector's decompression
+    # budget, so an archive of ~half-cap metadata + ~half-cap body XML cannot
+    # decompress both past the processing cap (#312 review).
+    import container_meta
+
+    def make_docx(member_len: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("docProps/core.xml", b" " * member_len)
+            zf.writestr("word/document.xml", b"<w:document>" + b" " * member_len + b"</w:document>")
+        return buf.getvalue()
+
+    cap = 1000
+    member = 600  # each member fits under the cap; the two together do not
+    assert member < cap and 2 * member > cap
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", cap)
+    with pytest.raises(container_meta.ZipBudgetExceeded):
+        inspect_container(Path("x.docx"), data=make_docx(member))
+    # A single small member stays under the cumulative cap.
+    rep = inspect_container(Path("x.docx"), data=make_docx(100))
+    assert rep.layer_a_total == 0
+
+
+def test_inspect_odt_content_xml_not_rejected_at_budget_boundary(monkeypatch):
+    # ODT content.xml is the visible body. Its bytes must not be charged to the
+    # shared budget by both inspect_odt and the body Layer-A scan, or a
+    # content.xml just under the cap is falsely rejected with ZipBudgetExceeded
+    # (#312 review).
+    import container_meta
+
+    def make_odt(content_len: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+            zf.writestr("meta.xml", "<office:document-meta/>")
+            zf.writestr("META-INF/manifest.xml", "<manifest:manifest/>")
+            zf.writestr(
+                "content.xml",
+                b"<office:document-content>" + b" " * content_len + b"</office:document-content>",
+            )
+        return buf.getvalue()
+
+    cap = 1000
+    content = 600  # fits under the cap once; would exceed it if charged twice
+    assert content < cap and 2 * content > cap
+    monkeypatch.setattr(container_meta, "MAX_ZIP_DECOMPRESSED_BYTES", cap)
+    rep = inspect_container(Path("x.odt"), data=make_odt(content))
+    assert rep.format == "odt"
 
 
 def test_zip_budget_rejection_propagates_from_detect_container_format_mimetype(monkeypatch):
