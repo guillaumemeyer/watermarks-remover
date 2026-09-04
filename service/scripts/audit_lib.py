@@ -157,7 +157,9 @@ def scan_file(
 
 
 def is_actionable(item: dict[str, Any]) -> bool:
-    """A file is actionable when it has a confirmed/probable finding or C2PA."""
+    """A file is actionable when it has a confirmed/probable finding, C2PA, or service error."""
+    if item.get("status") == "service_unavailable" or item.get("error") == "service_unavailable":
+        return True
     if item.get("has_c2pa"):
         return True
     return any(c in ("confirmed", "probable") for c in item.get("confidence", []))

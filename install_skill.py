@@ -372,7 +372,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="Bundle path for --target cowork (default: dist/<skill>.zip)",
     )
+    parser.add_argument(
+        "--check-service",
+        action="store_true",
+        default=True,
+        help="Probe service reachability at install time (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-check-service",
+        dest="check_service",
+        action="store_false",
+        help="Do not probe service reachability at install time",
+    )
     return parser
+
+
+def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> tuple[bool, str]:
+    """Check GET /health on WATERMARKS_SERVICE_URL (default http://127.0.0.1:8765)."""
+    import json
+    import urllib.request
+
+    endpoint = (url or os.environ.get("WATERMARKS_SERVICE_URL") or "http://127.0.0.1:8765").rstrip("/")
+    health_url = f"{endpoint}/health"
+    try:
+        req = urllib.request.Request(health_url, headers={"User-Agent": "watermarks-remover-install"})
+        api_key = os.environ.get("WATERMARKS_SERVICE_API_KEY")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                version = data.get("version", "unknown")
+                return True, f"service reachable at {endpoint} (v{version})"
+    except Exception:
+        pass
+    return False, f"service unreachable at {endpoint} (start with 'make serve' or 'docker compose up -d')"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -409,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
             "(or in the skills settings on claude.ai). Cowork, cloud and routine "
             "sessions load skills enabled for your account, not ~/.claude/skills."
         )
+        if args.check_service:
+            reachable, diag = check_service_reachability()
+            status_prefix = "Service:" if reachable else "Service notice:"
+            print(f"{status_prefix} {diag}")
         return 0
 
     try:
@@ -430,6 +468,10 @@ def main(argv: list[str] | None = None) -> int:
     verb = "linked" if args.link else "installed"
     print(f"{label}: {verb} {destination}")
     print(HOST_HINTS[args.target])
+    if args.check_service:
+        reachable, diag = check_service_reachability()
+        status_prefix = "Service:" if reachable else "Service notice:"
+        print(f"{status_prefix} {diag}")
     return 0
 
 
