@@ -6,6 +6,8 @@
 !/.claude-plugin/**
 !/hooks/
 !/hooks/**
+!/mac/
+!/mac/**
 !/.github/
 !/.github/**
 !/benchmarks/
@@ -43,6 +45,10 @@
 
 # Exceptions even inside allowed trees
 .env
+# Swift build products; the macOS app is built from source, never committed.
+mac/.build/
+mac/build/
+mac/*.xcodeproj/
 **/__pycache__/
 *.pyc
 # The stealer's downloaded prompt corpus is generated data, not source.
