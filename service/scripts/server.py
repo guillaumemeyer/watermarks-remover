@@ -361,6 +361,10 @@ def _watermark_error_status(err: str) -> HTTPStatus:
     e = err.lower()
     if "no text watermark generator configured" in e:
         return HTTPStatus.SERVICE_UNAVAILABLE
+    # Sidecar rejected our bearer token/auth — a gateway configuration problem,
+    # so surface it as a backend (502) error rather than a client (400) error.
+    if "sidecar authentication error" in e:
+        return HTTPStatus.BAD_GATEWAY
     # Sidecar returned a 4xx — the *client* sent a bad request through to the
     # sidecar, so propagate 400 instead of 502.
     if "sidecar client error" in e:
@@ -413,11 +417,13 @@ def _watermark_request_schema() -> dict[str, Any]:
                     ),
                     "temperature": _schema(
                         type="number",
-                        exclusiveMinimum=0,
+                        minimum=0,
+                        exclusiveMinimum=True,
                     ),
                     "top_p": _schema(
                         type="number",
-                        exclusiveMinimum=0,
+                        minimum=0,
+                        exclusiveMinimum=True,
                         maximum=1,
                     ),
                     "model": _schema(type="string"),
@@ -810,6 +816,9 @@ def openapi_spec() -> dict[str, Any]:
         for method, op in ops.items():
             responses = dict(_COMMON_ERRORS)
             for status, body in op["responses"].items():
+                if "description" in body and "content" in body:
+                    responses[status] = body
+                    continue
                 responses[status] = {
                     "description": "Success",
                     "content": {"application/json": {"schema": body}},

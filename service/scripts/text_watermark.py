@@ -257,7 +257,15 @@ def _watermark_http(
                 "error": f"SynthID text sidecar redirect refused (SSRF protection): {e}",
             }
         # Distinguish client-side (4xx) from server-side (5xx) sidecar errors
-        # so the gateway can propagate the correct HTTP status.
+        # so the gateway can propagate the correct HTTP status. A 401 with a
+        # configured API key means the bearer token was missing/invalid, which
+        # is a gateway config problem (502), not a request-validation issue (400).
+        if e.code == 401:
+            return {
+                "ok": False,
+                "kind": "text",
+                "error": f"SynthID text sidecar authentication error (401): {e}",
+            }
         if 400 <= e.code < 500:
             return {
                 "ok": False,
@@ -328,7 +336,7 @@ def _watermark_local_markllm(
         offline = bool(opts.get("offline", False))
         temperature = opts.get("temperature")
         top_p = opts.get("top_p")
-        keys_tag = ",".join(str(k) for k in keys) if keys else ""
+        keys_tag = "<default>" if keys is None else ",".join(str(k) for k in keys)
         cache_key = (
             f"{scheme_alg}:{model}:{device}:{config_path}"
             f":{temperature}:{top_p}:{offline}:{keys_tag}"

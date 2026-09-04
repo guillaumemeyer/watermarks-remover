@@ -89,7 +89,7 @@ def _generate_watermarked_sample(
     config_path = _resolve_config(upstream, alg, opts.get("config"))
     offline = bool(opts.get("offline", False))
     cache_key = f"{alg}:{model_name}:{device}:{config_path}:{temperature}:{top_p}:{offline}"
-    keys_tag = ",".join(str(k) for k in keys) if keys else ""
+    keys_tag = ",".join(str(k) for k in keys) if keys is not None else "<default>"
     cache_key = f"{cache_key}:{keys_tag}"
 
     with _MODEL_LOCK:

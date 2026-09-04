@@ -400,3 +400,52 @@ def test_sidecar_non_utf8_file(sidecar_server):
     assert body["ok"] is False
     assert "not valid UTF-8" in body["error"]
 
+
+def test_sidecar_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_path):
+    """keys=None (default scheme keys) and keys=[] must use distinct cached models."""
+    import detect_text_watermark as dtw
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+
+    created_keys: list[list[int] | None] = []
+
+    class _FakeConfig:
+        def __init__(self) -> None:
+            self.keys: list[int] | None = None
+            self.gen_kwargs: dict[str, Any] = {}
+
+    class _FakeWM:
+        def __init__(self, keytag: object) -> None:
+            self.config = _FakeConfig()
+            self._keytag = keytag
+
+        def generate_watermarked_text(self, text: str) -> str:
+            return f"{text}[{self.config.keys}]"
+
+    def _fake_load(upstream, alg, config, model, device, **kwargs):
+        created_keys.append(None)
+        return _FakeWM(None)
+
+    def _fake_generate(wm, text, **kwargs):
+        return f"{text}[{wm.config.keys}]", {}
+
+    monkeypatch.setattr(dtw, "_load_algorithm", _fake_load)
+    monkeypatch.setattr(dtw, "_resolve_config", lambda *a, **k: upstream / "config.json")
+    monkeypatch.setattr(dtw, "resolve_device", lambda *a, **k: "cpu")
+    monkeypatch.setattr(dtw, "_generate", _fake_generate)
+    monkeypatch.setattr(dtw, "SCHEMES", {"synthid": "SynthID"})
+    monkeypatch.setattr(synthid_text_server, "MARKLLM_DIR", str(upstream))
+    synthid_text_server._MODEL_CACHE.clear()
+
+    default_out, _ = synthid_text_server._generate_watermarked_sample("hello", None, {})
+    empty_out, _ = synthid_text_server._generate_watermarked_sample("hello", [], {})
+    default_out2, _ = synthid_text_server._generate_watermarked_sample("hello", None, {})
+
+    assert default_out == "hello[None]"
+    assert empty_out == "hello[[]]"
+    # Two distinct models must have been instantiated and cached separately.
+    assert len(created_keys) == 2
+    assert len(synthid_text_server._MODEL_CACHE) == 2
+    # Reusing default keys must hit the cache (no third model). line wrapping
+    assert default_out2 == "hello[None]"

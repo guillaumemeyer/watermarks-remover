@@ -8,6 +8,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -432,10 +433,116 @@ def test_resolve_timeout(monkeypatch):
 
 def test_watermark_error_status_sidecar_4xx_vs_5xx():
     # 4xx client errors mapped to 400 Bad Request
-    assert server._watermark_error_status("SynthID text sidecar client error (400): Bad request") == http.client.BAD_REQUEST
-    assert server._watermark_error_status("SynthID text sidecar client error (422): Unprocessable") == http.client.BAD_REQUEST
+    assert (
+        server._watermark_error_status("SynthID text sidecar client error (400): Bad request")
+        == http.client.BAD_REQUEST
+    )
+    assert (
+        server._watermark_error_status("SynthID text sidecar client error (422): Unprocessable")
+        == http.client.BAD_REQUEST
+    )
 
     # 5xx or general unreachable mapped to 502 Bad Gateway
-    assert server._watermark_error_status("SynthID text sidecar HTTP error (500): Internal Error") == http.client.BAD_GATEWAY
-    assert server._watermark_error_status("SynthID text sidecar HTTP error (503): Service Unavailable") == http.client.BAD_GATEWAY
+    assert (
+        server._watermark_error_status("SynthID text sidecar HTTP error (500): Internal Error")
+        == http.client.BAD_GATEWAY
+    )
+    assert (
+        server._watermark_error_status("SynthID text sidecar HTTP error (503): Service Unavailable")
+        == http.client.BAD_GATEWAY
+    )
 
+    # Sidecar authentication failures (configured key, bad/missing token) -> 502
+    assert (
+        server._watermark_error_status(
+            "SynthID text sidecar authentication error (401): Unauthorized"
+        )
+        == http.client.BAD_GATEWAY
+    )
+
+
+def test_openapi_spec_preserves_502_503_descriptors(conn):
+    spec = server.openapi_spec()
+    resp = spec["paths"]["/watermark"]["post"]["responses"]
+    # 502/503 must be preserved as full response descriptors, not wrapped
+    # schemas, and not labeled "Success".
+    for code in ("502", "503"):
+        entry = resp[code]
+        assert "description" in entry and "content" in entry
+        assert entry["description"] != "Success"
+        assert entry["content"]["application/json"]["schema"] is server._ERROR_SCHEMA
+    # The 200 success response is still a wrapped schema labeled "Success".
+    assert resp["200"]["description"] == "Success"
+
+
+def test_watermark_request_schema_exclusive_minimum_is_boolean():
+    schema = server._watermark_request_schema()
+    opts = schema["properties"]["options"]["properties"]
+    # OpenAPI 3.0.3 requires boolean exclusiveMinimum, not a numeric form.
+    assert opts["temperature"] == {
+        "type": "number",
+        "minimum": 0,
+        "exclusiveMinimum": True,
+    }
+    assert opts["top_p"] == {
+        "type": "number",
+        "minimum": 0,
+        "exclusiveMinimum": True,
+        "maximum": 1,
+    }
+
+
+def test_local_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_path):
+    """keys=None (default) and keys=[] (empty) must use distinct local cached models."""
+    import detect_text_watermark as dtw
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+
+    created_keys: list[list[int] | None] = []
+
+    class _FakeConfig:
+        def __init__(self) -> None:
+            self.keys: list[int] | None = None
+            self.gen_kwargs: dict[str, Any] = {}
+
+    class _FakeWM:
+        def __init__(self) -> None:
+            self.config = _FakeConfig()
+            self.config.gen_kwargs["max_new_tokens"] = 200
+            self.config.gen_kwargs["min_length"] = 0
+
+        def generate_watermarked_text(self, text: str) -> str:
+            return f"{text}[{self.config.keys}]"
+
+    def _fake_load(upstream, alg, config, model, device, **kwargs):
+        created_keys.append(None)
+        return _FakeWM()
+
+    monkeypatch.setattr(dtw, "_load_algorithm", _fake_load)
+    monkeypatch.setattr(dtw, "_resolve_config", lambda *a, **k: upstream / "config.json")
+    monkeypatch.setattr(dtw, "resolve_device", lambda *a, **k: "cpu")
+    monkeypatch.setattr(dtw, "resolve_upstream", lambda *a, **k: upstream)
+    monkeypatch.setattr(dtw, "SCHEMES", {"synthid": "SynthID"})
+    from collections import OrderedDict
+
+    monkeypatch.setattr(text_watermark, "_LOCAL_MODEL_CACHE", OrderedDict())
+    monkeypatch.setattr(text_watermark, "MAX_LOCAL_CACHED_MODELS", 4)
+
+    default_res = text_watermark._watermark_local_markllm(
+        "hello", keys=None, options={}, timeout=None, upstream_dir=str(upstream)
+    )
+    empty_res = text_watermark._watermark_local_markllm(
+        "hello", keys=[], options={}, timeout=None, upstream_dir=str(upstream)
+    )
+    default_res2 = text_watermark._watermark_local_markllm(
+        "hello", keys=None, options={}, timeout=None, upstream_dir=str(upstream)
+    )
+
+    assert default_res["ok"] is True
+    assert default_res["watermarked_text"] == "hello[None]"
+    assert empty_res["ok"] is True
+    assert empty_res["watermarked_text"] == "hello[[]]"
+    # Two distinct models were loaded: default-keys and empty-keys do not share a key.
+    assert len(created_keys) == 2
+    assert default_res2["watermarked_text"] == "hello[None]"
