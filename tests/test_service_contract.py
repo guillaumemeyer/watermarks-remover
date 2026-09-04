@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import http.server
 import json
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -26,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS))
 import audit_lib
 import check_staged
 import hook_written_file
+
 import install_skill
 
 
