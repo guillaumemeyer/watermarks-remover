@@ -180,7 +180,10 @@ def run_clean(path: Path) -> int:
             eprint(f"watermarks-remover: {path}: {detail}")
             return EXIT_HOOK_ERROR
 
-        if result.get("status") == "service_unavailable" or result.get("error") == "service_unavailable":
+        if (
+            result.get("status") == "service_unavailable"
+            or result.get("error") == "service_unavailable"
+        ):
             detail = result.get("detail") or "service unavailable"
             _emit(f"watermarks-remover: {path.name}: service_unavailable ({detail})")
             eprint(f"watermarks-remover: {path}: service_unavailable ({detail})")
