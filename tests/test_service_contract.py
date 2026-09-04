@@ -65,7 +65,9 @@ def test_reachability_diagnostic_when_online(mock_service):
 
 
 def test_reachability_diagnostic_when_offline():
-    reachable, msg = install_skill.check_service_reachability(url="http://127.0.0.1:59998", timeout=0.2)
+    reachable, msg = install_skill.check_service_reachability(
+        url="http://127.0.0.1:59998", timeout=0.2
+    )
     assert reachable is False
     assert "service unreachable" in msg
     assert "make serve" in msg
@@ -83,7 +85,7 @@ def test_skill_markdown_contains_refusal_contract():
     assert expected_refusal in content
 
     assert "Mandatory Preflight Check" in content
-    assert "curl -sf \"$WM/health\"" in content
+    assert 'curl -sf "$WM/health"' in content
     assert "PROHIBITION (FAIL CLOSED)" in content
     assert "#196" in content
 

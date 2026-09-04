@@ -56,7 +56,10 @@ def main() -> int:
         eprint(f"  {item['path']}")
         for finding in item.get("findings", []):
             eprint(f"    - {finding}")
-        if item.get("status") == "service_unavailable" or item.get("error") == "service_unavailable":
+        if (
+            item.get("status") == "service_unavailable"
+            or item.get("error") == "service_unavailable"
+        ):
             detail = item.get("detail") or item.get("error") or "service unavailable"
             eprint(f"    - service_unavailable: {detail}")
         if item.get("has_c2pa"):
