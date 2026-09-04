@@ -107,6 +107,10 @@ The scripts support plain text, source text, Markdown, and HTML source as text. 
 
 For a chat-only response that is not written to a file, perform the rewrite workflow directly. Do not claim that the chat response received a deterministic post-send Unicode filter.
 
+### Fail-closed execution notice
+
+If the Python runtime or vendored scripts (`clean_text.py`, `inspect_text.py`) are unavailable or error during execution, fail closed immediately: stop, report the execution failure clearly, and do not modify any files. NEVER substitute an unverified assistant-authored rewrite claiming the text has been cleaned (#196).
+
 ## Detector levers
 
 Statistical detectors score probability patterns: AI prose is too predictable (low
