@@ -114,6 +114,12 @@ def run_check(path: Path) -> int:
     # scan_file/is_actionable are audit_dir.py's own per-file logic, so this
     # hook, the pre-commit gate, and the CI SARIF export agree on what counts.
     item = scan_file(path)
+    if item.get("status") == "service_unavailable" or item.get("error") == "service_unavailable":
+        detail = item.get("detail") or "service unavailable"
+        _emit(f"watermarks-remover: {path.name}: service_unavailable ({detail})")
+        eprint(f"watermarks-remover: {path}: service_unavailable ({detail})")
+        return EXIT_HOOK_ERROR
+
     if item.get("kind") == "unknown" or not is_actionable(item):
         return EXIT_QUIET
 
@@ -172,6 +178,12 @@ def run_clean(path: Path) -> int:
         if not isinstance(result, dict) or proc.returncode not in (0, 1):
             detail = proc.stderr.strip() or "clean produced no usable report"
             eprint(f"watermarks-remover: {path}: {detail}")
+            return EXIT_HOOK_ERROR
+
+        if result.get("status") == "service_unavailable" or result.get("error") == "service_unavailable":
+            detail = result.get("detail") or "service unavailable"
+            _emit(f"watermarks-remover: {path.name}: service_unavailable ({detail})")
+            eprint(f"watermarks-remover: {path}: service_unavailable ({detail})")
             return EXIT_HOOK_ERROR
 
         residual = result.get("still_has_c2pa") or result.get("still_has_ai_metadata")
