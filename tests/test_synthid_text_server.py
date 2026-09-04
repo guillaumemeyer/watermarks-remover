@@ -402,33 +402,33 @@ def test_sidecar_non_utf8_file(sidecar_server):
 
 
 def test_sidecar_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_path):
-    """keys=None (default scheme keys) and keys=[] must use distinct cached models."""
+    """keys=None (default scheme keys) and keys=[] must be applied at model construction."""
     import detect_text_watermark as dtw
 
     upstream = tmp_path / "upstream"
     upstream.mkdir()
 
-    created_keys: list[list[int] | None] = []
+    construction_keys: list[list[int] | None] = []
 
     class _FakeConfig:
-        def __init__(self) -> None:
-            self.keys: list[int] | None = None
+        def __init__(self, keys) -> None:
+            self.keys = keys
             self.gen_kwargs: dict[str, Any] = {}
 
     class _FakeWM:
-        def __init__(self, keytag: object) -> None:
-            self.config = _FakeConfig()
-            self._keytag = keytag
+        def __init__(self, keys) -> None:
+            self.config = _FakeConfig(keys)
 
         def generate_watermarked_text(self, text: str) -> str:
-            return f"{text}[{self.config.keys}]"
+            return f"{text}[keys:{self.config.keys}]"
 
     def _fake_load(upstream, alg, config, model, device, **kwargs):
-        created_keys.append(None)
-        return _FakeWM(None)
+        keys = kwargs.get("watermark_keys")
+        construction_keys.append(keys)
+        return _FakeWM(keys)
 
     def _fake_generate(wm, text, **kwargs):
-        return f"{text}[{wm.config.keys}]", {}
+        return f"{text}[keys:{wm.config.keys}]", {}
 
     monkeypatch.setattr(dtw, "_load_algorithm", _fake_load)
     monkeypatch.setattr(dtw, "_resolve_config", lambda *a, **k: upstream / "config.json")
@@ -442,10 +442,88 @@ def test_sidecar_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp
     empty_out, _ = synthid_text_server._generate_watermarked_sample("hello", [], {})
     default_out2, _ = synthid_text_server._generate_watermarked_sample("hello", None, {})
 
-    assert default_out == "hello[None]"
-    assert empty_out == "hello[[]]"
-    # Two distinct models must have been instantiated and cached separately.
-    assert len(created_keys) == 2
+    # Construction-time keys: None (default) and [] (empty) stay distinct.
+    assert construction_keys == [None, []]
+    # The model built with the default scheme keys is used for keys=None.
+    assert default_out == "hello[keys:None]"
+    assert default_out2 == "hello[keys:None]"
+    # The separately-cached empty-keys model is used for keys=[].
+    assert empty_out == "hello[keys:[]]"
+    # Two distinct models were constructed and cached separately.
+    assert len(construction_keys) == 2
     assert len(synthid_text_server._MODEL_CACHE) == 2
-    # Reusing default keys must hit the cache (no third model). line wrapping
-    assert default_out2 == "hello[None]"
+    # Reusing default keys hits the cache (no third construction).
+    assert len(construction_keys) == 2
+
+
+def test_load_algorithm_overrides_keys_before_construction(monkeypatch, tmp_path):
+    """Custom SynthID keys must be baked into the config before model construction."""
+    import types
+
+    import detect_text_watermark as dtw
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    cfg = upstream / "config" / "SynthID.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"ngram_len": 4, "keys": [111, 222]}), "utf-8")
+
+    captured: dict[str, object] = {}
+
+    class _DummyLM:
+        def to(self, device):
+            return self
+
+    class _AutoModelForCausalLM:
+        @classmethod
+        def from_pretrained(cls, model, **kw):
+            return _DummyLM()
+
+    class _AutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, model, **kw):
+            return object()
+
+    class _TransformersConfig:
+        def __init__(self, **kw):
+            pass
+
+    class _AutoWatermark:
+        @staticmethod
+        def load(algorithm_name, algorithm_config=None, transformers_config=None, **kw):
+            path = Path(algorithm_config)
+            captured["keys"] = json.loads(path.read_text("utf-8"))["keys"]
+            captured["different_file"] = str(path) != str(cfg)
+            return object()
+
+    tf_mod = types.ModuleType("transformers")
+    tf_mod.AutoModelForCausalLM = _AutoModelForCausalLM
+    tf_mod.AutoTokenizer = _AutoTokenizer
+    utils_pkg = types.ModuleType("utils")
+    utils_tc = types.ModuleType("utils.transformers_config")
+    utils_tc.TransformersConfig = _TransformersConfig
+    utils_pkg.transformers_config = utils_tc
+    watermark_pkg = types.ModuleType("watermark")
+    auto_wm = types.ModuleType("watermark.auto_watermark")
+    auto_wm.AutoWatermark = _AutoWatermark
+    watermark_pkg.auto_watermark = auto_wm
+
+    monkeypatch.setitem(sys.modules, "transformers", tf_mod)
+    monkeypatch.setitem(sys.modules, "utils", utils_pkg)
+    monkeypatch.setitem(sys.modules, "utils.transformers_config", utils_tc)
+    monkeypatch.setitem(sys.modules, "watermark", watermark_pkg)
+    monkeypatch.setitem(sys.modules, "watermark.auto_watermark", auto_wm)
+
+    dtw._load_algorithm(
+        upstream,
+        "SynthID",
+        cfg,
+        "facebook/opt-1.3b",
+        "cpu",
+        watermark_keys=[7, 8, 9],
+    )
+
+    # AutoWatermark.load received an override config with the request keys, not
+    # the config file's defaults, and a distinct temp file.
+    assert captured["keys"] == [7, 8, 9]
+    assert captured["different_file"] is True

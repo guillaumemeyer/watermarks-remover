@@ -356,9 +356,8 @@ def _watermark_local_markllm(
                     offline=offline,
                     temperature=temperature,
                     top_p=top_p,
+                    watermark_keys=keys,
                 )
-                if keys is not None and hasattr(wm, "config"):
-                    wm.config.keys = keys
                 if len(_LOCAL_MODEL_CACHE) >= MAX_LOCAL_CACHED_MODELS:
                     _LOCAL_MODEL_CACHE.popitem(last=False)
                 _LOCAL_MODEL_CACHE[cache_key] = wm

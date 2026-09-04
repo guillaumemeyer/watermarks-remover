@@ -499,16 +499,16 @@ def test_local_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_p
     upstream = tmp_path / "upstream"
     upstream.mkdir()
 
-    created_keys: list[list[int] | None] = []
+    construction_keys: list[list[int] | None] = []
 
     class _FakeConfig:
-        def __init__(self) -> None:
-            self.keys: list[int] | None = None
+        def __init__(self, keys) -> None:
+            self.keys = keys
             self.gen_kwargs: dict[str, Any] = {}
 
     class _FakeWM:
-        def __init__(self) -> None:
-            self.config = _FakeConfig()
+        def __init__(self, keys) -> None:
+            self.config = _FakeConfig(keys)
             self.config.gen_kwargs["max_new_tokens"] = 200
             self.config.gen_kwargs["min_length"] = 0
 
@@ -516,8 +516,9 @@ def test_local_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_p
             return f"{text}[{self.config.keys}]"
 
     def _fake_load(upstream, alg, config, model, device, **kwargs):
-        created_keys.append(None)
-        return _FakeWM()
+        keys = kwargs.get("watermark_keys")
+        construction_keys.append(keys)
+        return _FakeWM(keys)
 
     monkeypatch.setattr(dtw, "_load_algorithm", _fake_load)
     monkeypatch.setattr(dtw, "_resolve_config", lambda *a, **k: upstream / "config.json")
@@ -543,6 +544,8 @@ def test_local_cache_key_distinguishes_default_and_empty_keys(monkeypatch, tmp_p
     assert default_res["watermarked_text"] == "hello[None]"
     assert empty_res["ok"] is True
     assert empty_res["watermarked_text"] == "hello[[]]"
-    # Two distinct models were loaded: default-keys and empty-keys do not share a key.
-    assert len(created_keys) == 2
+    # Keys were applied at construction, keeping None (default) and [] distinct.
+    assert construction_keys == [None, []]
+    # Two distinct models were loaded; default reuse hits the cache.
+    assert len(construction_keys) == 2
     assert default_res2["watermarked_text"] == "hello[None]"

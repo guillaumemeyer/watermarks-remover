@@ -24,11 +24,13 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import socket
 import socketserver
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -97,11 +99,15 @@ def _load_algorithm(
     offline: bool = False,
     temperature: float | None = None,
     top_p: float | None = None,
+    watermark_keys: list[int] | None = None,
 ):
     """Import the checkout and build an ``AutoWatermark`` instance.
 
     ``temperature``/``top_p`` (when not None) are folded into the generation
-    kwargs so callers can control sampling.
+    kwargs so callers can control sampling. ``watermark_keys`` (when not None)
+    overrides the algorithm's watermark keys in the config *before* the model
+    is constructed, so the logits processor bakes in the requested keys rather
+    than the config file's defaults.
     """
     gen_kwargs_extra: dict[str, float] = {}
     if temperature is not None:
@@ -137,11 +143,33 @@ def _load_algorithm(
         no_repeat_ngram_size=4,
         **gen_kwargs_extra,
     )
-    return AutoWatermark.load(
-        alg,
-        algorithm_config=str(config),
-        transformers_config=transformers_config,
-    )
+
+    # Apply the requested watermark keys before construction so the logits
+    # processor is built with them, instead of the config file's defaults.
+    tmp: str | None = None
+    if watermark_keys is not None:
+        data = json.loads(config.read_text("utf-8"))
+        data["keys"] = [int(k) for k in watermark_keys]
+        fd, tmp = tempfile.mkstemp(suffix=".json", prefix="watermarks-keys-", text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            config = Path(tmp)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    try:
+        return AutoWatermark.load(
+            alg,
+            algorithm_config=str(config),
+            transformers_config=transformers_config,
+        )
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
 
 def _threshold_from_config(config: Path) -> float | None:

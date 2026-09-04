@@ -106,9 +106,8 @@ def _generate_watermarked_sample(
                 offline=offline,
                 temperature=temperature,
                 top_p=top_p,
+                watermark_keys=keys,
             )
-            if keys is not None and hasattr(wm, "config"):
-                wm.config.keys = keys
             if len(_MODEL_CACHE) >= MAX_CACHED_MODELS:
                 _MODEL_CACHE.popitem(last=False)
             _MODEL_CACHE[cache_key] = wm
