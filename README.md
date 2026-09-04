@@ -319,6 +319,23 @@ as `unknown` (exit 0), and the HTTP service answers `/inspect` with
 `kind: "unknown"` but rejects `/clean` of unknown formats (400 — send a
 filename with a known extension, e.g. `notes.txt`).
 
+## macOS app
+
+`mac/` is **Watermarker**, a small SwiftUI app for the Layer B text rewrite:
+paste text or import a `.md`, `.txt`, or `.docx`, pick an OpenRouter model, and
+run the rewrite. It shells out to `service/scripts/rewrite_text.py` verbatim
+rather than reimplementing it, and Settings can pull newer scripts straight from
+this repository, so the app tracks upstream without a new build.
+
+```sh
+make -C mac app      # build mac/build/Watermarker.app (Xcode command line tools only)
+make -C mac run      # build it and launch it
+```
+
+The API key lives in iCloud Keychain and the model/strategy choices in the
+CloudKit key-value store, with a local fallback for unsigned builds. See
+[`mac/README.md`](mac/README.md).
+
 ## HTTP service
 
 The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) — the interface the skill uses and the way any web app can integrate without vendoring:
