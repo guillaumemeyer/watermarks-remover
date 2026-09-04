@@ -262,6 +262,17 @@ Optional system tools (auto-used when present — preinstalled in the core Docke
 
 Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
 
+### macOS app
+
+A SwiftUI front-end for inspect/clean (files + text) lives in [`mac/`](mac/). It
+calls `service/scripts` in-process via `python3` — no Docker, no `make serve`.
+See [`mac/README.md`](mac/README.md).
+
+```bash
+make mac-app
+open mac/build/WatermarksRemover.app
+```
+
 ## Quick use (scripts)
 
 ```bash

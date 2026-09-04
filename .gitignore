@@ -40,6 +40,8 @@
 !/SECURITY.md
 !/stealer/
 !/stealer/**
+!/mac/
+!/mac/**
 
 # Exceptions even inside allowed trees
 .env
@@ -54,3 +56,6 @@ stealer/prompts/**
 posts.md
 *.cleaned.*
 *.bak
+mac/.build/
+mac/build/
+mac/.swiftpm/

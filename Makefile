@@ -6,7 +6,7 @@
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
 	install-skill install-claude-code-skill install-claude-code-text-skill \
 	install-claude-project-skill package-cowork-skill package-cowork-text-skill \
-	install-cursor-text-skill plugin-validate clean
+	install-cursor-text-skill plugin-validate clean mac-app
 
 SCRIPTS := service/scripts
 PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
@@ -166,6 +166,9 @@ install-cursor-text-skill:
 # structurally so CI stays CLI-free.
 plugin-validate:
 	claude plugin validate . --strict
+
+mac-app:
+	$(MAKE) -C mac app
 
 clean:
 	rm -rf dist

@@ -37,6 +37,7 @@ issue.
 | `install_skill.py` | Multi-host skill installer (Claude Code, Cowork bundle, Cursor) |
 | `skills/remove-ai-marks/references/` | Vendors, mark classes, matrix, ethics |
 | `service/scripts/` | Layer A/B hooks + image/container cleaners + `server.py` HTTP service |
+| `mac/` | Optional SwiftUI front-end; shells out to `service/scripts` (see `mac/README.md`) |
 | `service/Dockerfile*` | Container images (core + optional backends) |
 | `compose.yaml` | Local full-stack bring-up |
 | `tests/` | Pytest suite and fixtures |
