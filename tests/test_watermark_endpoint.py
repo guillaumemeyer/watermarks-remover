@@ -406,3 +406,36 @@ def test_watermark_http_blocks_redirect():
         redirector.server_close()
         t1.join(timeout=2)
         t2.join(timeout=2)
+
+
+def test_resolve_timeout(monkeypatch):
+    from text_watermark import DEFAULT_SYNTHID_TEXT_TIMEOUT, resolve_timeout
+
+    # Defaults when no explicit value or env
+    monkeypatch.delenv("WATERMARKS_SYNTHID_TEXT_TIMEOUT", raising=False)
+    assert resolve_timeout(None) == DEFAULT_SYNTHID_TEXT_TIMEOUT
+
+    # Explicit clamped between floor (1.0) and ceiling (600.0)
+    assert resolve_timeout(0.1) == 1.0
+    assert resolve_timeout(-10.0) == 1.0
+    assert resolve_timeout(9999.0) == 600.0
+    assert resolve_timeout(45.5) == 45.5
+
+    # Env variable
+    monkeypatch.setenv("WATERMARKS_SYNTHID_TEXT_TIMEOUT", "120.0")
+    assert resolve_timeout(None) == 120.0
+
+    # Env variable clamped
+    monkeypatch.setenv("WATERMARKS_SYNTHID_TEXT_TIMEOUT", "0.05")
+    assert resolve_timeout(None) == 1.0
+
+
+def test_watermark_error_status_sidecar_4xx_vs_5xx():
+    # 4xx client errors mapped to 400 Bad Request
+    assert server._watermark_error_status("SynthID text sidecar client error (400): Bad request") == http.client.BAD_REQUEST
+    assert server._watermark_error_status("SynthID text sidecar client error (422): Unprocessable") == http.client.BAD_REQUEST
+
+    # 5xx or general unreachable mapped to 502 Bad Gateway
+    assert server._watermark_error_status("SynthID text sidecar HTTP error (500): Internal Error") == http.client.BAD_GATEWAY
+    assert server._watermark_error_status("SynthID text sidecar HTTP error (503): Service Unavailable") == http.client.BAD_GATEWAY
+

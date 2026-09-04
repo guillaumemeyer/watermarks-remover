@@ -119,6 +119,28 @@ def parse_watermark_options(raw: Any) -> dict[str, Any]:
     return parsed
 
 
+def resolve_timeout(
+    explicit: float | None,
+    *,
+    env_var: str = "WATERMARKS_SYNTHID_TEXT_TIMEOUT",
+    default: float = DEFAULT_SYNTHID_TEXT_TIMEOUT,
+    floor: float = 1.0,
+    ceiling: float = 600.0,
+) -> float:
+    """Resolve timeout from an explicit value or environment variable.
+
+    Returns *default* when neither is set. Clamps the result to
+    [floor, ceiling] to prevent unbounded waits or nonsensical sub-second
+    deadlines.
+    """
+    if explicit is not None:
+        t = float(explicit)
+    else:
+        raw = os.environ.get(env_var, "").strip()
+        t = float(raw) if raw else default
+    return max(floor, min(t, ceiling))
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Refuse HTTP redirects to prevent SSRF and credential forwarding."""
 
@@ -234,10 +256,18 @@ def _watermark_http(
                 "kind": "text",
                 "error": f"SynthID text sidecar redirect refused (SSRF protection): {e}",
             }
+        # Distinguish client-side (4xx) from server-side (5xx) sidecar errors
+        # so the gateway can propagate the correct HTTP status.
+        if 400 <= e.code < 500:
+            return {
+                "ok": False,
+                "kind": "text",
+                "error": f"SynthID text sidecar client error ({e.code}): {e}",
+            }
         return {
             "ok": False,
             "kind": "text",
-            "error": f"SynthID text sidecar HTTP error: {e}",
+            "error": f"SynthID text sidecar HTTP error ({e.code}): {e}",
         }
     except (
         urllib.error.URLError,
@@ -298,7 +328,11 @@ def _watermark_local_markllm(
         offline = bool(opts.get("offline", False))
         temperature = opts.get("temperature")
         top_p = opts.get("top_p")
-        cache_key = f"{scheme_alg}:{model}:{device}:{config_path}:{temperature}:{top_p}:{offline}"
+        keys_tag = ",".join(str(k) for k in keys) if keys else ""
+        cache_key = (
+            f"{scheme_alg}:{model}:{device}:{config_path}"
+            f":{temperature}:{top_p}:{offline}:{keys_tag}"
+        )
 
         with _LOCAL_MODEL_LOCK:
             if cache_key in _LOCAL_MODEL_CACHE:
@@ -315,31 +349,32 @@ def _watermark_local_markllm(
                     temperature=temperature,
                     top_p=top_p,
                 )
+                if keys is not None and hasattr(wm, "config"):
+                    wm.config.keys = keys
                 if len(_LOCAL_MODEL_CACHE) >= MAX_LOCAL_CACHED_MODELS:
                     _LOCAL_MODEL_CACHE.popitem(last=False)
                 _LOCAL_MODEL_CACHE[cache_key] = wm
 
-        if keys is not None and hasattr(wm, "config"):
-            wm.config.keys = keys
+            # All mutable config is set inside the lock so concurrent
+            # requests on the same cached model don't race on gen_kwargs.
+            seed = opts.get("seed")
+            if seed is not None:
+                try:
+                    import torch  # type: ignore
 
-        seed = opts.get("seed")
-        if seed is not None:
-            try:
-                import torch  # type: ignore
+                    torch.manual_seed(int(seed))
+                except (ImportError, ModuleNotFoundError):
+                    pass
 
-                torch.manual_seed(int(seed))
-            except (ImportError, ModuleNotFoundError):
-                pass
+            wm.config.gen_kwargs["max_new_tokens"] = int(opts.get("max_new_tokens", 200))
+            wm.config.gen_kwargs["min_length"] = int(opts.get("min_length", 0))
 
-        wm.config.gen_kwargs["max_new_tokens"] = int(opts.get("max_new_tokens", 200))
-        wm.config.gen_kwargs["min_length"] = int(opts.get("min_length", 0))
-
-        if timeout is not None:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(wm.generate_watermarked_text, text)
-                watermarked = future.result(timeout=timeout)
-        else:
-            watermarked = wm.generate_watermarked_text(text)
+            if timeout is not None:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(wm.generate_watermarked_text, text)
+                    watermarked = future.result(timeout=timeout)
+            else:
+                watermarked = wm.generate_watermarked_text(text)
 
         return {
             "ok": True,
@@ -391,14 +426,7 @@ def generate_watermark_text(
             if api_key is not None
             else os.environ.get("WATERMARKS_SYNTHID_TEXT_API_KEY", "").strip()
         )
-        raw_timeout = os.environ.get("WATERMARKS_SYNTHID_TEXT_TIMEOUT", "")
-        t = (
-            timeout
-            if timeout is not None
-            else float(raw_timeout)
-            if raw_timeout.strip()
-            else DEFAULT_SYNTHID_TEXT_TIMEOUT
-        )
+        t = resolve_timeout(timeout)
         return _watermark_http(
             text,
             url,

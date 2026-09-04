@@ -89,6 +89,8 @@ def _generate_watermarked_sample(
     config_path = _resolve_config(upstream, alg, opts.get("config"))
     offline = bool(opts.get("offline", False))
     cache_key = f"{alg}:{model_name}:{device}:{config_path}:{temperature}:{top_p}:{offline}"
+    keys_tag = ",".join(str(k) for k in keys) if keys else ""
+    cache_key = f"{cache_key}:{keys_tag}"
 
     with _MODEL_LOCK:
         if cache_key in _MODEL_CACHE:
@@ -105,12 +107,11 @@ def _generate_watermarked_sample(
                 temperature=temperature,
                 top_p=top_p,
             )
+            if keys is not None and hasattr(wm, "config"):
+                wm.config.keys = keys
             if len(_MODEL_CACHE) >= MAX_CACHED_MODELS:
                 _MODEL_CACHE.popitem(last=False)
             _MODEL_CACHE[cache_key] = wm
-
-        if keys is not None and hasattr(wm, "config"):
-            wm.config.keys = keys
 
         watermarked, _ = _generate(
             wm,
@@ -209,7 +210,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"failed to decode base64 'file': {e}") from e
             if len(decoded) > MAX_INPUT_BYTES:
                 raise ValueError(f"decoded file exceeds input size cap ({MAX_INPUT_BYTES} bytes)")
-            text = decoded.decode("utf-8")
+            try:
+                text = decoded.decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise ValueError(f"decoded file is not valid UTF-8: {e}") from e
 
         if not isinstance(text, str) or not text.strip():
             raise ValueError("'text' must be a non-empty string")

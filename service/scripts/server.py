@@ -76,9 +76,9 @@ from score_stylometry import score_text_stylometry
 from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
 from text_unicode import clean_text, inspect_text
 from text_watermark import (
-    DEFAULT_SYNTHID_TEXT_TIMEOUT,
     generate_watermark_text,
     parse_watermark_options,
+    resolve_timeout,
 )
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
@@ -361,6 +361,10 @@ def _watermark_error_status(err: str) -> HTTPStatus:
     e = err.lower()
     if "no text watermark generator configured" in e:
         return HTTPStatus.SERVICE_UNAVAILABLE
+    # Sidecar returned a 4xx — the *client* sent a bad request through to the
+    # sidecar, so propagate 400 instead of 502.
+    if "sidecar client error" in e:
+        return HTTPStatus.BAD_REQUEST
     if (
         "unreachable" in e
         or "http error" in e
@@ -395,16 +399,38 @@ def _watermark_request_schema() -> dict[str, Any]:
                 properties={
                     "scheme": _schema(type="string", default="synthid"),
                     "seed": _schema(type="integer"),
-                    "max_new_tokens": _schema(type="integer", default=200),
-                    "min_length": _schema(type="integer", default=0),
-                    "temperature": _schema(type="number"),
-                    "top_p": _schema(type="number"),
+                    "max_new_tokens": _schema(
+                        type="integer",
+                        default=200,
+                        minimum=1,
+                        maximum=8192,
+                    ),
+                    "min_length": _schema(
+                        type="integer",
+                        default=0,
+                        minimum=0,
+                        maximum=8192,
+                    ),
+                    "temperature": _schema(
+                        type="number",
+                        exclusiveMinimum=0,
+                    ),
+                    "top_p": _schema(
+                        type="number",
+                        exclusiveMinimum=0,
+                        maximum=1,
+                    ),
                     "model": _schema(type="string"),
                 },
             ),
         },
     )
 
+
+_ERROR_SCHEMA = _schema(
+    type="object",
+    properties={"ok": _schema(type="boolean", enum=[False]), "error": _schema(type="string")},
+)
 
 _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
     "/health": {
@@ -699,7 +725,15 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "watermarked_text": _schema(type="string"),
                         "report": _schema(type="object"),
                     },
-                )
+                ),
+                "502": {
+                    "description": "Sidecar / MarkLLM backend error",
+                    "content": {"application/json": {"schema": _ERROR_SCHEMA}},
+                },
+                "503": {
+                    "description": "No text watermark generator configured",
+                    "content": {"application/json": {"schema": _ERROR_SCHEMA}},
+                },
             },
         }
     },
@@ -749,10 +783,6 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
     },
 }
 
-_ERROR_SCHEMA = _schema(
-    type="object",
-    properties={"ok": _schema(type="boolean", enum=[False]), "error": _schema(type="string")},
-)
 _COMMON_ERRORS = {
     "400": {
         "description": "Bad request",
@@ -1520,7 +1550,8 @@ class Handler(BaseHTTPRequestHandler):
         text, _name = self._extract_text_input(body)
         keys = body.get("keys")
         options = parse_watermark_options(body.get("options"))
-        res = generate_watermark_text(text, keys=keys, options=options)
+        timeout = resolve_timeout(None)
+        res = generate_watermark_text(text, keys=keys, options=options, timeout=timeout)
         if res.get("ok"):
             self._respond(HTTPStatus.OK, res)
         else:
@@ -1552,8 +1583,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        raw_timeout = os.environ.get("WATERMARKS_SYNTHID_TEXT_TIMEOUT", "")
-        batch_budget = float(raw_timeout) if raw_timeout.strip() else DEFAULT_SYNTHID_TEXT_TIMEOUT
+        batch_budget = resolve_timeout(None)
         deadline = time.monotonic() + batch_budget
 
         results = []

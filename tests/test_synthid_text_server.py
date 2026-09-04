@@ -384,3 +384,19 @@ def test_sidecar_keys_rejects_bool(sidecar_server):
     assert status == 400
     assert body["ok"] is False
     assert "boolean" in body["error"]
+
+
+def test_sidecar_non_utf8_file(sidecar_server):
+    conn, _ = sidecar_server
+    # Non-UTF8 byte sequence e.g. 0xFF 0xFE
+    raw_invalid_utf8 = b"\xff\xfe\xfa"
+    b64_invalid = base64.b64encode(raw_invalid_utf8).decode("ascii")
+    status, body = _post(
+        conn,
+        "/watermark",
+        {"file": b64_invalid},
+    )
+    assert status == 400
+    assert body["ok"] is False
+    assert "not valid UTF-8" in body["error"]
+
