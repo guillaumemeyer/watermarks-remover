@@ -28,6 +28,36 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// What to send as the OpenAI `reasoning_effort` parameter, if anything.
+    ///
+    /// OpenRouter rejects `reasoning_effort` outright for models that have no
+    /// reasoning mode -- which is most of them -- so the default omits the
+    /// parameter and the app works with any slug. Sending `none` is worth it
+    /// only on a reasoning model that accepts it: without it, a model like
+    /// deepseek-v4-flash spends thousands of chain-of-thought tokens on a
+    /// one-line rewrite.
+    /// The case for `reasoning_effort: "none"` is spelled `skip` rather than
+    /// `none`, so it can never be confused with `Optional.none` at a use site.
+    enum ReasoningEffort: String, CaseIterable, Identifiable, Sendable {
+        case off = "off"
+        case skip = "none"
+        case low = "low"
+        case medium = "medium"
+        case high = "high"
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .off: return "Omit — works with every model"
+            case .skip: return "none — skip chain-of-thought"
+            case .low: return "low"
+            case .medium: return "medium"
+            case .high: return "high"
+            }
+        }
+    }
+
     /// A named Layer B strategy, in the `tactic@intensity,...` form
     /// `rewrite_text.py --strategy` parses.
     struct StrategyPreset: Identifiable, Hashable {
@@ -84,6 +114,7 @@ final class SettingsStore: ObservableObject {
         static let strategy = "rewrite.strategy"
         static let temperature = "rewrite.temperature"
         static let timeout = "rewrite.timeout"
+        static let reasoningEffort = "rewrite.reasoningEffort"
         static let updateRepository = "updates.repository"
         static let updateRef = "updates.ref"
         static let recentModels = "openrouter.recentModels"
@@ -108,6 +139,9 @@ final class SettingsStore: ObservableObject {
     @Published var strategy: String { didSet { put(Key.strategy, strategy) } }
     @Published var temperature: Double { didSet { put(Key.temperature, temperature) } }
     @Published var timeoutSeconds: Double { didSet { put(Key.timeout, timeoutSeconds) } }
+    @Published var reasoningEffort: ReasoningEffort {
+        didSet { put(Key.reasoningEffort, reasoningEffort.rawValue) }
+    }
     @Published var updateRepository: String { didSet { put(Key.updateRepository, updateRepository) } }
     @Published var updateRef: String { didSet { put(Key.updateRef, updateRef) } }
     @Published private(set) var recentModels: [String] { didSet { put(Key.recentModels, recentModels) } }
@@ -163,6 +197,7 @@ final class SettingsStore: ObservableObject {
         strategy = string(Key.strategy, Self.presets[0].spec)
         temperature = number(Key.temperature, 0.9)
         timeoutSeconds = number(Key.timeout, 180)
+        reasoningEffort = ReasoningEffort(rawValue: string(Key.reasoningEffort, "off")) ?? .off
         updateRepository = string(Key.updateRepository, Self.defaultRepository)
         updateRef = string(Key.updateRef, Self.defaultRef)
         recentModels = (kvs.array(forKey: Key.recentModels) as? [String])
@@ -243,6 +278,10 @@ final class SettingsStore: ObservableObject {
         if cloud.object(forKey: Key.timeout) != nil {
             let value = cloud.double(forKey: Key.timeout)
             if value != timeoutSeconds { timeoutSeconds = value }
+        }
+        if let raw = cloud.string(forKey: Key.reasoningEffort),
+           let value = ReasoningEffort(rawValue: raw), value != reasoningEffort {
+            reasoningEffort = value
         }
         if let value = cloud.array(forKey: Key.recentModels) as? [String],
            value != recentModels { recentModels = value }

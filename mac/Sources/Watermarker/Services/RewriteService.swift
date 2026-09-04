@@ -15,6 +15,10 @@ struct RewriteService: Sendable {
         var strategy: String
         var temperature: Double
         var timeout: Double
+        /// Passed through to `--reasoning-effort`. Always sent explicitly: the
+        /// script's own default is `none`, and `WATERMARKS_REWRITE_REASONING_EFFORT`
+        /// in the user's shell would otherwise decide it.
+        var reasoningEffort: String
     }
 
     struct Outcome: Sendable {
@@ -99,6 +103,7 @@ struct RewriteService: Sendable {
             "--strategy", request.strategy,
             "--temperature", String(format: "%.2f", request.temperature),
             "--timeout", String(format: "%.0f", request.timeout),
+            "--reasoning-effort", request.reasoningEffort,
             "--allow-remote",          // OpenRouter is, by definition, not loopback
             "--json-stats",
             "--output", "-",
@@ -125,7 +130,7 @@ struct RewriteService: Sendable {
         let (stats, log) = Self.splitStats(from: result.standardError)
         guard result.succeeded else {
             throw RewriteError.scriptFailed(status: result.exitCode,
-                                            message: Self.redact(log, key: key))
+                                            message: Self.redact(Self.failureLines(log), key: key))
         }
         let text = result.standardOutput
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -156,6 +161,24 @@ struct RewriteService: Sendable {
         else { return (nil, stderr) }
         let log = lines[..<start].joined(separator: "\n")
         return (stats, log)
+    }
+
+    /// The failure, without the advisory lines that share the same stream.
+    ///
+    /// The script warns on stderr that a non-loopback endpoint means the text
+    /// leaves the machine -- true and worth saying, but it is not why a run
+    /// failed, and folding it into the error banner buried the real reason
+    /// underneath it. Warnings stay in the log pane; only the rest becomes the
+    /// message. If nothing is left, the warnings are better than nothing.
+    static func failureLines(_ log: String) -> String {
+        let lines = log.components(separatedBy: "\n")
+        let kept = lines.filter {
+            let line = $0.trimmingCharacters(in: .whitespaces)
+            return !line.isEmpty && !line.lowercased().hasPrefix("warning:")
+        }
+        return (kept.isEmpty ? lines : kept)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Belt and braces: the script never echoes the key, but the log is shown

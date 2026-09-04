@@ -594,8 +594,58 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
         method="POST",
     )
     opener = urllib.request.build_opener(_NoRedirect())
-    with opener.open(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # urllib's HTTPError stringifies to just "HTTP Error 400: Bad Request",
+        # discarding the body -- which is the only place an OpenAI-compatible
+        # gateway says *why* it refused (an unsupported parameter, an unknown
+        # model, a spent quota). Fold that detail into the message and re-raise
+        # the same type, so callers that match on HTTPError still do.
+        detail = _http_error_detail(e)
+        if not detail:
+            raise
+        raise urllib.error.HTTPError(
+            e.url, e.code, f"{e.reason}: {detail}", e.headers, None
+        ) from None
+
+
+# Enough of a gateway's refusal to act on, without pasting a whole HTML page
+# into a terminal.
+_HTTP_ERROR_DETAIL_CHARS = 400
+
+
+def _http_error_detail(e: urllib.error.HTTPError) -> str:
+    """The useful part of an HTTP error body, or "" when there is none.
+
+    Prefers the ``{"error": {"message": ...}}`` shape OpenAI-compatible
+    gateways use, falling back to the raw text. Never raises: a body that is
+    already consumed, binary, or absent just yields "".
+    """
+    try:
+        raw = e.read()
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if not raw:
+        return ""
+    text = raw.decode("utf-8", "replace").strip()
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        error = parsed.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            text = str(error["message"])
+        elif isinstance(error, str) and error:
+            text = error
+        elif parsed.get("message"):
+            text = str(parsed["message"])
+    text = " ".join(text.split())
+    if len(text) > _HTTP_ERROR_DETAIL_CHARS:
+        text = text[:_HTTP_ERROR_DETAIL_CHARS] + "…"
+    return text
 
 
 def call_ollama(base_url: str, model: str, prompt: str, timeout: float, temperature: float) -> str:

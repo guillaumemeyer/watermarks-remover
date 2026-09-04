@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / "mac"
 SCRIPTS = ROOT / "service" / "scripts"
 SCRIPT_BUNDLE = MAC / "Sources" / "Watermarker" / "Services" / "ScriptBundle.swift"
+REWRITE_SERVICE = MAC / "Sources" / "Watermarker" / "Services" / "RewriteService.swift"
 BUILD_SCRIPT = MAC / "Scripts" / "build_app.sh"
 
 ENTRY_POINT = "rewrite_text.py"
@@ -108,3 +109,40 @@ def test_bundled_scripts_are_standard_library_only() -> None:
                     f"{name} imports {root} at module level, which the system "
                     "python3 the app runs does not have"
                 )
+
+
+def test_app_sets_reasoning_effort_explicitly() -> None:
+    """The app must not inherit the script's own --reasoning-effort default.
+
+    ``rewrite_text.py`` defaults to ``none``, which OpenAI accepts and most
+    other vendors reject with a 400 -- so leaving the flag off made the app
+    work only with OpenAI models on OpenRouter. The flag is also read from
+    ``WATERMARKS_REWRITE_REASONING_EFFORT``, which the app inherits from the
+    user's shell, so passing it explicitly is the only way to be deterministic.
+    """
+    source = REWRITE_SERVICE.read_text(encoding="utf-8")
+    assert '"--reasoning-effort"' in source
+
+
+def test_app_defaults_reasoning_effort_to_off() -> None:
+    """``off`` is the only value that omits the parameter for every model."""
+    source = (MAC / "Sources" / "Watermarker" / "Models" / "SettingsStore.swift").read_text(
+        encoding="utf-8"
+    )
+    assert 'Key.reasoningEffort, "off"' in source
+
+
+def test_reasoning_effort_choices_match_the_script() -> None:
+    """The picker cannot offer a value argparse would reject."""
+    swift = (MAC / "Sources" / "Watermarker" / "Models" / "SettingsStore.swift").read_text(
+        encoding="utf-8"
+    )
+    block = re.search(r"enum ReasoningEffort.*?\n    \}", swift, re.DOTALL)
+    assert block, "SettingsStore.swift no longer declares ReasoningEffort"
+    offered = set(re.findall(r'case \w+ = "([^"]+)"', block.group(0)))
+
+    script = (SCRIPTS / "rewrite_text.py").read_text(encoding="utf-8")
+    accepted = re.search(r'"--reasoning-effort",\s*choices=\((.*?)\),', script, re.DOTALL)
+    assert accepted, "rewrite_text.py no longer declares --reasoning-effort choices"
+    allowed = set(re.findall(r'"([^"]+)"', accepted.group(1)))
+    assert offered <= allowed, f"picker offers values the script rejects: {offered - allowed}"

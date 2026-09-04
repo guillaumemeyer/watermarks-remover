@@ -195,6 +195,23 @@ private struct StrategySettings: View {
                     .watermarkerWell()
             }
 
+            SettingsSection(
+                title: "Reasoning effort",
+                caption: "Most OpenRouter models have no reasoning mode and reject "
+                    + "this parameter outright with a 400, so the default omits it. "
+                    + "Send \"none\" only on a reasoning model that accepts it: "
+                    + "without it, one of those can spend thousands of "
+                    + "chain-of-thought tokens on a one-line rewrite."
+            ) {
+                Picker("", selection: $settings.reasoningEffort) {
+                    ForEach(SettingsStore.ReasoningEffort.allCases) { effort in
+                        Text(effort.label).tag(effort)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+
             SettingsSection(title: "Sampling", caption: nil) {
                 LabeledSlider(label: "Temperature",
                               value: $settings.temperature,

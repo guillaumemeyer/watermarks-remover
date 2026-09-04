@@ -973,3 +973,99 @@ def test_rewrite_noop_guard_flags_verbatim_output(monkeypatch):
     )
     assert info["noop"] is True
     assert out == text
+
+
+# --- HTTP error bodies reach the caller -------------------------------------
+# urllib stringifies an HTTPError as just "HTTP Error 400: Bad Request", which
+# tells a user nothing. An OpenAI-compatible gateway puts the actual reason in
+# the response body -- an unsupported parameter, an unknown model, a spent
+# quota -- so _http_json folds that into the message it re-raises.
+
+
+def _serve_error(status: int, body: bytes, content_type: str = "application/json"):
+    """Run a one-endpoint server that always answers with *status* and *body*."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _rewrite_against(server, **overrides):
+    return rewrite(
+        "some text",
+        **_rewrite_http_kwargs(f"http://127.0.0.1:{server.server_address[1]}", **overrides),
+    )
+
+
+def test_http_error_message_carries_the_gateway_reason():
+    body = json.dumps(
+        {"error": {"message": "Reasoning effort 'none' is not supported by this model"}}
+    ).encode()
+    server = _serve_error(400, body)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _rewrite_against(server)
+    finally:
+        server.shutdown()
+    message = str(excinfo.value)
+    assert "400" in message
+    assert "Reasoning effort 'none' is not supported by this model" in message
+
+
+def test_http_error_falls_back_to_the_raw_body():
+    server = _serve_error(502, b"upstream is down", content_type="text/plain")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _rewrite_against(server)
+    finally:
+        server.shutdown()
+    assert "upstream is down" in str(excinfo.value)
+
+
+def test_http_error_detail_is_bounded():
+    body = json.dumps({"error": {"message": "x" * 5000}}).encode()
+    server = _serve_error(400, body)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _rewrite_against(server)
+    finally:
+        server.shutdown()
+    # Bounded, but still long enough to be worth reading.
+    assert len(str(excinfo.value)) < rewrite_text._HTTP_ERROR_DETAIL_CHARS + 200
+
+
+def test_http_error_with_no_body_keeps_the_plain_message():
+    server = _serve_error(429, b"")
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            _rewrite_against(server)
+    finally:
+        server.shutdown()
+    assert excinfo.value.code == 429
+
+
+def test_http_error_detail_never_raises_on_a_junk_body():
+    """A body that is binary, empty, or unreadable degrades to no detail."""
+
+    class Unreadable:
+        def read(self):
+            raise OSError("stream already consumed")
+
+    assert rewrite_text._http_error_detail(Unreadable()) == ""
+
+    class Binary:
+        def read(self):
+            return b"\xff\xfe\x00\x01"
+
+    assert isinstance(rewrite_text._http_error_detail(Binary()), str)

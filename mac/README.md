@@ -59,6 +59,19 @@ strategy costs some of your wording. Settings ▸ Strategy offers:
 The custom field takes any `tactic@intensity` list `rewrite_text.py --strategy`
 accepts, with intensity in `(0,1]`.
 
+### Reasoning effort
+
+**Settings ▸ Strategy ▸ Reasoning effort** defaults to **Omit**, and should stay
+there for almost every model. `rewrite_text.py` defaults to sending
+`reasoning_effort: "none"`, which OpenAI accepts but most other vendors reject
+outright — through OpenRouter that surfaces as a bare `HTTP Error 400: Bad
+Request`. The app passes the flag explicitly rather than inheriting that
+default, so any model slug works out of the box.
+
+Send `none` only on a reasoning model that accepts it. It is worth doing there:
+without it, a model like `deepseek-v4-flash` will spend thousands of
+chain-of-thought tokens on a one-line rewrite.
+
 Rewriting is **best-effort**, the same caveat the CLI carries. The app reports
 what the script reports; it cannot certify that a vendor detector will fail. See
 the root [README's disclaimer](../README.md#disclaimer-what-removing-a-text-watermark-costs).

@@ -104,7 +104,8 @@ final class AppModel: ObservableObject {
             apiKey: settings.apiKey,
             strategy: settings.strategy,
             temperature: settings.temperature,
-            timeout: settings.timeoutSeconds
+            timeout: settings.timeoutSeconds,
+            reasoningEffort: settings.reasoningEffort.rawValue
         )
         let rewriter = self.rewriter
         let started = Date()
