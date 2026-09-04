@@ -1140,6 +1140,10 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 [unmark-web](https://github.com/ivanusto/unmark-web) is an independent, MIT-licensed static web client. It removes invisible Unicode marks from text and strips provenance metadata from images entirely in the browser, and can optionally call this repository's HTTP service for the formats it does not handle locally. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
 
+### DropMarks — macOS GUI
+
+[DropMarks](https://github.com/Nicktili72/dropmarks) is an independent MIT-licensed macOS SwiftUI application. It calls this repository's `inspect_file.py` / `clean_file.py` (and optionally `rewrite_text.py`) via a vendored snapshot of those stdlib scripts. It is a separate codebase and is not affiliated with this project; see its README for scope and limits.
+
 ### Adding a project
 
 To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project. A listed project should build on or integrate this repository — for example, by calling its service or reusing its detection engine — rather than merely address the same problem independently. Please avoid names that start with or closely resemble `watermarks-remover` — look-alike names make it hard to tell which project is which.
