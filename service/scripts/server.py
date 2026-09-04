@@ -12,14 +12,18 @@ Endpoints:
     POST /detect         -> {"file": <base64>, "name": "x.txt"} -> watermark detector reports
     POST /clean          -> {"file": <base64>, "name": "x.png", "options": {...}}
                          -> {"cleaned": <base64>, "report": {...}}
+    POST /watermark      -> {"text": str, "keys": list[int], "options": {...}}
+                         -> {"ok": true, "kind": "text", "watermarked_text": str, "report": {...}}
     POST /inspect/batch  -> {"files": [{"file": <base64>, "name": "x.png"}, ...]}
                          -> {"results": [{"name", "ok", "kind", "report", "suspicious"}, ...]}
     POST /detect/batch   -> {"files": [{"file": <base64>, "name": "x.txt"}, ...]}
                          -> {"results": [{"name", "ok", "kind", "detections", "report"}, ...]}
     POST /clean/batch    -> {"files": [{"file": <base64>, "name": "x.png", "options": {...}}, ...]}
                          -> {"results": [{"name", "ok", "kind", "cleaned", "report"}, ...]}
+    POST /watermark/batch -> {"files": [{"text": str, "keys": list[int], ...}, ...]}
+                         -> {"results": [{"name", "ok", "kind", "watermarked_text", "report"}, ...]}
 
-Batch endpoints loop the same single-file pipeline as /inspect, /detect, and /clean; a
+Batch endpoints loop the same single-file pipeline as /inspect, /detect, /clean, and /watermark; a
 per-file failure (unknown format, oversized name, bad option) shows up as
 that entry's "ok": false with an "error" string and never aborts the rest of
 the batch. Capped at WATERMARKS_MAX_BATCH_FILES entries per request (default
@@ -42,6 +46,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from datetime import datetime
 from functools import cache
@@ -70,6 +75,11 @@ from image_meta import clean_image, inspect_image, run_synthid_score, synthid_is
 from score_stylometry import score_text_stylometry
 from text_detectors import detector_status, run_all_text_detectors, run_text_detectors
 from text_unicode import clean_text, inspect_text
+from text_watermark import (
+    DEFAULT_SYNTHID_TEXT_TIMEOUT,
+    generate_watermark_text,
+    parse_watermark_options,
+)
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
 
@@ -199,6 +209,10 @@ def capabilities() -> dict[str, Any]:
             "stylometry": True,
         },
         "text_detectors": detector_status(),
+        "text_generators": {
+            "synthid_http": bool(os.environ.get("WATERMARKS_SYNTHID_TEXT_URL")),
+            "markllm": bool(os.environ.get("MARKLLM_DIR")),
+        },
         "harnesses": {
             "markllm": bool(os.environ.get("MARKLLM_DIR")),
         },
@@ -343,6 +357,55 @@ def _clean_request_schema() -> dict[str, Any]:
     )
 
 
+def _watermark_error_status(err: str) -> HTTPStatus:
+    e = err.lower()
+    if "no text watermark generator configured" in e:
+        return HTTPStatus.SERVICE_UNAVAILABLE
+    if (
+        "unreachable" in e
+        or "http error" in e
+        or "bad watermark sidecar response" in e
+        or "refusing non-http" in e
+        or "redirect refused" in e
+        or "timed out" in e
+        or "markllm generation failed" in e
+        or "invalid markllm_dir" in e
+        or "upstream directory not found" in e
+    ):
+        return HTTPStatus.BAD_GATEWAY
+    return HTTPStatus.BAD_REQUEST
+
+
+def _watermark_request_schema() -> dict[str, Any]:
+    return _schema(
+        type="object",
+        additionalProperties=False,
+        properties={
+            "text": _schema(type="string", description="Prompt or text to watermark"),
+            "file": _schema(type="string", description="Base64-encoded text file"),
+            "name": _schema(type="string", description="Optional filename"),
+            "keys": _schema(
+                type="array",
+                items=_schema(type="integer"),
+                description="Optional SynthID key sequence",
+            ),
+            "options": _schema(
+                type="object",
+                additionalProperties=False,
+                properties={
+                    "scheme": _schema(type="string", default="synthid"),
+                    "seed": _schema(type="integer"),
+                    "max_new_tokens": _schema(type="integer", default=200),
+                    "min_length": _schema(type="integer", default=0),
+                    "temperature": _schema(type="number"),
+                    "top_p": _schema(type="number"),
+                    "model": _schema(type="string"),
+                },
+            ),
+        },
+    )
+
+
 _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
     "/health": {
         "get": {
@@ -391,6 +454,13 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "text_detectors": _schema(
                             type="object",
                             additionalProperties=_schema(type="boolean"),
+                        ),
+                        "text_generators": _schema(
+                            type="object",
+                            properties={
+                                "synthid_http": _schema(type="boolean"),
+                                "markllm": _schema(type="boolean"),
+                            },
                         ),
                     },
                 )
@@ -603,6 +673,70 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                         type="string", enum=["text", "image", "container", "av"]
                                     ),
                                     "cleaned": _schema(type="string"),
+                                    "report": _schema(type="object"),
+                                    "error": _schema(type="string"),
+                                },
+                            ),
+                        ),
+                    },
+                )
+            },
+        }
+    },
+    "/watermark": {
+        "post": {
+            "summary": "Generate watermarked text using the configured sidecar or generator",
+            "requestBody": _schema(
+                required=True,
+                content={"application/json": _schema(schema=_watermark_request_schema())},
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "kind": _schema(type="string", enum=["text"]),
+                        "watermarked_text": _schema(type="string"),
+                        "report": _schema(type="object"),
+                    },
+                )
+            },
+        }
+    },
+    "/watermark/batch": {
+        "post": {
+            "summary": f"Generate watermarked text for up to {MAX_BATCH_FILES} files in one request",
+            "requestBody": _schema(
+                required=True,
+                content={
+                    "application/json": _schema(
+                        schema=_schema(
+                            type="object",
+                            required=["files"],
+                            properties={
+                                "files": _schema(
+                                    type="array",
+                                    items=_watermark_request_schema(),
+                                )
+                            },
+                        )
+                    )
+                },
+            ),
+            "responses": {
+                "200": _schema(
+                    type="object",
+                    properties={
+                        "ok": _schema(type="boolean"),
+                        "results": _schema(
+                            type="array",
+                            items=_schema(
+                                type="object",
+                                properties={
+                                    "name": _schema(type="string"),
+                                    "ok": _schema(type="boolean"),
+                                    "kind": _schema(type="string", enum=["text"]),
+                                    "watermarked_text": _schema(type="string"),
                                     "report": _schema(type="object"),
                                     "error": _schema(type="string"),
                                 },
@@ -1266,9 +1400,11 @@ class Handler(BaseHTTPRequestHandler):
             "/inspect",
             "/clean",
             "/detect",
+            "/watermark",
             "/inspect/batch",
             "/detect/batch",
             "/clean/batch",
+            "/watermark/batch",
         ):
             self._respond(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -1288,6 +1424,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_detect_batch(body)
             elif path == "/clean/batch":
                 self._handle_clean_batch(body)
+            elif path == "/watermark/batch":
+                self._handle_watermark_batch(body)
+            elif path == "/watermark":
+                self._handle_watermark(body)
             else:
                 data, name = _decode_input(body)
                 if path == "/inspect":
@@ -1359,6 +1499,98 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"name": name, "ok": False, "error": str(e)})
                 continue
             results.append({"name": name, **payload})
+        self._respond(HTTPStatus.OK, {"ok": True, "results": results})
+
+    def _extract_text_input(self, body: dict[str, Any]) -> tuple[str, str]:
+        """Extract raw text and optional name from a watermark request body."""
+        name = body.get("name") if isinstance(body.get("name"), str) else ""
+        if "text" in body:
+            raw_text = body["text"]
+            if not isinstance(raw_text, str) or not raw_text.strip():
+                raise ValueError("'text' must be a non-empty string")
+            return raw_text, name
+        if "file" in body:
+            data, decoded_name = _decode_input(body)
+            if looks_binary(data):
+                raise ValueError("refusing to treat binary content as text for watermarking")
+            return data.decode("utf-8", errors="surrogateescape"), name or decoded_name
+        raise ValueError("request must include 'text' or base64 'file'")
+
+    def _handle_watermark(self, body: dict[str, Any]) -> None:
+        text, _name = self._extract_text_input(body)
+        keys = body.get("keys")
+        options = parse_watermark_options(body.get("options"))
+        res = generate_watermark_text(text, keys=keys, options=options)
+        if res.get("ok"):
+            self._respond(HTTPStatus.OK, res)
+        else:
+            self._respond(_watermark_error_status(res.get("error", "")), res)
+
+    def _handle_watermark_batch(self, body: dict[str, Any]) -> None:
+        files = body.get("files")
+        if not isinstance(files, list):
+            raise ValueError("missing array field 'files'")
+        if not files:
+            raise ValueError("'files' must not be empty")
+        if len(files) > MAX_BATCH_FILES:
+            raise ValueError(f"'files' exceeds the {MAX_BATCH_FILES}-file batch limit")
+
+        backend_configured = bool(
+            os.environ.get("WATERMARKS_SYNTHID_TEXT_URL", "").strip()
+            or os.environ.get("MARKLLM_DIR", "").strip()
+        )
+        if not backend_configured:
+            self._respond(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "ok": False,
+                    "error": (
+                        "no text watermark generator configured (set WATERMARKS_SYNTHID_TEXT_URL "
+                        "for the sidecar or MARKLLM_DIR for local execution)"
+                    ),
+                },
+            )
+            return
+
+        raw_timeout = os.environ.get("WATERMARKS_SYNTHID_TEXT_TIMEOUT", "")
+        batch_budget = float(raw_timeout) if raw_timeout.strip() else DEFAULT_SYNTHID_TEXT_TIMEOUT
+        deadline = time.monotonic() + batch_budget
+
+        results = []
+        timed_out = False
+        for entry in files:
+            if not isinstance(entry, dict):
+                results.append(
+                    {"name": "", "ok": False, "error": "each entry in 'files' must be an object"}
+                )
+                continue
+            name = entry.get("name") if isinstance(entry.get("name"), str) else ""
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or timed_out:
+                timed_out = True
+                results.append({"name": name, "ok": False, "error": "batch deadline exceeded"})
+                continue
+
+            try:
+                text, extracted_name = self._extract_text_input(entry)
+                entry_name = name or extracted_name
+                keys = entry.get("keys")
+                options = parse_watermark_options(entry.get("options"))
+                res = generate_watermark_text(text, keys=keys, options=options, timeout=remaining)
+                if res.get("ok"):
+                    results.append({"name": entry_name, **res})
+                else:
+                    err = res.get("error", "watermark generation failed")
+                    if "timed out" in err.lower():
+                        timed_out = True
+                    results.append({"name": entry_name, "ok": False, "error": err})
+            except ValueError as e:
+                results.append({"name": name, "ok": False, "error": str(e)})
+            except Exception as e:
+                self.log_error("watermark batch entry error for %r: %r", name, e)
+                results.append({"name": name, "ok": False, "error": "internal error"})
+
         self._respond(HTTPStatus.OK, {"ok": True, "results": results})
 
 
