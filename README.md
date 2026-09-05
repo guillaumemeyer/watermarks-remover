@@ -331,10 +331,13 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
 | POST | `/clean` | `{"file": "<base64>", "name": "notes.md", "options": {...}}` | `{"ok", "kind", "cleaned": "<base64>", "report"}` |
+| POST | `/watermark` | `{"text": "...", "keys": [118, 504, ...], "options": {...}}` or `{"file": "<base64>", ...}` | `{"ok", "kind", "watermarked_text", "report": {"scheme_used", ...}}` |
 | POST | `/inspect/batch` | `{"files": [{"file": "<base64>", "name": "notes.md"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "suspicious", "report"}, ...]}` |
-| POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "notes.md", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned": "<base64>", "report"}, ...]}` |
+| POST | `/detect/batch` | `{"files": [{"file": "<base64>", "name": "notes.txt"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "detections", "report"}, ...]}` |
+| POST | `/clean/batch` | `{"files": [{"file": "<base64>", "name": "notes.md", "options": {...}}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "cleaned", "report"}, ...]}` |
+| POST | `/watermark/batch` | `{"files": [{"text": "...", "keys": [...]}, {"file": "<base64>"}, ...]}` | `{"ok", "results": [{"name", "ok", "kind", "watermarked_text", "report": {"scheme_used", ...}}, ...]}` |
 
-Batch endpoints loop the same per-file pipeline as `/inspect` and `/clean`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string — it never aborts the rest of the batch.
+Batch endpoints loop the same per-file pipeline as `/inspect`, `/detect`, `/clean`, and `/watermark`, capped at `WATERMARKS_MAX_BATCH_FILES` files per request (default 50). A malformed entry (bad base64, unknown option, unrecognized format) surfaces as that entry's `"ok": false` with an `"error"` string — it never aborts the rest of the batch.
 
 ```bash
 WM="http://127.0.0.1:8765"
@@ -380,6 +383,14 @@ local `REVERSE_SYNTHID_DIR` it uses the checkout directly. Detection is
 fail-soft: unconfigured, timed-out, or errored detectors report
 `{"available": false, "error": ...}` and never block cleaning.
 
+### Watermark generation (`/watermark` and `/watermark/batch`)
+
+Generates watermarked text for benchmark evaluation and round-trip testing.
+When `WATERMARKS_SYNTHID_TEXT_URL` is set, the service delegates generation to the
+`wr-synthid-text` sidecar (harness profile); with a local `MARKLLM_DIR` it uses the
+checkout directly. Like detection, generation is fail-soft: an unconfigured generator
+reports `{"ok": false, "error": ...}`.
+
 ## Docker / compose
 
 Published images (GHCR):
@@ -406,12 +417,12 @@ Whole-infra bring-up:
 
 ```bash
 docker compose up -d                         # core HTTP service only
-docker compose --profile harness up -d       # + markllm / markdiffusion
+docker compose --profile harness up -d       # + markllm / markdiffusion / wr-synthid-text sidecar
 docker compose --profile heavy up -d         # + ctrlregen / synthid (local builds)
 docker compose --profile harness --profile heavy up -d   # all services
 ```
 
-The compose stack maps the core service to `127.0.0.1:8765`. The harness/heavy services are one-shot CLIs — invoke with `docker compose run --rm <service> …` when you need verification or pixel work.
+The compose stack maps the core service to `127.0.0.1:8765`. Persistent services run as background daemons (`wr-core` and the `wr-synthid-text` sidecar under the harness profile). The remaining harness/heavy services are one-shot CLIs — invoke with `docker compose run --rm <service> …` when you need verification or pixel work.
 
 Validate the running stack (exit code only, no output on success):
 
@@ -460,6 +471,9 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_GEMINI_*` | — | Removed Aug 2026: Google retired SynthID text watermarking on the API (see `vendor-notes.md`) |
 | `WATERMARKS_SYNTHID_SCORER_URL` | `wr-core` | Point core at the `wr-synthid-score` sidecar for SynthID image scoring (e.g. `http://wr-synthid-score:8766` under the heavy profile) |
 | `WATERMARKS_SYNTHID_SCORER_API_KEY` | `wr-core` + `wr-synthid-score` | Shared bearer key for the scorer sidecar (empty = no auth) |
+| `WATERMARKS_SYNTHID_TEXT_URL` | `wr-core` | Point core at the `wr-synthid-text` sidecar for SynthID text watermarking (e.g. `http://wr-synthid-text:8767` under the harness profile) |
+| `WATERMARKS_SYNTHID_TEXT_API_KEY` | `wr-core` + `wr-synthid-text` | Shared bearer key for the text watermark sidecar (empty = no auth) |
+| `WATERMARKS_SYNTHID_TEXT_TIMEOUT` | `wr-core` | Seconds to wait for the `wr-synthid-text` sidecar (default 120) |
 | `WATERMARKS_MARKLLM_SCHEME` | `text_detectors.py` (host) | MarkLLM scheme for `/detect`: `kgw` (default) / `synthid` |
 | `HF_TOKEN` | harness/heavy services | Hugging Face token for gated models |
 | `WATERMARKS_SERVICE_URL` | client only (skill / curl) | Where to reach the service; default `http://127.0.0.1:8765` |
