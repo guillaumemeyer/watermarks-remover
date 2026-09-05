@@ -30,6 +30,10 @@ services:
       # Optional SynthID image scorer sidecar (heavy profile).
       WATERMARKS_SYNTHID_SCORER_URL: ${WATERMARKS_SYNTHID_SCORER_URL:-}
       WATERMARKS_SYNTHID_SCORER_API_KEY: ${WATERMARKS_SYNTHID_SCORER_API_KEY:-}
+      # Optional SynthID text watermark generator sidecar (harness profile).
+      WATERMARKS_SYNTHID_TEXT_URL: ${WATERMARKS_SYNTHID_TEXT_URL:-}
+      WATERMARKS_SYNTHID_TEXT_API_KEY: ${WATERMARKS_SYNTHID_TEXT_API_KEY:-}
+      WATERMARKS_SYNTHID_TEXT_TIMEOUT: ${WATERMARKS_SYNTHID_TEXT_TIMEOUT:-120}
     read_only: true
     tmpfs:
       - /tmp
@@ -70,6 +74,31 @@ services:
       #     --corpus /bench-corpus --out-dir /data ...
       - bench-out:/data
       - ./benchmarks/corpus:/bench-corpus:ro
+
+  # HTTP SynthID text watermarking sidecar: lets wr-core generate watermarked
+  # text for benchmarks without bundling heavy ML dependencies in the published
+  # core image. Reach it via WATERMARKS_SYNTHID_TEXT_URL on wr-core (see .env.example)
+  # and require the same bearer key on both sides.
+  wr-synthid-text:
+    profiles: [harness]
+    build:
+      context: service
+      dockerfile: Dockerfile.markllm
+    image: ghcr.io/guillaumemeyer/watermarks-remover:markllm-latest
+    entrypoint: ["python3"]
+    command: ["/app/synthid_text_server.py", "--host", "0.0.0.0", "--port", "8767"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+    environment:
+      WATERMARKS_SYNTHID_TEXT_API_KEY: ${WATERMARKS_SYNTHID_TEXT_API_KEY:-}
+      MARKLLM_DIR: /opt/markllm
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /home/markllm/.cache/huggingface
+    volumes:
+      - markllm-cache:/home/markllm/.cache/huggingface
 
   wr-markdiffusion:
     profiles: [harness]

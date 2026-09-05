@@ -56,6 +56,8 @@ COPY scripts/bench_synthid_text.py /app/bench_synthid_text.py
 COPY scripts/rewrite_text.py /app/rewrite_text.py
 COPY scripts/text_detectors.py /app/text_detectors.py
 COPY scripts/text_unicode.py /app/text_unicode.py
+COPY scripts/synthid_text_server.py /app/synthid_text_server.py
+COPY scripts/text_watermark.py /app/text_watermark.py
 
 # Default: CPU torch (like Dockerfile.markdiffusion). CUDA users build with
 # --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cuXXX and run
