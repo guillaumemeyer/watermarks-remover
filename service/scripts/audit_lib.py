@@ -35,6 +35,14 @@ def text_findings(report: Any) -> tuple[list[str], list[str], int]:
     return findings, confidences, report.suspicious_total
 
 
+def _propagate_service_status(item: dict[str, Any], report: Any) -> dict[str, Any]:
+    for field in ("status", "error", "detail"):
+        val = report.get(field) if isinstance(report, dict) else getattr(report, field, None)
+        if val is not None:
+            item[field] = val
+    return item
+
+
 def scan_file(
     path: Path,
     display_name: str | None = None,
@@ -78,33 +86,59 @@ def scan_file(
                 )
                 item["confidence"].append("probable")
                 item["suspicious_total"] += 1
-        return item
+        return _propagate_service_status(item, report)
 
     if kind == "image":
         report = inspect_image(path)
-        return {
+        format_val = report.get("format", "image") if isinstance(report, dict) else report.format
+        has_c2pa = report.get("has_c2pa", False) if isinstance(report, dict) else report.has_c2pa
+        has_ai = (
+            report.get("has_ai_metadata", False)
+            if isinstance(report, dict)
+            else report.has_ai_metadata
+        )
+        findings = report.get("findings", []) if isinstance(report, dict) else report.findings
+        notes = report.get("notes", []) if isinstance(report, dict) else report.notes
+        item = {
             "path": name,
-            "kind": report.format,
-            "has_c2pa": report.has_c2pa,
-            "has_ai_metadata": report.has_ai_metadata,
+            "kind": format_val,
+            "has_c2pa": has_c2pa,
+            "has_ai_metadata": has_ai,
             "suspicious_total": 0,
-            "findings": report.findings,
-            "confidence": [classify_finding_confidence(f) for f in report.findings],
-            "notes": report.notes,
+            "findings": findings,
+            "confidence": [classify_finding_confidence(f) for f in findings],
+            "notes": notes,
         }
+        return _propagate_service_status(item, report)
 
     if kind == "av":
         av_report = inspect_av(path)
-        return {
+        format_val = (
+            av_report.get("format", "av") if isinstance(av_report, dict) else av_report.format
+        )
+        has_c2pa = (
+            av_report.get("has_c2pa", False) if isinstance(av_report, dict) else av_report.has_c2pa
+        )
+        has_ai = (
+            av_report.get("has_ai_metadata", False)
+            if isinstance(av_report, dict)
+            else av_report.has_ai_metadata
+        )
+        findings = (
+            av_report.get("findings", []) if isinstance(av_report, dict) else av_report.findings
+        )
+        notes = av_report.get("notes", []) if isinstance(av_report, dict) else av_report.notes
+        item = {
             "path": name,
-            "kind": av_report.format,
-            "has_c2pa": av_report.has_c2pa,
-            "has_ai_metadata": av_report.has_ai_metadata,
+            "kind": format_val,
+            "has_c2pa": has_c2pa,
+            "has_ai_metadata": has_ai,
             "suspicious_total": 0,
-            "findings": av_report.findings,
-            "confidence": [classify_finding_confidence(f) for f in av_report.findings],
-            "notes": av_report.notes,
+            "findings": findings,
+            "confidence": [classify_finding_confidence(f) for f in findings],
+            "notes": notes,
         }
+        return _propagate_service_status(item, av_report)
 
     if kind == "unknown":
         return {
@@ -119,14 +153,25 @@ def scan_file(
         }
 
     report = inspect_container(path)
-    findings = list(report.findings)
-    confidences = [classify_finding_confidence(f) for f in report.findings]
+    findings = (
+        list(report.findings) if not isinstance(report, dict) else list(report.get("findings", []))
+    )
+    confidences = [classify_finding_confidence(f) for f in findings]
     # Layer A body-scan findings (and count) already come from
     # inspect_container() for markdown/html; it mirrors clean_container().
-    suspicious = report.layer_a_total
+    suspicious = (
+        getattr(report, "layer_a_total", 0)
+        if not isinstance(report, dict)
+        else report.get("layer_a_total", 0)
+    )
     stylometry_dict = None
 
-    if check_stylometry and report.format in ("html", "markdown"):
+    fmt = (
+        getattr(report, "format", "container")
+        if not isinstance(report, dict)
+        else report.get("format", "container")
+    )
+    if check_stylometry and fmt in ("html", "markdown"):
         try:
             text = path.read_text(encoding="utf-8", errors="surrogateescape")
         except OSError:
@@ -141,19 +186,33 @@ def scan_file(
                 confidences.append("probable")
                 suspicious += 1
 
+    notes = (
+        getattr(report, "notes", []) if not isinstance(report, dict) else report.get("notes", [])
+    )
+    has_c2pa = (
+        getattr(report, "has_c2pa", False)
+        if not isinstance(report, dict)
+        else report.get("has_c2pa", False)
+    )
+    has_ai = (
+        getattr(report, "has_ai_metadata", False)
+        if not isinstance(report, dict)
+        else report.get("has_ai_metadata", False)
+    )
+
     item = {
         "path": name,
-        "kind": report.format,
-        "has_c2pa": report.has_c2pa,
-        "has_ai_metadata": report.has_ai_metadata,
+        "kind": fmt,
+        "has_c2pa": has_c2pa,
+        "has_ai_metadata": has_ai,
         "suspicious_total": suspicious,
         "findings": findings,
         "confidence": confidences,
-        "notes": report.notes,
+        "notes": notes,
     }
     if stylometry_dict:
         item["stylometry"] = stylometry_dict
-    return item
+    return _propagate_service_status(item, report)
 
 
 def is_actionable(item: dict[str, Any]) -> bool:
