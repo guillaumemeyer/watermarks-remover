@@ -16,11 +16,14 @@ target builds an upload bundle instead of writing to a directory.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
@@ -387,11 +390,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Strip Authorization header when following cross-origin redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        orig = urllib.parse.urlsplit(req.full_url)
+        dest = urllib.parse.urlsplit(newurl)
+        if (orig.scheme, orig.netloc) != (dest.scheme, dest.netloc):
+            new_req.headers = {k: v for k, v in new_req.headers.items() if k.lower() != "authorization"}
+            new_req.unredirected_hdrs = {
+                k: v for k, v in new_req.unredirected_hdrs.items() if k.lower() != "authorization"
+            }
+        return new_req
+
+
 def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> tuple[bool, str]:
     """Check GET /health on WATERMARKS_SERVICE_URL (default http://127.0.0.1:8765)."""
-    import json
-    import urllib.request
-
     endpoint = (url or os.environ.get("WATERMARKS_SERVICE_URL") or "http://127.0.0.1:8765").rstrip("/")
     health_url = f"{endpoint}/health"
     try:
@@ -399,7 +416,8 @@ def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> 
         api_key = os.environ.get("WATERMARKS_SERVICE_API_KEY")
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(_SafeRedirectHandler)
+        with opener.open(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 version = data.get("version", "unknown")
