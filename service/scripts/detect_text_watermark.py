@@ -185,7 +185,14 @@ def _threshold_from_config(config: Path) -> float | None:
 
 
 def _resolve_config(upstream: Path, alg: str, config: str | None) -> Path:
-    path = Path(config).expanduser().resolve() if config else upstream / "config" / f"{alg}.json"
+    if not config:
+        path = upstream / "config" / f"{alg}.json"
+    else:
+        import os
+        if os.path.basename(config) == config:
+            path = upstream / "config" / config
+        else:
+            path = Path(config).expanduser().resolve()
     if not path.is_file():
         raise _Unavailable(f"MarkLLM config not found: {path}")
     try:

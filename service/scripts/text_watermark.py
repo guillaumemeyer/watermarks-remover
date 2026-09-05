@@ -129,7 +129,10 @@ def parse_watermark_options(raw: Any) -> dict[str, Any]:
         config = raw["config"]
         if not isinstance(config, str) or not config.strip():
             raise ValueError("'config' must be a non-empty string")
-        parsed["config"] = config.strip()
+        config = config.strip()
+        if "/" in config or "\\" in config or config in ("..", "."):
+            raise ValueError("'config' must be a simple filename without path separators")
+        parsed["config"] = config
 
     if "offline" in raw:
         val = raw["offline"]
