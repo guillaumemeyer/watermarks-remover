@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -400,7 +401,9 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         orig = urllib.parse.urlsplit(req.full_url)
         dest = urllib.parse.urlsplit(newurl)
         if (orig.scheme, orig.netloc) != (dest.scheme, dest.netloc):
-            new_req.headers = {k: v for k, v in new_req.headers.items() if k.lower() != "authorization"}
+            new_req.headers = {
+                k: v for k, v in new_req.headers.items() if k.lower() != "authorization"
+            }
             new_req.unredirected_hdrs = {
                 k: v for k, v in new_req.unredirected_hdrs.items() if k.lower() != "authorization"
             }
@@ -409,11 +412,24 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> tuple[bool, str]:
     """Check GET /health on WATERMARKS_SERVICE_URL (default http://127.0.0.1:8765)."""
-    endpoint = (url or os.environ.get("WATERMARKS_SERVICE_URL") or "http://127.0.0.1:8765").rstrip("/")
+    endpoint = (url or os.environ.get("WATERMARKS_SERVICE_URL") or "http://127.0.0.1:8765").rstrip(
+        "/"
+    )
     health_url = f"{endpoint}/health"
+    parsed = urllib.parse.urlsplit(health_url)
+    if parsed.scheme not in ("http", "https"):
+        return False, f"invalid service scheme: {parsed.scheme}"
+    is_local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    api_key = os.environ.get("WATERMARKS_SERVICE_API_KEY")
+    if api_key and parsed.scheme != "https" and not is_local:
+        return (
+            False,
+            f"insecure endpoint: refusing to send API key over plain remote HTTP ({endpoint})",
+        )
     try:
-        req = urllib.request.Request(health_url, headers={"User-Agent": "watermarks-remover-install"})
-        api_key = os.environ.get("WATERMARKS_SERVICE_API_KEY")
+        req = urllib.request.Request(  # noqa: S310
+            health_url, headers={"User-Agent": "watermarks-remover-install"}
+        )
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
         opener = urllib.request.build_opener(_SafeRedirectHandler)
@@ -422,9 +438,12 @@ def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> 
                 data = json.loads(resp.read().decode("utf-8"))
                 version = data.get("version", "unknown")
                 return True, f"service reachable at {endpoint} (v{version})"
-    except Exception:
+    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
         pass
-    return False, f"service unreachable at {endpoint} (start with 'make serve' or 'docker compose up -d')"
+    return (
+        False,
+        f"service unreachable at {endpoint} (start with 'make serve' or 'docker compose up -d')",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
