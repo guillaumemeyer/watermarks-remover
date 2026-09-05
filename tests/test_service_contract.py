@@ -64,7 +64,11 @@ def test_reachability_diagnostic_when_online(mock_service):
     assert "v0.7.0-test" in msg
 
 
-def test_reachability_diagnostic_when_offline():
+def test_reachability_diagnostic_when_offline(monkeypatch):
+    def mock_open(*args, **kwargs):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", mock_open)
     reachable, msg = install_skill.check_service_reachability(
         url="http://127.0.0.1:59998", timeout=0.2
     )
@@ -73,19 +77,39 @@ def test_reachability_diagnostic_when_offline():
     assert "make serve" in msg
 
 
+def test_reachability_cross_origin_redirect_strips_authorization():
+    import urllib.request
+
+    handler = install_skill._SafeRedirectHandler()
+    req = urllib.request.Request(
+        "http://127.0.0.1:8765/health",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    new_req = handler.redirect_request(
+        req, None, 302, "Found", {}, "http://external.example.com/health"
+    )
+    assert "authorization" not in [k.lower() for k in new_req.headers]
+    assert "authorization" not in [k.lower() for k in new_req.unredirected_hdrs]
+
+    same_req = handler.redirect_request(
+        req, None, 302, "Found", {}, "http://127.0.0.1:8765/health/"
+    )
+    assert "Authorization" in same_req.headers
+
+
 def test_skill_markdown_contains_refusal_contract():
     skill_file = ROOT / "skills" / "remove-ai-marks" / "SKILL.md"
     assert skill_file.is_file()
     content = skill_file.read_text(encoding="utf-8")
 
     expected_refusal = (
-        "The watermarks-remover service is offline or unreachable at $WATERMARKS_SERVICE_URL. "
+        "The watermarks-remover service is offline or unreachable at $WM. "
         "No files or text have been modified. Start the service with `make serve` or `docker compose up -d` before retrying."
     )
     assert expected_refusal in content
 
     assert "Mandatory Preflight Check" in content
-    assert 'curl -sf "$WM/health"' in content
+    assert '"$WM/health"' in content
     assert "PROHIBITION (FAIL CLOSED)" in content
     assert "#196" in content
 
@@ -158,3 +182,28 @@ def test_hook_written_file_check_exits_error_on_service_unavailable(tmp_path, mo
     monkeypatch.setattr(hook_written_file, "scan_file", mock_scan)
     exit_code = hook_written_file.run_check(test_file)
     assert exit_code == hook_written_file.EXIT_HOOK_ERROR
+
+
+def test_scan_file_propagates_service_unavailable_status(monkeypatch, tmp_path):
+    test_file = tmp_path / "sample.png"
+    test_file.write_bytes(b"dummy image data")
+
+    mock_report = {
+        "format": "png",
+        "has_c2pa": False,
+        "has_ai_metadata": False,
+        "findings": [],
+        "notes": [],
+        "status": "service_unavailable",
+        "error": "service_unavailable",
+        "detail": "connection refused on 127.0.0.1:8765",
+    }
+
+    monkeypatch.setattr(audit_lib, "inspect_image", lambda path: mock_report)
+    monkeypatch.setattr(audit_lib, "classify", lambda path: "image")
+
+    item = audit_lib.scan_file(test_file)
+    assert item.get("status") == "service_unavailable"
+    assert item.get("error") == "service_unavailable"
+    assert item.get("detail") == "connection refused on 127.0.0.1:8765"
+    assert audit_lib.is_actionable(item) is True
