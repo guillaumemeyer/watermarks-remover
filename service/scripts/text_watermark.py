@@ -333,15 +333,7 @@ _LOCAL_MODEL_CACHE: OrderedDict[str, Any] = OrderedDict()
 _LOCAL_MODEL_LOCK = threading.Lock()
 MAX_LOCAL_CACHED_MODELS = int(os.environ.get("WATERMARKS_MAX_CACHED_MODELS", "2"))
 
-# Long-lived single-worker executor for local generation.  Unlike a
-# ``with ThreadPoolExecutor() as ex:`` context manager whose __exit__
-# calls ``shutdown(wait=True)`` (blocking until the worker finishes even
-# after a TimeoutError), a long-lived pool lets us ``future.cancel()``
-# and return immediately when a deadline expires.
-_LOCAL_GEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="wm-local",
-)
+
 
 
 def _watermark_local_markllm(
@@ -432,12 +424,21 @@ def _watermark_local_markllm(
             wm.config.gen_kwargs["min_length"] = int(opts.get("min_length", 0))
 
             if timeout is not None:
-                future = _LOCAL_GEN_EXECUTOR.submit(wm.generate_watermarked_text, text)
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="wm-local"
+                )
+                future = executor.submit(wm.generate_watermarked_text, text)
                 try:
                     watermarked = future.result(timeout=timeout)
                 except (TimeoutError, concurrent.futures.TimeoutError):
-                    future.cancel()
+                    # A zombie thread remains running; evict the model so new requests
+                    # don't race with it, and drop the executor without blocking.
+                    if _LOCAL_MODEL_CACHE.get(cache_key) is wm:
+                        del _LOCAL_MODEL_CACHE[cache_key]
+                    executor.shutdown(wait=False, cancel_futures=True)
                     raise
+                finally:
+                    executor.shutdown(wait=False)
             else:
                 watermarked = wm.generate_watermarked_text(text)
 
