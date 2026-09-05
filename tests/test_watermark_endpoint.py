@@ -480,8 +480,6 @@ def test_parse_watermark_options_device_config_offline():
         text_watermark.parse_watermark_options({"offline": 1})
 
 
-
-
 def test_openapi_spec_preserves_502_503_descriptors(conn):
     spec = server.openapi_spec()
     resp = spec["paths"]["/watermark"]["post"]["responses"]

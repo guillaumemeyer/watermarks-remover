@@ -336,7 +336,8 @@ MAX_LOCAL_CACHED_MODELS = int(os.environ.get("WATERMARKS_MAX_CACHED_MODELS", "2"
 # after a TimeoutError), a long-lived pool lets us ``future.cancel()``
 # and return immediately when a deadline expires.
 _LOCAL_GEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="wm-local",
+    max_workers=1,
+    thread_name_prefix="wm-local",
 )
 
 
