@@ -41,13 +41,13 @@ from image_meta import (
     strip_isobmff,
 )
 
-AV_EXTS = {".mp4", ".mov", ".m4a", ".m4v", ".wav", ".mp3", ".flac"}
+AV_EXTS = {".mp4", ".mov", ".m4a", ".m4v", ".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac"}
 
 
 @dataclass
 class AVInspectReport:
     path: str
-    format: str  # mp4 | wav | mp3 | flac | unknown
+    format: str  # mp4 | wav | mp3 | flac | ogg | aac | unknown
     has_c2pa: bool
     has_ai_metadata: bool
     findings: list[str] = field(default_factory=list)
@@ -66,7 +66,7 @@ class AVInspectReport:
 
 
 def detect_av_format(data: bytes) -> str:
-    """Sniff MP4/MOV/M4A/M4V (ISOBMFF), WAV, MP3, or FLAC from magic bytes."""
+    """Sniff MP4/MOV/M4A/M4V (ISOBMFF), WAV, MP3, FLAC, OGG, or AAC from magic bytes."""
     if len(data) >= 12 and data[4:8] == b"ftyp":
         return "mp4"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
@@ -78,8 +78,12 @@ def detect_av_format(data: bytes) -> str:
         if parsed is not None and data[parsed[0] : parsed[0] + 4] == b"fLaC":
             return "flac"
         return "mp3"
+    if len(data) >= 2 and data[:2] in (b"\xff\xf1", b"\xff\xf9"):
+        return "aac"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
         return "mp3"  # MPEG frame sync with no ID3v2 header (rare but valid)
+    if len(data) >= 4 and data[:4] == b"OggS":
+        return "ogg"
     return "unknown"
 
 
