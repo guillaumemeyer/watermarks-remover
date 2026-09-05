@@ -129,10 +129,10 @@ def parse_watermark_options(raw: Any) -> dict[str, Any]:
         config = raw["config"]
         if not isinstance(config, str) or not config.strip():
             raise ValueError("'config' must be a non-empty string")
-        config = config.strip()
-        if "/" in config or "\\" in config or config in ("..", "."):
+        clean = os.path.basename(config.strip())
+        if clean != config.strip() or clean in ("..", ".", ""):
             raise ValueError("'config' must be a simple filename without path separators")
-        parsed["config"] = config
+        parsed["config"] = clean
 
     if "offline" in raw:
         val = raw["offline"]
@@ -334,8 +334,6 @@ _LOCAL_MODEL_LOCK = threading.Lock()
 MAX_LOCAL_CACHED_MODELS = int(os.environ.get("WATERMARKS_MAX_CACHED_MODELS", "2"))
 
 
-
-
 def _watermark_local_markllm(
     text: str,
     upstream_dir: str,
@@ -379,7 +377,9 @@ def _watermark_local_markllm(
     model = opts.get("model", "facebook/opt-1.3b")
 
     try:
-        config_path = _resolve_config(upstream_path, scheme_alg, opts.get("config"))
+        cfg_opt = opts.get("config")
+        clean_cfg = os.path.basename(str(cfg_opt).strip()) if cfg_opt else None
+        config_path = _resolve_config(upstream_path, scheme_alg, clean_cfg)
         offline = bool(opts.get("offline", False))
         temperature = opts.get("temperature")
         top_p = opts.get("top_p")

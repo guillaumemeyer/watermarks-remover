@@ -185,13 +185,18 @@ def _threshold_from_config(config: Path) -> float | None:
 
 
 def _resolve_config(upstream: Path, alg: str, config: str | None) -> Path:
+    config_dir = (upstream / "config").resolve()
     if not config:
-        path = upstream / "config" / f"{alg}.json"
+        path = config_dir / f"{alg}.json"
     else:
-        import os
-        if os.path.basename(config) == config:
-            path = upstream / "config" / config
+        clean = os.path.basename(config)
+        if clean == config:
+            path = (config_dir / clean).resolve()
+            if not path.is_relative_to(config_dir):
+                raise _Unavailable(f"MarkLLM config path traversal: {config}")
         else:
+            if ".." in Path(config).parts:
+                raise _Unavailable(f"MarkLLM config path traversal: {config}")
             path = Path(config).expanduser().resolve()
     if not path.is_file():
         raise _Unavailable(f"MarkLLM config not found: {path}")

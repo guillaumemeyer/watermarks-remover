@@ -86,7 +86,9 @@ def _generate_watermarked_sample(
 
     alg = SCHEMES.get(scheme, "SynthID")
     device = resolve_device(opts.get("device"))
-    config_path = _resolve_config(upstream, alg, opts.get("config"))
+    cfg_opt = opts.get("config")
+    clean_cfg = os.path.basename(str(cfg_opt).strip()) if cfg_opt else None
+    config_path = _resolve_config(upstream, alg, clean_cfg)
     offline = bool(opts.get("offline", False))
     cache_key = f"{alg}:{model_name}:{device}:{config_path}:{temperature}:{top_p}:{offline}"
     keys_tag = ",".join(str(k) for k in keys) if keys is not None else "<default>"
