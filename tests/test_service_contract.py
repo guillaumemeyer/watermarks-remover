@@ -97,6 +97,13 @@ def test_reachability_cross_origin_redirect_strips_authorization():
     assert "Authorization" in same_req.headers
 
 
+def test_reachability_refuses_api_key_over_remote_plain_http(monkeypatch):
+    monkeypatch.setenv("WATERMARKS_SERVICE_API_KEY", "test-token")
+    reachable, msg = install_skill.check_service_reachability(url="http://remote.example.com:8765")
+    assert reachable is False
+    assert "refusing to send API key over plain remote HTTP" in msg
+
+
 def test_skill_markdown_contains_refusal_contract():
     skill_file = ROOT / "skills" / "remove-ai-marks" / "SKILL.md"
     assert skill_file.is_file()
@@ -109,6 +116,7 @@ def test_skill_markdown_contains_refusal_contract():
     assert expected_refusal in content
 
     assert "Mandatory Preflight Check" in content
+    assert "AUTH_ARGS" in content
     assert '"$WM/health"' in content
     assert "PROHIBITION (FAIL CLOSED)" in content
     assert "#196" in content

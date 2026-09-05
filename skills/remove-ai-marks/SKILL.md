@@ -44,8 +44,12 @@ published GHCR image) or locally (`make serve`).
 **Always run this preflight before any inspect, detect, or clean command:**
 
 ```bash
+AUTH_ARGS=()
+if [[ -n "${WATERMARKS_SERVICE_API_KEY:-}" ]]; then
+  AUTH_ARGS=(-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY")
+fi
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 5 \
-  ${WATERMARKS_SERVICE_API_KEY:+-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY"} \
+  "${AUTH_ARGS[@]}" \
   "$WM/health")
 test "$HTTP_STATUS" = "200"
 # {"ok": true, "version": "..."}
