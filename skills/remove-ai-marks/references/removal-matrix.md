@@ -46,7 +46,8 @@
 | Tactic | When |
 | --- | --- |
 | `paraphrase` | Default; explicit word-choice + syntax churn |
-| `humanize` | Zero-shot "write like a human" token reshuffle |
+| `mlm` | Local masked-LM infill; perturbs token distribution without conversational cadence |
+| `humanize` | Zero-shot "write like a human" token reshuffle (caution: collapsed detector human_like score to 0.02 in benchmarks; prefer paraphrase + mlm) |
 | `backtranslate` | Stronger token reshuffle via pivot language |
 | `structural` | Strongest; most drift (outline → human prose) |
 | `code` | Comments/docstrings/string-literal wording + local identifier renames |

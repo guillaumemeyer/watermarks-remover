@@ -38,6 +38,10 @@ the fact/voice rules. The humanize tactic additionally runs a deterministic
 humanizer pass (humanize_pass.py) over each generated candidate — straight
 quotes, no em/en dashes or double hyphens, filler-phrase collapses, and the
 utilize->use swap — before evaluation, so the scored text is the text returned.
+Note: In benchmark testing (02-04 Sep 2026), humanize@0.2 collapsed Pangram
+human_like from 0.44 to 0.02 on an 8-doc watermarked corpus because prompting an
+LLM to "write like a human" generates formulaic transitions that detectors flag;
+prefer paraphrase + mlm for statistical watermark removal.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -57,6 +61,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -1079,6 +1084,13 @@ def parse_strategy(spec: str) -> list[tuple[str, float]]:
         tactic = tactic.strip()
         if tactic not in KNOWN_TACTICS:
             raise ValueError(f"unknown strategy tactic {tactic!r}")
+        if tactic == "humanize":
+            warnings.warn(
+                "humanize tactic in strategy collapsed Pangram human_like from 0.44 to 0.02 "
+                "in benchmark runs (02-04 Sep 2026); consider paraphrase + mlm instead",
+                UserWarning,
+                stacklevel=2,
+            )
         try:
             level = float(raw_level)
         except ValueError:
@@ -1204,6 +1216,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--tactic",
         choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"),
         default="paraphrase",
+        help="Rewrite tactic to use (default: paraphrase). Note: 'humanize' is available "
+        "for manual-polish styling, but collapsed Pangram human_like from 0.44 to 0.02 "
+        "in benchmark runs (02-04 Sep 2026); prefer paraphrase + mlm for detector robustness.",
     )
     p.add_argument(
         "--strategy",
