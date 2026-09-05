@@ -55,6 +55,8 @@ def test_is_audio_format():
     assert is_audio_format("wav") is True
     assert is_audio_format("mp3") is True
     assert is_audio_format("flac") is True
+    assert is_audio_format("ogg") is True
+    assert is_audio_format("aac") is True
     assert is_audio_format("mp4") is False
 
 
