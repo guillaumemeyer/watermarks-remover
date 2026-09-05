@@ -112,7 +112,7 @@ def test_watermark_unconfigured_returns_explanatory_error(conn):
 
 def test_watermark_unknown_options_rejected(conn):
     status, body = _post(
-        conn, "/watermark", {"text": "Hello", "options": {"config": "/etc/passwd"}}
+        conn, "/watermark", {"text": "Hello", "options": {"bogus_option": "value"}}
     )
     assert status == 400
     assert body["ok"] is False
@@ -431,34 +431,55 @@ def test_resolve_timeout(monkeypatch):
     assert resolve_timeout(None) == 1.0
 
 
-def test_watermark_error_status_sidecar_4xx_vs_5xx():
-    # 4xx client errors mapped to 400 Bad Request
+def test_watermark_error_status_maps_on_error_code():
+    """_watermark_error_status maps on stable error_code, not error text."""
+    from http import HTTPStatus
+
+    # client_error -> 400
+    assert server._watermark_error_status({"error_code": "client_error"}) == HTTPStatus.BAD_REQUEST
+
+    # auth -> 502
+    assert server._watermark_error_status({"error_code": "auth"}) == HTTPStatus.BAD_GATEWAY
+
+    # unconfigured -> 503
     assert (
-        server._watermark_error_status("SynthID text sidecar client error (400): Bad request")
-        == http.client.BAD_REQUEST
-    )
-    assert (
-        server._watermark_error_status("SynthID text sidecar client error (422): Unprocessable")
-        == http.client.BAD_REQUEST
+        server._watermark_error_status({"error_code": "unconfigured"})
+        == HTTPStatus.SERVICE_UNAVAILABLE
     )
 
-    # 5xx or general unreachable mapped to 502 Bad Gateway
-    assert (
-        server._watermark_error_status("SynthID text sidecar HTTP error (500): Internal Error")
-        == http.client.BAD_GATEWAY
-    )
-    assert (
-        server._watermark_error_status("SynthID text sidecar HTTP error (503): Service Unavailable")
-        == http.client.BAD_GATEWAY
-    )
+    # backend_error, unreachable, timeout, ssrf -> 502
+    for code in ("backend_error", "unreachable", "timeout", "ssrf"):
+        assert server._watermark_error_status({"error_code": code}) == HTTPStatus.BAD_GATEWAY
 
-    # Sidecar authentication failures (configured key, bad/missing token) -> 502
-    assert (
-        server._watermark_error_status(
-            "SynthID text sidecar authentication error (401): Unauthorized"
-        )
-        == http.client.BAD_GATEWAY
+    # Missing/unknown error_code -> 400 fallback
+    assert server._watermark_error_status({}) == HTTPStatus.BAD_REQUEST
+    assert server._watermark_error_status({"error_code": "unknown"}) == HTTPStatus.BAD_REQUEST
+
+
+def test_parse_watermark_options_device_config_offline():
+    """Verify device, config, and offline are accepted and validated."""
+    opts = text_watermark.parse_watermark_options(
+        {"device": "cuda:0", "config": "my_config.json", "offline": True}
     )
+    assert opts == {"device": "cuda:0", "config": "my_config.json", "offline": True}
+
+    # device must be a non-empty string
+    with pytest.raises(ValueError, match="device"):
+        text_watermark.parse_watermark_options({"device": ""})
+    with pytest.raises(ValueError, match="device"):
+        text_watermark.parse_watermark_options({"device": 123})
+
+    # config must be a non-empty string
+    with pytest.raises(ValueError, match="config"):
+        text_watermark.parse_watermark_options({"config": ""})
+
+    # offline must be a boolean
+    with pytest.raises(ValueError, match="offline"):
+        text_watermark.parse_watermark_options({"offline": "yes"})
+    with pytest.raises(ValueError, match="offline"):
+        text_watermark.parse_watermark_options({"offline": 1})
+
+
 
 
 def test_openapi_spec_preserves_502_503_descriptors(conn):

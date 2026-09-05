@@ -305,7 +305,7 @@ def test_sidecar_rejects_undocumented_options(sidecar_server):
         "/watermark",
         {
             "text": "Prompt text",
-            "options": {"config": "/etc/passwd"},
+            "options": {"bogus_option": "value"},
         },
     )
     assert status == 400

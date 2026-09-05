@@ -357,30 +357,26 @@ def _clean_request_schema() -> dict[str, Any]:
     )
 
 
-def _watermark_error_status(err: str) -> HTTPStatus:
-    e = err.lower()
-    if "no text watermark generator configured" in e:
-        return HTTPStatus.SERVICE_UNAVAILABLE
-    # Sidecar rejected our bearer token/auth — a gateway configuration problem,
-    # so surface it as a backend (502) error rather than a client (400) error.
-    if "sidecar authentication error" in e:
-        return HTTPStatus.BAD_GATEWAY
-    # Sidecar returned a 4xx — the *client* sent a bad request through to the
-    # sidecar, so propagate 400 instead of 502.
-    if "sidecar client error" in e:
-        return HTTPStatus.BAD_REQUEST
-    if (
-        "unreachable" in e
-        or "http error" in e
-        or "bad watermark sidecar response" in e
-        or "refusing non-http" in e
-        or "redirect refused" in e
-        or "timed out" in e
-        or "markllm generation failed" in e
-        or "invalid markllm_dir" in e
-        or "upstream directory not found" in e
-    ):
-        return HTTPStatus.BAD_GATEWAY
+def _watermark_error_status(res: dict[str, Any]) -> HTTPStatus:
+    """Map a watermark failure result to the correct HTTP status.
+
+    Uses the stable ``error_code`` field returned by the text_watermark
+    client rather than fragile substring-matching on the human-readable
+    ``error`` message.
+    """
+    _ERROR_CODE_MAP: dict[str, HTTPStatus] = {
+        "unconfigured": HTTPStatus.SERVICE_UNAVAILABLE,
+        "auth": HTTPStatus.BAD_GATEWAY,
+        "client_error": HTTPStatus.BAD_REQUEST,
+        "unreachable": HTTPStatus.BAD_GATEWAY,
+        "backend_error": HTTPStatus.BAD_GATEWAY,
+        "timeout": HTTPStatus.BAD_GATEWAY,
+        "ssrf": HTTPStatus.BAD_GATEWAY,
+    }
+    code = res.get("error_code", "")
+    if code in _ERROR_CODE_MAP:
+        return _ERROR_CODE_MAP[code]
+    # Fallback for any result that pre-dates the error_code field.
     return HTTPStatus.BAD_REQUEST
 
 
@@ -427,6 +423,19 @@ def _watermark_request_schema() -> dict[str, Any]:
                         maximum=1,
                     ),
                     "model": _schema(type="string"),
+                    "device": _schema(
+                        type="string",
+                        description="Inference device (e.g. 'cpu', 'cuda', 'cuda:0')",
+                    ),
+                    "config": _schema(
+                        type="string",
+                        description="Path to a custom watermark config file",
+                    ),
+                    "offline": _schema(
+                        type="boolean",
+                        default=False,
+                        description="If true, disable network access for model loading",
+                    ),
                 },
             ),
         },
@@ -1564,7 +1573,7 @@ class Handler(BaseHTTPRequestHandler):
         if res.get("ok"):
             self._respond(HTTPStatus.OK, res)
         else:
-            self._respond(_watermark_error_status(res.get("error", "")), res)
+            self._respond(_watermark_error_status(res), res)
 
     def _handle_watermark_batch(self, body: dict[str, Any]) -> None:
         files = body.get("files")
@@ -1621,7 +1630,7 @@ class Handler(BaseHTTPRequestHandler):
                     results.append({"name": entry_name, **res})
                 else:
                     err = res.get("error", "watermark generation failed")
-                    if "timed out" in err.lower():
+                    if res.get("error_code") == "timeout":
                         timed_out = True
                     results.append({"name": entry_name, "ok": False, "error": err})
             except ValueError as e:

@@ -35,6 +35,9 @@ ALLOWED_WATERMARK_OPTIONS: frozenset[str] = frozenset(
         "temperature",
         "top_p",
         "model",
+        "device",
+        "config",
+        "offline",
     }
 )
 
@@ -115,6 +118,24 @@ def parse_watermark_options(raw: Any) -> dict[str, Any]:
         if p <= 0 or p > 1:
             raise ValueError("'top_p' must be between 0 and 1")
         parsed["top_p"] = p
+
+    if "device" in raw:
+        device = raw["device"]
+        if not isinstance(device, str) or not device.strip():
+            raise ValueError("'device' must be a non-empty string")
+        parsed["device"] = device.strip()
+
+    if "config" in raw:
+        config = raw["config"]
+        if not isinstance(config, str) or not config.strip():
+            raise ValueError("'config' must be a non-empty string")
+        parsed["config"] = config.strip()
+
+    if "offline" in raw:
+        val = raw["offline"]
+        if not isinstance(val, bool):
+            raise ValueError("'offline' must be a boolean")
+        parsed["offline"] = val
 
     return parsed
 
@@ -222,6 +243,7 @@ def _watermark_http(
             "ok": False,
             "kind": "text",
             "error": f"refusing non-http(s) watermark endpoint: {base_url}",
+            "error_code": "backend_error",
         }
 
     body_dict: dict[str, Any] = {
@@ -255,6 +277,7 @@ def _watermark_http(
                 "ok": False,
                 "kind": "text",
                 "error": f"SynthID text sidecar redirect refused (SSRF protection): {e}",
+                "error_code": "ssrf",
             }
         # Distinguish client-side (4xx) from server-side (5xx) sidecar errors
         # so the gateway can propagate the correct HTTP status. A 401 with a
@@ -265,17 +288,20 @@ def _watermark_http(
                 "ok": False,
                 "kind": "text",
                 "error": f"SynthID text sidecar authentication error (401): {e}",
+                "error_code": "auth",
             }
         if 400 <= e.code < 500:
             return {
                 "ok": False,
                 "kind": "text",
                 "error": f"SynthID text sidecar client error ({e.code}): {e}",
+                "error_code": "client_error",
             }
         return {
             "ok": False,
             "kind": "text",
             "error": f"SynthID text sidecar HTTP error ({e.code}): {e}",
+            "error_code": "backend_error",
         }
     except (
         urllib.error.URLError,
@@ -287,16 +313,31 @@ def _watermark_http(
             "ok": False,
             "kind": "text",
             "error": f"SynthID text sidecar unreachable: {e}",
+            "error_code": "unreachable",
         }
 
     if not isinstance(parsed, dict):
-        return {"ok": False, "kind": "text", "error": "bad watermark sidecar response"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": "bad watermark sidecar response",
+            "error_code": "backend_error",
+        }
     return parsed
 
 
 _LOCAL_MODEL_CACHE: OrderedDict[str, Any] = OrderedDict()
 _LOCAL_MODEL_LOCK = threading.Lock()
 MAX_LOCAL_CACHED_MODELS = int(os.environ.get("WATERMARKS_MAX_CACHED_MODELS", "2"))
+
+# Long-lived single-worker executor for local generation.  Unlike a
+# ``with ThreadPoolExecutor() as ex:`` context manager whose __exit__
+# calls ``shutdown(wait=True)`` (blocking until the worker finishes even
+# after a TimeoutError), a long-lived pool lets us ``future.cancel()``
+# and return immediately when a deadline expires.
+_LOCAL_GEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="wm-local",
+)
 
 
 def _watermark_local_markllm(
@@ -309,7 +350,12 @@ def _watermark_local_markllm(
 ) -> dict[str, Any]:
     """Generate watermarked text locally using detect_text_watermark.py / MarkLLM."""
     if timeout is not None and timeout <= 0:
-        return {"ok": False, "kind": "text", "error": "watermark generation timed out"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": "watermark generation timed out",
+            "error_code": "timeout",
+        }
 
     from detect_text_watermark import (
         _load_algorithm,
@@ -326,7 +372,12 @@ def _watermark_local_markllm(
 
     upstream_path = resolve_upstream(upstream_dir)
     if not upstream_path:
-        return {"ok": False, "kind": "text", "error": f"invalid MARKLLM_DIR: {upstream_dir}"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": f"invalid MARKLLM_DIR: {upstream_dir}",
+            "error_code": "backend_error",
+        }
 
     device = resolve_device(opts.get("device"))
     model = opts.get("model", "facebook/opt-1.3b")
@@ -377,9 +428,12 @@ def _watermark_local_markllm(
             wm.config.gen_kwargs["min_length"] = int(opts.get("min_length", 0))
 
             if timeout is not None:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(wm.generate_watermarked_text, text)
+                future = _LOCAL_GEN_EXECUTOR.submit(wm.generate_watermarked_text, text)
+                try:
                     watermarked = future.result(timeout=timeout)
+                except (TimeoutError, concurrent.futures.TimeoutError):
+                    future.cancel()
+                    raise
             else:
                 watermarked = wm.generate_watermarked_text(text)
 
@@ -395,9 +449,19 @@ def _watermark_local_markllm(
             },
         }
     except (TimeoutError, concurrent.futures.TimeoutError):
-        return {"ok": False, "kind": "text", "error": "watermark generation timed out"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": "watermark generation timed out",
+            "error_code": "timeout",
+        }
     except Exception as e:
-        return {"ok": False, "kind": "text", "error": f"MarkLLM generation failed: {e}"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": f"MarkLLM generation failed: {e}",
+            "error_code": "backend_error",
+        }
 
 
 def generate_watermark_text(
@@ -418,12 +482,17 @@ def generate_watermark_text(
       3. Fail-soft error when neither is configured
     """
     if not isinstance(text, str) or not text.strip():
-        return {"ok": False, "kind": "text", "error": "'text' must be a non-empty string"}
+        return {
+            "ok": False,
+            "kind": "text",
+            "error": "'text' must be a non-empty string",
+            "error_code": "client_error",
+        }
 
     try:
         normalized_keys = normalize_keys(keys)
     except ValueError as e:
-        return {"ok": False, "kind": "text", "error": str(e)}
+        return {"ok": False, "kind": "text", "error": str(e), "error_code": "client_error"}
 
     # 1. HTTP Sidecar
     url = (sidecar_url or os.environ.get("WATERMARKS_SYNTHID_TEXT_URL", "")).strip()
@@ -459,4 +528,5 @@ def generate_watermark_text(
             "no text watermark generator configured (set WATERMARKS_SYNTHID_TEXT_URL "
             "for the sidecar or MARKLLM_DIR for local execution)"
         ),
+        "error_code": "unconfigured",
     }
