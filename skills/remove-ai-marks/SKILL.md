@@ -37,14 +37,35 @@ WM="${WATERMARKS_SERVICE_URL:-http://127.0.0.1:8765}"
 ```
 
 The service is started either by the operator (`docker compose up -d`, or a
-published GHCR image) or locally (`make serve`). **Always check it first**, and
-stop with a clear message if it is unreachable — never fall back to local
-cleaning:
+published GHCR image) or locally (`make serve`).
+
+### Mandatory Preflight Check
+
+**Always run this preflight before any inspect, detect, or clean command:**
 
 ```bash
-curl -sf "$WM/health"
+AUTH_ARGS=()
+if [[ -n "${WATERMARKS_SERVICE_API_KEY:-}" ]]; then
+  AUTH_ARGS=(-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY")
+fi
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 5 \
+  "${AUTH_ARGS[@]}" \
+  "$WM/health")
+test "$HTTP_STATUS" = "200"
 # {"ok": true, "version": "..."}
 ```
+
+### Fail-Closed Refusal Contract
+
+If the preflight health check fails, times out, or returns a non-200 exit code:
+**STOP immediately. Do not inspect, do not clean, and do not modify any files or text.**
+
+You MUST emit this exact refusal notice:
+
+> "The watermarks-remover service is offline or unreachable at $WM. No files or text have been modified. Start the service with `make serve` or `docker compose up -d` before retrying."
+
+**PROHIBITION (FAIL CLOSED):**
+NEVER attempt to substitute an assistant-authored rewrite or unverified model paraphrasing when the service is unreachable. Improvising a rewrite without deterministic Layer A stripping and metadata cleansing produces false confidence and violates privacy guarantees (#196). If the service is down, the operation is aborted.
 
 If `WATERMARKS_SERVER_API_KEY` is set on the service, every request needs
 `-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY"`.
@@ -140,6 +161,8 @@ mostly just send the file.
 
 ### 2. Inspect first
 
+Check `$WM/health` first. If unreachable, emit the refusal contract and stop immediately.
+
 ```bash
 curl -s -X POST "$WM/inspect" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < path | tr -d '\n')\", \"name\": \"$(basename path)\"}"
@@ -174,6 +197,8 @@ the API in Aug 2026 — see `references/vendor-notes.md`.)
 
 ### 3. Deterministic clean (always for matching inputs)
 
+Check `$WM/health` first. If unreachable, emit the refusal contract and stop immediately.
+
 **Any supported file (unified):**
 
 ```bash
@@ -198,7 +223,7 @@ curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
 
 ### 4. Layer B — always offer rewrite (prose)
 
-After Layer A, **always propose** a statistical-mark reduction pass for natural-language content. Do not skip this step silently.
+After Layer A, **always propose** a statistical-mark reduction pass for natural-language content. Do not skip this step silently. (If the service was unreachable for Layer A, remember that Layer B is never run as an unverified fallback).
 
 For **plain text** (pasted / `.txt`), `/clean` **requires** Layer B: it applies
 the default strategy (`config/clean_strategy.json`, e.g.

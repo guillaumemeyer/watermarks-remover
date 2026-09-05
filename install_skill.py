@@ -16,11 +16,15 @@ target builds an upload bundle instead of writing to a directory.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
@@ -372,7 +376,74 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="Bundle path for --target cowork (default: dist/<skill>.zip)",
     )
+    parser.add_argument(
+        "--check-service",
+        action="store_true",
+        default=True,
+        help="Probe service reachability at install time (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-check-service",
+        dest="check_service",
+        action="store_false",
+        help="Do not probe service reachability at install time",
+    )
     return parser
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Strip Authorization header when following cross-origin redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        orig = urllib.parse.urlsplit(req.full_url)
+        dest = urllib.parse.urlsplit(newurl)
+        if (orig.scheme, orig.netloc) != (dest.scheme, dest.netloc):
+            new_req.headers = {
+                k: v for k, v in new_req.headers.items() if k.lower() != "authorization"
+            }
+            new_req.unredirected_hdrs = {
+                k: v for k, v in new_req.unredirected_hdrs.items() if k.lower() != "authorization"
+            }
+        return new_req
+
+
+def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> tuple[bool, str]:
+    """Check GET /health on WATERMARKS_SERVICE_URL (default http://127.0.0.1:8765)."""
+    endpoint = (url or os.environ.get("WATERMARKS_SERVICE_URL") or "http://127.0.0.1:8765").rstrip(
+        "/"
+    )
+    health_url = f"{endpoint}/health"
+    parsed = urllib.parse.urlsplit(health_url)
+    if parsed.scheme not in ("http", "https"):
+        return False, f"invalid service scheme: {parsed.scheme}"
+    is_local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    api_key = os.environ.get("WATERMARKS_SERVICE_API_KEY")
+    if api_key and parsed.scheme != "https" and not is_local:
+        return (
+            False,
+            f"insecure endpoint: refusing to send API key over plain remote HTTP ({endpoint})",
+        )
+    try:
+        req = urllib.request.Request(  # noqa: S310
+            health_url, headers={"User-Agent": "watermarks-remover-install"}
+        )
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        opener = urllib.request.build_opener(_SafeRedirectHandler)
+        with opener.open(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                version = data.get("version", "unknown")
+                return True, f"service reachable at {endpoint} (v{version})"
+    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    return (
+        False,
+        f"service unreachable at {endpoint} (start with 'make serve' or 'docker compose up -d')",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -409,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
             "(or in the skills settings on claude.ai). Cowork, cloud and routine "
             "sessions load skills enabled for your account, not ~/.claude/skills."
         )
+        if args.check_service:
+            reachable, diag = check_service_reachability()
+            status_prefix = "Service:" if reachable else "Service notice:"
+            print(f"{status_prefix} {diag}")
         return 0
 
     try:
@@ -430,6 +505,10 @@ def main(argv: list[str] | None = None) -> int:
     verb = "linked" if args.link else "installed"
     print(f"{label}: {verb} {destination}")
     print(HOST_HINTS[args.target])
+    if args.check_service:
+        reachable, diag = check_service_reachability()
+        status_prefix = "Service:" if reachable else "Service notice:"
+        print(f"{status_prefix} {diag}")
     return 0
 
 
