@@ -25,7 +25,7 @@ from clean_video import _ffmpeg_available, _run_ffmpeg  # noqa: E402
 from common import safe_arg, subprocess_creationflags, subprocess_preexec_fn, which  # noqa: E402
 
 # Formats detect_av_format reports for audio-only containers.
-AUDIO_FORMATS = {"wav", "mp3", "flac"}
+AUDIO_FORMATS = {"wav", "mp3", "flac", "ogg", "aac"}
 
 # Audio filename extensions, incl. audio-only MP4/MOV containers (m4a/aac/ogg/opus)
 # that detect_av_format reports as "mp4".
