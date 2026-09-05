@@ -44,18 +44,21 @@ published GHCR image) or locally (`make serve`).
 **Always run this preflight before any inspect, detect, or clean command:**
 
 ```bash
-curl -sf "$WM/health"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 5 \
+  ${WATERMARKS_SERVICE_API_KEY:+-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY"} \
+  "$WM/health")
+test "$HTTP_STATUS" = "200"
 # {"ok": true, "version": "..."}
 ```
 
 ### Fail-Closed Refusal Contract
 
-If `curl -sf "$WM/health"` fails, times out, or returns a non-200 exit code:
+If the preflight health check fails, times out, or returns a non-200 exit code:
 **STOP immediately. Do not inspect, do not clean, and do not modify any files or text.**
 
 You MUST emit this exact refusal notice:
 
-> "The watermarks-remover service is offline or unreachable at $WATERMARKS_SERVICE_URL. No files or text have been modified. Start the service with `make serve` or `docker compose up -d` before retrying."
+> "The watermarks-remover service is offline or unreachable at $WM. No files or text have been modified. Start the service with `make serve` or `docker compose up -d` before retrying."
 
 **PROHIBITION (FAIL CLOSED):**
 NEVER attempt to substitute an assistant-authored rewrite or unverified model paraphrasing when the service is unreachable. Improvising a rewrite without deterministic Layer A stripping and metadata cleansing produces false confidence and violates privacy guarantees (#196). If the service is down, the operation is aborted.
