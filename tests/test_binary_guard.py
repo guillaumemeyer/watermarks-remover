@@ -229,7 +229,7 @@ def test_router_advice_is_not_circular(tmp_path):
     blob.write_bytes(b"\x00\x01\x02\x03" * 64)
     r = run("clean_file.py", str(blob))
     assert r.returncode == 2
-    assert "no supported text, image or container format" in r.stderr
+    assert "no supported text, image, audio, video or container format" in r.stderr
     assert "Use inspect_file.py / clean_file.py" not in r.stderr
     assert "--force-text" in r.stderr
     r = run("inspect_file.py", str(blob))
