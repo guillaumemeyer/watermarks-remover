@@ -185,7 +185,16 @@ def _threshold_from_config(config: Path) -> float | None:
 
 
 def _resolve_config(upstream: Path, alg: str, config: str | None) -> Path:
-    path = Path(config).expanduser().resolve() if config else upstream / "config" / f"{alg}.json"
+    config_dir = (upstream / "config").resolve()
+    if not config:
+        path = config_dir / f"{alg}.json"
+    else:
+        clean = os.path.basename(config.strip())
+        if clean != config.strip() or clean in ("..", ".", ""):
+            raise _Unavailable(f"MarkLLM config path traversal: {config}")
+        path = (config_dir / clean).resolve()
+        if not path.is_relative_to(config_dir):
+            raise _Unavailable(f"MarkLLM config path traversal: {config}")
     if not path.is_file():
         raise _Unavailable(f"MarkLLM config not found: {path}")
     try:
@@ -195,6 +204,24 @@ def _resolve_config(upstream: Path, alg: str, config: str | None) -> Path:
     if size > MAX_CONFIG_BYTES:
         raise _Unavailable(f"MarkLLM config too large ({size} bytes > {MAX_CONFIG_BYTES}): {path}")
     return path
+
+
+def _resolve_cli_config(upstream: Path, alg: str, config: str | None) -> Path:
+    """CLI-only resolver that also allows explicit external config filepaths."""
+    if config and (Path(config).is_file() or "/" in config or "\\" in config):
+        path = Path(config).expanduser().resolve()
+        if not path.is_file():
+            raise _Unavailable(f"MarkLLM config not found: {path}")
+        try:
+            size = path.stat().st_size
+        except OSError as e:
+            raise _Unavailable(f"cannot stat MarkLLM config {path}: {e}") from e
+        if size > MAX_CONFIG_BYTES:
+            raise _Unavailable(
+                f"MarkLLM config too large ({size} bytes > {MAX_CONFIG_BYTES}): {path}"
+            )
+        return path
+    return _resolve_config(upstream, alg, config)
 
 
 def _generate(
@@ -242,7 +269,7 @@ def _cmd_detect(args: argparse.Namespace, upstream: Path, alg: str) -> int:
     device = resolve_device(args.device)
 
     try:
-        config = _resolve_config(upstream, alg, args.config)
+        config = _resolve_cli_config(upstream, alg, args.config)
         threshold = _threshold_from_config(config)
         wm = _load_algorithm(
             upstream,
@@ -294,7 +321,7 @@ def _cmd_watermark(args: argparse.Namespace, upstream: Path, alg: str) -> int:
     device = resolve_device(args.device)
 
     try:
-        config = _resolve_config(upstream, alg, args.config)
+        config = _resolve_cli_config(upstream, alg, args.config)
         wm = _load_algorithm(
             upstream,
             alg,
@@ -415,7 +442,7 @@ def _cmd_serve(args: argparse.Namespace, upstream: Path, alg: str) -> int:
     """
     device = resolve_device(args.device)
     try:
-        config = _resolve_config(upstream, alg, args.config)
+        config = _resolve_cli_config(upstream, alg, args.config)
         threshold = _threshold_from_config(config)
         wm = _load_algorithm(
             upstream,
