@@ -78,7 +78,7 @@ def detect_av_format(data: bytes) -> str:
         if parsed is not None and data[parsed[0] : parsed[0] + 4] == b"fLaC":
             return "flac"
         return "mp3"
-    if len(data) >= 2 and data[:2] in (b"\xff\xf1", b"\xff\xf9"):
+    if len(data) >= 2 and data[:2] in (b"\xff\xf0", b"\xff\xf1", b"\xff\xf8", b"\xff\xf9"):
         return "aac"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
         return "mp3"  # MPEG frame sync with no ID3v2 header (rare but valid)
@@ -546,6 +546,8 @@ def clean_av(path: Path, dest: Path, *, strip_all_metadata: bool = True) -> dict
         cleaned, actions = _strip_id3v2(data, strip_all_metadata=strip_all_metadata)
     elif fmt == "flac":
         cleaned, actions = _strip_flac(data, strip_all_metadata=strip_all_metadata)
+    elif fmt in ("ogg", "aac"):
+        cleaned, actions = data, []
     else:
         raise ValueError(f"unsupported audio/video format for cleaning: {fmt}")
 
