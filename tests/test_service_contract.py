@@ -96,6 +96,40 @@ def test_reachability_cross_origin_redirect_strips_authorization():
     )
     assert "Authorization" in same_req.headers
 
+    # Case-insensitive host and default port normalization should preserve Authorization
+    case_req = urllib.request.Request(
+        "http://EXAMPLE.COM/health",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    same_case_req = handler.redirect_request(
+        case_req, None, 302, "Found", {}, "http://example.com:80/health/"
+    )
+    assert "Authorization" in same_case_req.headers
+
+
+def test_reachability_non_dict_response(monkeypatch):
+    import io
+
+    class DummyResp(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    for payload in (b'"ok"', b'["item1", "item2"]', b"123", b"null"):
+        monkeypatch.setattr(
+            "urllib.request.OpenerDirector.open",
+            lambda *args, p=payload, **kwargs: DummyResp(p),
+        )
+        reachable, msg = install_skill.check_service_reachability(url="http://127.0.0.1:8765")
+        assert reachable is False
+        assert "service unreachable" in msg
+
 
 def test_reachability_refuses_api_key_over_remote_plain_http(monkeypatch):
     monkeypatch.setenv("WATERMARKS_SERVICE_API_KEY", "test-token")

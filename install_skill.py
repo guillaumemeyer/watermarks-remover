@@ -400,7 +400,11 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             return None
         orig = urllib.parse.urlsplit(req.full_url)
         dest = urllib.parse.urlsplit(newurl)
-        if (orig.scheme, orig.netloc) != (dest.scheme, dest.netloc):
+        orig_port = orig.port or (443 if orig.scheme.lower() == "https" else 80)
+        dest_port = dest.port or (443 if dest.scheme.lower() == "https" else 80)
+        orig_host = (orig.hostname or "").lower()
+        dest_host = (dest.hostname or "").lower()
+        if (orig.scheme.lower(), orig_host, orig_port) != (dest.scheme.lower(), dest_host, dest_port):
             new_req.headers = {
                 k: v for k, v in new_req.headers.items() if k.lower() != "authorization"
             }
@@ -436,8 +440,9 @@ def check_service_reachability(url: str | None = None, timeout: float = 0.5) -> 
         with opener.open(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                version = data.get("version", "unknown")
-                return True, f"service reachable at {endpoint} (v{version})"
+                if isinstance(data, dict):
+                    version = data.get("version", "unknown")
+                    return True, f"service reachable at {endpoint} (v{version})"
     except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     return (

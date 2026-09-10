@@ -46,6 +46,10 @@ published GHCR image) or locally (`make serve`).
 ```bash
 AUTH_ARGS=()
 if [[ -n "${WATERMARKS_SERVICE_API_KEY:-}" ]]; then
+  if [[ "$WM" =~ ^http:// && ! "$WM" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]; then
+    echo "Refusing to send API key over plain remote HTTP: $WM" >&2
+    exit 1
+  fi
   AUTH_ARGS=(-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY")
 fi
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 5 \
