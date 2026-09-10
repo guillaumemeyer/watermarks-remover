@@ -8,4 +8,4 @@
 # same environment that has that pin (the MarkLLM venv) so the two do not
 # drift. It pulls in torch and transformers; install into the MarkLLM venv
 # (setup_markllm.sh) rather than a fresh environment to reuse those wheels.
-sentence-transformers==6.0.0
+sentence-transformers==6.0.1
