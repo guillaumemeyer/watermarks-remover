@@ -168,7 +168,7 @@ def test_inspect_image_cli_prints_synthid_score(
     monkeypatch.setattr(cli, "inspect_image", lambda path, synthid_dir=None: report)
     monkeypatch.setattr(sys, "argv", ["inspect_image.py", str(img)])
 
-    assert cli.main() == 0
+    assert cli.main() == 1
     out = capsys.readouterr().out
     assert "SynthID score: confidence 0.910 (watermarked: yes)" in out
 

@@ -1162,7 +1162,17 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
             report = inspect_av(path, data=data).to_dict()
         else:
             report = inspect_container(path, data=data).to_dict()
-    return {"ok": True, "kind": kind, "report": report, "suspicious": _suspicious_report(report)}
+    synthid = report.get("synthid") or {}
+    synthid_failed = isinstance(synthid, dict) and synthid.get("available") is False
+    res: dict[str, Any] = {
+        "ok": True,
+        "kind": kind,
+        "report": report,
+        "suspicious": _suspicious_report(report),
+    }
+    if synthid_failed:
+        res["synthid_probe_failed"] = True
+    return res
 
 
 def _detect_payload(data: bytes, name: str) -> dict[str, Any]:

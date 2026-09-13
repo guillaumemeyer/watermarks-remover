@@ -62,6 +62,7 @@ def test_inspect_image_synthid_failure_marks_inconclusive(monkeypatch):
 
     res = server._inspect_payload(data, "test.png", run_detect=False)
     assert res["ok"] is True
+    assert res.get("synthid_probe_failed") is True
     assert any("inconclusive" in f.lower() for f in res["report"]["findings"])
 
 
@@ -84,3 +85,33 @@ def test_inspect_image_synthid_clean_verdict_not_suspicious(monkeypatch):
     assert res["suspicious"]["verdict"] is False
     assert res["suspicious"]["classes"]["watermark_detector"]["present"] is False
     assert not any("synthid" in f.lower() for f in res["report"]["findings"])
+
+
+def test_inspect_image_cli_exit_code_synthid(monkeypatch, tmp_path):
+    import inspect_image
+
+    img_path = tmp_path / "test.png"
+    img_path.write_bytes(_clean_png_bytes())
+
+    monkeypatch.setattr(sys, "argv", ["inspect_image.py", str(img_path)])
+    monkeypatch.setattr(
+        image_meta,
+        "run_synthid_score",
+        lambda path, synthid_dir=None: {
+            "available": True,
+            "is_watermarked": True,
+            "confidence": 0.95,
+        },
+    )
+    assert inspect_image.main() == 1
+
+    monkeypatch.setattr(
+        image_meta,
+        "run_synthid_score",
+        lambda path, synthid_dir=None: {
+            "available": True,
+            "is_watermarked": False,
+            "confidence": 0.02,
+        },
+    )
+    assert inspect_image.main() == 0
