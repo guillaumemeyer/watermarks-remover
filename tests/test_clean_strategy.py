@@ -47,6 +47,23 @@ def test_parse_strategy_empty():
         parse_strategy("")
 
 
+def test_parse_strategy_humanize_warning():
+    with pytest.warns(UserWarning, match=r"humanize.*0\.44.*0\.02"):
+        steps = parse_strategy("humanize@0.2")
+    assert steps == [("humanize", 0.2)]
+
+
+def test_default_strategy_has_no_humanize():
+    config_path = ROOT / "config" / "clean_strategy.json"
+    default_strategy = _load_default_strategy(config_path)
+    assert default_strategy is not None
+    steps = parse_strategy(default_strategy)
+    assert not any(tactic == "humanize" for tactic, _ in steps), (
+        "default strategy must not include humanize: humanize@0.2 collapses human_like "
+        "score from 0.44 to 0.02 (Pangram AI detector benchmark 02-04 Sep 2026)"
+    )
+
+
 # --- apply_strategy ---------------------------------------------------------
 
 
