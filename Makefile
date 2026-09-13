@@ -31,7 +31,7 @@ lint-fix:
 	$(PYTHON) -m ruff check --fix service tests
 
 smoke:
-	./service/scripts/smoke.sh
+	PYTHON="$(PYTHON)" ./service/scripts/smoke.sh
 
 smoke-synthid:
 	@if [ -z "$(REVERSE_SYNTHID_DIR)" ] && [ ! -d "$$HOME/reverse-SynthID" ]; then \
@@ -85,10 +85,10 @@ docker-markllm-help:
 	docker run --rm watermarks-remover-markllm --help
 
 smoke-markdiffusion:
-	@if [ -z "$(MARKDIFFUSION_DIR)" ] && [ ! -d "$$HOME/MarkDiffusion" ]; then \
+	@if [ -z "$(MARKDIFFUSION_DIR)" ] && [ ! -d "$$HOME/markdiffusion" ]; then \
 	  echo "smoke-markdiffusion skipped (set MARKDIFFUSION_DIR or run make bootstrap-markdiffusion)"; \
 	else \
-	  dir="$${MARKDIFFUSION_DIR:-$$HOME/MarkDiffusion}"; \
+	  dir="$${MARKDIFFUSION_DIR:-$$HOME/markdiffusion}"; \
 	  $(PYTHON) $(SCRIPTS)/markdiffusion_harness.py --markdiffusion-dir "$$dir" --help > /dev/null && echo "smoke-markdiffusion: ok"; \
 	fi
 
