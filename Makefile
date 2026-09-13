@@ -31,13 +31,18 @@ lint-fix:
 	$(PYTHON) -m ruff check --fix service tests
 
 smoke:
-	./service/scripts/smoke.sh
+	PYTHON="$(PYTHON)" ./service/scripts/smoke.sh
 
 smoke-synthid:
-	./service/scripts/smoke_synthid.sh
+	@if [ -z "$(REVERSE_SYNTHID_DIR)" ] && [ ! -d "$$HOME/reverse-SynthID" ]; then \
+	  echo "smoke-synthid skipped (set REVERSE_SYNTHID_DIR or run make bootstrap-synthid)"; \
+	else \
+	  dir="$${REVERSE_SYNTHID_DIR:-$$HOME/reverse-SynthID}"; \
+	  $(PYTHON) $(SCRIPTS)/score_synthid.py --synthid-dir "$$dir" --help > /dev/null && echo "smoke-synthid: ok"; \
+	fi
 
 bootstrap-synthid:
-	./service/scripts/setup_reverse_synthid.sh
+	./service/scripts/setup_synthid.sh
 
 docker-synthid-build:
 	docker build -f service/Dockerfile.synthid -t watermarks-remover-synthid service/
@@ -46,7 +51,12 @@ docker-synthid-help:
 	docker run --rm watermarks-remover-synthid --help
 
 smoke-ctrlregen:
-	./service/scripts/smoke_ctrlregen.sh
+	@if [ -z "$(NOAI_WATERMARK_DIR)" ] && [ ! -d "$$HOME/noai-watermark" ]; then \
+	  echo "smoke-ctrlregen skipped (set NOAI_WATERMARK_DIR or run make bootstrap-ctrlregen)"; \
+	else \
+	  dir="$${NOAI_WATERMARK_DIR:-$$HOME/noai-watermark}"; \
+	  $(PYTHON) $(SCRIPTS)/clean_ctrlregen.py --ctrlregen-dir "$$dir" --help > /dev/null && echo "smoke-ctrlregen: ok"; \
+	fi
 
 bootstrap-ctrlregen:
 	./service/scripts/setup_ctrlregen.sh
@@ -58,7 +68,12 @@ docker-ctrlregen-help:
 	docker run --rm watermarks-remover-ctrlregen --help
 
 smoke-markllm:
-	./service/scripts/smoke_markllm.sh
+	@if [ -z "$(MARKLLM_DIR)" ] && [ ! -d "$$HOME/MarkLLM" ]; then \
+	  echo "smoke-markllm skipped (set MARKLLM_DIR or run make bootstrap-markllm)"; \
+	else \
+	  dir="$${MARKLLM_DIR:-$$HOME/MarkLLM}"; \
+	  $(PYTHON) $(SCRIPTS)/detect_text_watermark.py --markllm-dir "$$dir" --help > /dev/null && echo "smoke-markllm: ok"; \
+	fi
 
 bootstrap-markllm:
 	./service/scripts/setup_markllm.sh
@@ -70,7 +85,12 @@ docker-markllm-help:
 	docker run --rm watermarks-remover-markllm --help
 
 smoke-markdiffusion:
-	./service/scripts/smoke_markdiffusion.sh
+	@if [ -z "$(MARKDIFFUSION_DIR)" ] && [ ! -d "$$HOME/markdiffusion" ]; then \
+	  echo "smoke-markdiffusion skipped (set MARKDIFFUSION_DIR or run make bootstrap-markdiffusion)"; \
+	else \
+	  dir="$${MARKDIFFUSION_DIR:-$$HOME/markdiffusion}"; \
+	  $(PYTHON) $(SCRIPTS)/markdiffusion_harness.py --markdiffusion-dir "$$dir" --help > /dev/null && echo "smoke-markdiffusion: ok"; \
+	fi
 
 bench-synthid-text:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
