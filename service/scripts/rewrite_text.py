@@ -544,19 +544,27 @@ def build_prompt(
     """Construct the LLM rewrite prompt for a given tactic and intensity."""
     if tactic is None:
         if rewrite_level is not None:
-            base = PROMPTS["level"].format(TEXT=text, LEVEL=rewrite_level)
+            header = PROMPTS["level"].format(TEXT="", LEVEL=rewrite_level)
         else:
             raise ValueError("unknown tactic: None")
     else:
-        base = _tactic_prompt(tactic, text, lang, original_lang)
+        header = _tactic_prompt(tactic, "", lang, original_lang)
         # A (tactic, intensity) pair: modulate the named tactic prompt with the
         # level instead of replacing it with the generic level-only prompt. Code is
         # exempt — identifier/comment rewrites are not naturally intensity-modulated.
         if rewrite_level is not None and tactic != "code":
-            base = base + "\n\n" + _intensity_clause(rewrite_level)
+            suffix = "\n\n---\n"
+            if header.endswith(suffix):
+                header = header[: -len(suffix)]
+            header = header + "\n\n" + _intensity_clause(rewrite_level) + suffix
     if style:
-        base = base + "\n\n" + _style_clause(style)
-    return base
+        suffix = "\n\n---\n"
+        if header.endswith(suffix):
+            header = header[: -len(suffix)]
+        header = header + "\n\n" + _style_clause(style) + suffix
+    if not header.endswith("\n\n---\n"):
+        header = header.rstrip() + "\n\n---\n"
+    return header + text
 
 
 def _split_units(text: str) -> list[tuple[str, str]]:
