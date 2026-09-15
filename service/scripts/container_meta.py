@@ -35,6 +35,7 @@ from common import (
     which,
 )
 from image_meta import (
+    AI_GENERATOR_PRODUCTS,
     AI_META_HINTS,
     C2PA_MARKERS,
     inspect_bmp,
@@ -208,7 +209,11 @@ def named_value_is_ai(name: str, value: str) -> bool:
     clean, and the loss is silent because the document still parses.
     """
     if name.lower() in GENERATOR_NAME_KEYS:
-        return bool(AI_META_NAME_RE.search(value))
+        # Reuse PNG's product vocabulary and case-insensitive substring rule,
+        # but only for naming values; descriptions remain free prose.
+        return bool(AI_META_NAME_RE.search(value)) or any(
+            product.decode("ascii").lower() in value.lower() for product in AI_GENERATOR_PRODUCTS
+        )
     return bool(AI_FREE_TEXT_MARKER_RE.search(value))
 
 
