@@ -26,6 +26,11 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      - name: Test optional face protection (CPU only)
+        run: |
+          python -m pip install -r service/scripts/requirements-face-protection.txt
+          python -m pytest -q tests/test_face_protection.py tests/test_setup_face_protection.py tests/test_ctrlregen_options.py
+
       - name: Validate OpenAPI spec
         if: matrix.os == 'ubuntu-latest'
         run: |

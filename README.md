@@ -1466,3 +1466,40 @@ MIT — see [LICENSE](LICENSE).
 - [mertizci/noai-watermark](https://github.com/mertizci/noai-watermark) (CLI/Python toolkit for SynthID/StableSignature/TreeRing removal and AI metadata stripping)
 - [0xROOTPLS/DeSynth](https://github.com/0xROOTPLS/DeSynth) (SynthID removal for OpenAI/Google images)
 - Institute of AI PM, [*AI Content Provenance and Watermarking: The PM's Guide to C2PA and SynthID*](https://www.institutepm.com/knowledge-hub/ai-content-provenance-watermarking) (two-layer industry model: C2PA + imperceptible watermark / soft binding; SB 942 / EU AI Act Art. 50 context)
+
+
+### Optional CtrlRegen face protection
+
+Regeneration can deform small faces. The opt-in `protect_faces` HTTP option
+(`--protect-faces` in `clean_ctrlregen.py`) detects faces with CPU YuNet and
+blends original face structure back using gradient-domain blending. It adjusts
+illumination to reduce halos from mixing differently exposed images; it does
+not preserve exact original face pixels. Detection can miss faces. Reports
+include the detection count, blend method, and a warning when no face is found.
+**Protected regions may retain invisible watermarks.** This is a quality control,
+not evidence of successful removal. Output is still 8-bit RGB.
+
+Install the optional dependencies in the existing CtrlRegen virtual environment
+(Python 3.11+), then download the pinned, SHA-256-verified model and its MIT license:
+
+```sh
+/path/to/noai-watermark/.venv/bin/python service/scripts/setup_face_protection.py --install-deps --dir /path/to/models/yunet
+```
+
+On Windows, use the environment's `.venv/Scripts/python.exe` with the same
+arguments. Without `--install-deps`, the installer only downloads/verifies the
+model. It refuses to overwrite an existing model with a mismatching checksum.
+Set `WATERMARKS_FACE_MODEL` in the **service environment** to the printed ONNX
+path, and restart the service. No runtime model downloads occur.
+
+Example `/clean` image options:
+
+```json
+{"remove_pixel":"ctrlregen","ctrlregen_intensity":0.1,"protect_faces":true,"keep_non_ai_metadata":true}
+```
+
+`ctrlregen_intensity` is a number in `(0, 1]` (default `0.25`). Lower intensity
+usually changes fewer details; neither it nor face protection guarantees that
+an invisible watermark is removed. Both options leave existing defaults intact
+when omitted. The installer and synthetic blending tests require no GPU or
+private image fixtures.

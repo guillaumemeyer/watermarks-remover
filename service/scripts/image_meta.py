@@ -1771,6 +1771,7 @@ def run_ctrlregen_clean(
     steps: int = 50,
     device: str | None = None,
     seed: int | None = None,
+    protect_faces: bool = False,
     timeout: int = 3600,
 ) -> dict[str, Any]:
     """Run the optional CtrlRegen remover in a subprocess.
@@ -1810,6 +1811,8 @@ def run_ctrlregen_clean(
         cmd += ["--device", str(device)]
     if seed is not None:
         cmd += ["--seed", str(seed)]
+    if protect_faces:
+        cmd += ["--protect-faces"]
 
     try:
         r = subprocess.run(
@@ -2217,6 +2220,7 @@ def clean_image(
     remove_pixel: str | None = None,
     ctrlregen_dir: str | None = None,
     ctrlregen_intensity: float = 0.25,
+    protect_faces: bool = False,
     ctrlregen_steps: int = 50,
     ctrlregen_device: str | None = None,
     ctrlregen_seed: int | None = None,
@@ -2283,6 +2287,7 @@ def clean_image(
                 steps=ctrlregen_steps,
                 device=ctrlregen_device,
                 seed=ctrlregen_seed,
+                protect_faces=protect_faces,
                 timeout=ctrlregen_timeout,
             )
             if pixel_removal.get("available"):
