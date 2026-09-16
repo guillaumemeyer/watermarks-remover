@@ -74,6 +74,7 @@ def _progress(message: str) -> None:
 
 
 def main() -> int:
+    """Run optional CtrlRegen cleaning and report face protection and output details."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", type=Path, help="Input image (PNG/JPEG/etc.)")
     p.add_argument("-o", "--output", type=Path, help="Output path (default: *.ctrlregen.*)")

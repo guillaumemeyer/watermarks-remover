@@ -64,6 +64,8 @@ jobs:
         run: |
           python -m pip_audit -r requirements-dev.txt \
             -r service/scripts/requirements-synthid-scorer.txt
+          # Optional backends use separate environments with different NumPy pins.
+          python -m pip_audit -r service/scripts/requirements-face-protection.txt
 
   lint:
     runs-on: ubuntu-latest

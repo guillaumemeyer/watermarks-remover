@@ -45,6 +45,7 @@ def download_verified(url: str, destination: Path, digest: str) -> None:
 
 
 def main() -> int:
+    """Install optional CPU dependencies and checksum-verified model assets from CLI options."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dir", type=Path, default=Path.home() / ".cache" / "watermarks-remover" / "yunet"

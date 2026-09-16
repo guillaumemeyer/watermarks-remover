@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+from setup_face_protection import MODEL_SHA256
 
 
 def protect_faces(
@@ -17,6 +19,12 @@ def protect_faces(
     model_path: str | None = None,
     blend_method: str = "gradient",
 ):
+    """Verify the pinned YuNet model and blend original facial structure into regeneration.
+
+    Return the RGB image, detection report, and per-pixel protection weights.
+    Gradient blending adapts illumination; feather blending retains exact core pixels.
+    Protected regions may retain invisible watermarks. Invalid models raise ValueError.
+    """
     start = time.monotonic()
     if blend_method not in ("gradient", "feather"):
         raise ValueError("blend_method must be gradient or feather")
@@ -25,6 +33,12 @@ def protect_faces(
     model = Path(model_path or os.environ.get("WATERMARKS_FACE_MODEL", ""))
     if not model.is_file():
         raise ValueError("Face protection model unavailable: set WATERMARKS_FACE_MODEL")
+    with model.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != MODEL_SHA256:
+        raise ValueError(
+            "Face protection model failed SHA-256 verification; run setup_face_protection.py"
+        )
     a = np.asarray(original.convert("RGB"))
     b = np.asarray(regenerated.convert("RGB"))
     h, w = a.shape[:2]

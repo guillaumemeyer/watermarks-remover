@@ -2233,6 +2233,7 @@ def clean_image(
     markdiffusion_device: str | None = None,
     markdiffusion_timeout: int = 3600,
 ) -> dict[str, Any]:
+    """Strip image provenance metadata and optionally run pixel regeneration and face protection."""
     synthid_before = run_synthid_score(path, synthid_dir)
     data = path.read_bytes()
     fmt = detect_format(data)

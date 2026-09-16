@@ -351,6 +351,7 @@ def _file_request(extra: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _clean_request_schema() -> dict[str, Any]:
+    """Describe accepted cleaning options and their types for the OpenAPI request schema."""
     options: dict[str, Any] = {}
     for key, kind in ALLOWED_CLEAN_OPTIONS.items():
         if kind is bool:
@@ -913,6 +914,7 @@ def _decode_input(body: dict[str, Any]) -> tuple[bytes, str]:
 
 
 def _parse_clean_options(options: Any) -> dict[str, Any]:
+    """Validate option types and compatible combinations before dispatching a clean request."""
     if options is None:
         return {}
     if not isinstance(options, dict):
@@ -1238,7 +1240,10 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
 
 
 def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Classify and clean uploaded bytes, rejecting face protection for non-image formats."""
     kind = classify_bytes(data, Path(name).suffix)
+    if options.get("protect_faces") and kind != "image":
+        raise ValueError("protect_faces requires an image payload")
     if kind == "unknown":
         raise ValueError(
             "unrecognized file format; use a filename with a known extension "
