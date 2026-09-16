@@ -25,7 +25,7 @@ accelerate==1.14.0
 SentencePiece==0.2.2
 nltk==3.10.3
 jieba==0.42.1
-tqdm==4.70.0
+tqdm==4.70.1
 matplotlib==3.11.1
 Cython==3.3.0
 numpy==2.5.3
