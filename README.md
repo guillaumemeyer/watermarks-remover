@@ -1164,7 +1164,7 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 ### Simple Unmark: privacy-preserving SaaS
 
-[Simple Unmark](https://simpleunmark.com) makes `watermarks-remover` available through a simple web app, with no installation or server setup. The service preserves privacy by default without retaining submitted content. Confidential mode runs the remover in a trusted execution environment (TEE), adding cryptographic verification and hardware-backed protection against infrastructure operators accessing content during processing. An independent project with an [open-source core](https://github.com/SimpleUnmark/confidential). See the [privacy architecture](https://github.com/SimpleUnmark/confidential/blob/main/docs/architecture.md) for guarantees and scope.
+[Simple Unmark](https://simpleunmark.com) makes `watermarks-remover` available through a simple web app, currently for text only, with no installation or server setup. The service preserves privacy by default without retaining submitted content. Confidential mode runs the remover in a trusted execution environment (TEE), adding cryptographic verification and hardware-backed protection against infrastructure operators accessing content during processing. An independent project with an [open-source core](https://github.com/SimpleUnmark/confidential). See the [privacy architecture](https://github.com/SimpleUnmark/confidential/blob/main/docs/architecture.md) for guarantees and scope.
 
 ### Adding a project
 
