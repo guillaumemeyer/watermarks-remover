@@ -21,14 +21,14 @@ transformers==5.15.0
 # release (0.22.2 -> 0.23.1), so the highest compatible pin is 0.22.2.
 tokenizers==0.22.2
 datasets==5.0.1
-accelerate==1.14.0
+accelerate==1.15.0
 SentencePiece==0.2.2
 nltk==3.10.3
 jieba==0.42.1
 tqdm==4.70.1
 matplotlib==3.11.1
 Cython==3.3.0
-numpy==2.5.2
+numpy==2.5.3
 scipy==1.18.1
 scikit-learn==1.9.0
 huggingface_hub==1.27.0

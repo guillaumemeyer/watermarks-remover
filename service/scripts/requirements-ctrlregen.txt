@@ -20,7 +20,7 @@
 # run a scoped pip-audit against this file if you need a report.
 diffusers==0.27.2
 transformers==4.37.2
-accelerate==1.14.0
+accelerate==1.15.0
 controlnet-aux==0.0.10
 color-matcher==0.6.0
 safetensors==0.8.0
