@@ -78,6 +78,10 @@ def _replace_dashes(text: str) -> str:
         # char after a delimiter (or string start); never a prose double hyphen.
         if after.isalnum() and (not before or not before.isalnum()):
             return m.group(0)
+        # `12--18` is a LaTeX en dash (a page or equation range), not prose
+        # punctuation — the same digit-flanked exemption `_dash_sub` applies.
+        if before.isdigit() and after.isdigit():
+            return m.group(0)
         return ", "
 
     text = _DASH.sub(_dash_sub, text)

@@ -1,10 +1,14 @@
 # Removal matrix
 
-| Target | Method | Script / action | Side effects | Verifiable today? |
+The *Service side* column names the implementation behind `/inspect` and
+`/clean`. The agent reaches it over HTTP and never runs these scripts itself
+(see `SKILL.md`).
+
+| Target | Method | Service side | Side effects | Verifiable today? |
 | --- | --- | --- | --- | --- |
 | Invisible Unicode / exotic spaces / bidi / tags | Strip / normalize | `inspect_text.py`, `clean_text.py`, `clean_file.py` | Minimal | Yes (codepoint report) |
 | Stylometric AI cadence / burstiness / n-grams (zero-LLM) | Statistical variance & cadence scoring | `score_stylometry.py`, `inspect_text.py --stylometry`, `audit_dir.py --check-stylometry` | None (detection only) | Yes (calibrated score + phrase spans) |
-| Statistical text watermark (SynthID-class / Kirchenbauer) | Multi-pass paraphrase / humanize / back-translate / structural | Agent Layer B + optional `rewrite_text.py` | Meaning/style drift | No without vendor key/detector; **MarkLLM harness** (`detect_text_watermark.py`) verifies a specific scheme config before/after |
+| Statistical text watermark (SynthID-class / Kirchenbauer) | Multi-pass paraphrase / humanize / back-translate / structural | `/clean` Layer B strategy on plain text (`rewrite_text.py`), or the agent's own rewrite model | Meaning/style drift | No without vendor key/detector; **MarkLLM harness** (`detect_text_watermark.py`) verifies a specific scheme config before/after |
 | C2PA on PNG/JPEG/WebP/AVIF/HEIC | Drop APP11 / PNG `caBX` / RIFF `C2PA` / ISOBMFF `jumb` & `uuid` / exiftool | `clean_image.py` | Loses provenance metadata | Yes |
 | C2PA on WAV/MP3/MP4/MOV (ISOBMFF `jumb`/`c2pa`/`uuid` incl. the C2PA content-provenance `uuid` box, RIFF `C2PA`, ID3v2) | Drop the C2PA box/chunk/frame (offset-preserving `free` box in ISOBMFF) | `av_meta.py` (`clean_av`) | Loses provenance metadata | Yes (re-inspect) |
 | GIF comment/XMP extensions | Drop 0xFE / XMP application extensions (keep `NETSCAPE2.0`) | `clean_image.py` | Loses GIF comments/XMP | Yes (re-inspect) |
@@ -27,19 +31,19 @@
 
 ## Default pipeline
 
-1. **Inspect** (`inspect_file.py` or specific inspect_*).
-2. **Deterministic clean** — Layer A text and/or container/image metadata; for images, optionally add pixel removal (`--remove-pixel ctrlregen`) after the metadata strip.
+1. **Inspect** (`/inspect`).
+2. **Deterministic clean** (`/clean`) — Layer A text and/or container/image metadata; for images, optionally add pixel removal (`options.remove_pixel` = `ctrlregen`) after the metadata strip.
 3. **Always offer Layer B** rewrite for prose (paraphrase → optional strong pass: `humanize` / back-translate / structural).
 4. Prefer a **non-origin, open-weight** rewrite model when available (avoid re-stamping).
 5. Layer A again after rewrite.
 6. Report: Layer B is best-effort; residual risk remains.
-7. **Optional verification:** `rewrite_text.py --markllm-scheme kgw|synthid` runs a MarkLLM before/after detection (external `detect_text_watermark.py` harness) to show a specific scheme config clears. Same-config-only; not a vendor-detector oracle.
+7. **Optional verification:** when `/capabilities` reports `text_detectors.markllm`, `/detect` or `/clean` with `detect_before` / `detect_after` runs a MarkLLM before/after detection (service-side `detect_text_watermark.py` harness) to show a specific scheme config clears. Same-config-only; not a vendor-detector oracle.
 
 ## Code vs prose
 
-- **Plain-text prose (pasted / `.txt`):** full A + B — `/clean` (kind `text`) runs the Layer B strategy and requires the rewrite backend configured (rejects with 400 otherwise).
+- **Plain-text prose (pasted / `.txt` / `.text`):** full A + B — `/clean` (kind `text`) runs the Layer B strategy and requires the rewrite backend configured (rejects with 400 otherwise).
 - **Markdown / HTML body (container):** `/clean` runs container/metadata clean + Layer A; the Layer B rewrite applies to the prose when it is processed as a text pass (extract the prose or send the content to `/clean` as text), or via the agent rewrite model.
-- **Code:** Layer A + formatter; statistical marks are weak; offer `code` rewrite (comments/docstrings/string-literal wording + local identifier renames) with user OK.
+- **Code, config and data** (`.py`, `.json`, `.csv`, `.po`, …): `/clean` runs Layer A only and reports `layer_b.skipped`, because the default rewrite would change identifiers, keys and values. Add a formatter; statistical marks are weak. Offer a `code` rewrite (comments/docstrings/string-literal wording + local identifier renames, `options.strategy` = `code@…`) only with the user's OK.
 
 ## Layer B tactics
 

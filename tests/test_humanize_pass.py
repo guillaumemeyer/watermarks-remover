@@ -91,3 +91,9 @@ def test_preserves_cli_options():
 def test_preserves_delimited_cli_options():
     text = "pass the flag run(--dry-run) to the runner"
     assert humanize_pass(text) == text
+
+
+def test_preserves_latex_en_dash_between_digits():
+    """`12--18` is a LaTeX page/equation range, not prose punctuation."""
+    text = "see pages 12--18 and equations 3--5"
+    assert humanize_pass(text) == text

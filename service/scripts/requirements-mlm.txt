@@ -1,0 +1,44 @@
+# Dependencies for the Layer B `mlm` rewrite tactic (rewrite_text.py
+# _get_mlm / _mlm_infill): a transformers fill-mask pipeline over
+# roberta-large. The default /clean strategy (config/clean_strategy.json,
+# "paraphrase@0.8,mlm@0.2") runs it inside the service process, so install
+# this file into the SAME interpreter that runs server.py (`make
+# bootstrap-mlm` does) and restart the service. GET /capabilities reports the
+# result under layer_b.
+#
+# Exact pins (no drift), in lockstep with requirements-markllm.txt: every
+# package the two files share must carry the same pin, so both stacks resolve
+# to the same versions (tests/test_requirements_mlm.py enforces it).
+# Re-evaluate the two files together before bumping.
+#
+# torch is pinned with a wildcard so a platform wheel (e.g. 2.14.0+cpu from
+# the CPU index, or 2.14.0+cuXXX from a GPU index) satisfies it. `make
+# bootstrap-mlm` installs torch alone from the CPU index first
+# (TORCH_INDEX_URL overrides) with --no-deps, since that index also serves
+# stale copies of torch's dependencies (setuptools 78.1.0, flagged by
+# pip-audit); this file then resolves those, and its remaining pins, from
+# PyPI against the already-installed torch. A bare `pip install -r` of this
+# file pulls the default PyPI torch wheel instead (CUDA-enabled on Linux,
+# several GB).
+#
+# Pillow is pinned to 12.3.0 (same as requirements-markllm.txt and
+# requirements-synthid-scorer.txt), the release clear of the 24 known CVEs
+# those files were bumped for. The fill-mask path never opens an image, but
+# `from transformers import pipeline` loads the vision/OCR pipelines too:
+# unpinned transformers 4.49 imports pytesseract there, which hard-imports
+# PIL, so a host with pytesseract and no Pillow failed that import ("No module
+# named 'PIL'") and every default-strategy text /clean answered 400. Declaring
+# it keeps that path importable and on the audited version.
+#
+# The roberta-large weights (~1.4 GB) are not a pip dependency: they download
+# from Hugging Face into HF_HOME on first use (`make bootstrap-mlm` pre-fetches
+# them). Once cached, HF_HUB_OFFLINE=1 stops the service from re-checking the
+# Hub every time it builds the pipeline.
+torch==2.14.0.*
+transformers==5.15.0
+# transformers 5.15.0 caps tokenizers at <=0.23.0; there is no 0.23.0
+# release (0.22.2 -> 0.23.1), so the highest compatible pin is 0.22.2.
+tokenizers==0.22.2
+huggingface_hub==1.27.0
+numpy==2.5.3
+Pillow==12.3.0

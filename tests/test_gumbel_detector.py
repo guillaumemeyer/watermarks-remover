@@ -340,11 +340,11 @@ def _rewrite_kwargs(**overrides):
 def test_rewrite_gumbel_evaluator_clears_mark(monkeypatch):
     rng = _rng(11)
     original = _marked_text(400, rng)
-    monkeypatch.setattr(
-        rewrite_text,
-        "call_ollama",
-        lambda *a, **k: "alpha beta gamma delta epsilon zeta eta theta",
-    )
+    # A same-length rewrite that no longer carries KEY_HEX's mark (marked under
+    # another key, so it replays at chance): a paraphrase keeps the length, and
+    # a far shorter output would be rejected as length drift.
+    rewritten = _marked_text(400, _rng(12), key_hex=KEY_HEX_OTHER)
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: rewritten)
     _out, info = rewrite_text.rewrite(original, **_rewrite_kwargs(gumbel_key=KEY_HEX))
     assert info["evaluator"] == "gumbel"
     assert info["passed"] is True
@@ -354,7 +354,7 @@ def test_rewrite_gumbel_evaluator_clears_mark(monkeypatch):
     assert g["after"]["is_watermarked"] is False
     assert g["cleared"] is True
     assert info["candidate_scores"][0]["evaluation"]["detector"] == "gumbel"
-    assert _out == "alpha beta gamma delta epsilon zeta eta theta"
+    assert _out == rewritten
 
 
 def test_gumbel_takes_priority_over_markllm(monkeypatch):

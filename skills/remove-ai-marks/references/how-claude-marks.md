@@ -20,13 +20,13 @@ Primary source: [Anthropic Help Center](https://support.claude.com/en/articles/1
 
 **Likely technical class** (Anthropic has not published the algorithm): statistical **token-sampling** watermarks (Kirchenbauer / SynthID-style). See `vendor-notes.md` and `mark-classes.md`.
 
-Layer A scripts only remove **Unicode / homoglyph** carriers. Layer B (rewrite) targets statistical marks.
+Layer A only removes **Unicode / homoglyph** carriers. Layer B (rewrite) targets statistical marks.
 
 ## Mechanism 2 — C2PA on files
 
 - Signed **Content Credentials** on supported types (examples: `.png`, `.jpg`, `.svg`).
 - Tamper-evident while present; stripped by re-encode, metadata scrub, or many upload pipelines.
-- Inspect with `c2patool` when installed; strip via `clean_image.py` / `clean_file.py` / ExifTool.
+- Inspect and strip through the service (`/inspect`, `/clean`), which uses `c2patool` and ExifTool server-side when they are installed (check `/capabilities`).
 
 ## Caveats (Anthropic)
 

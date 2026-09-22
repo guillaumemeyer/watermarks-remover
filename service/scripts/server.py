@@ -6,7 +6,8 @@ running the CLI scripts locally.
 
 Endpoints:
     GET  /health         -> {"ok": true, "version": ...}
-    GET  /capabilities   -> which optional tools / pixel backends are present
+    GET  /capabilities   -> which optional tools / pixel backends are present,
+                            and whether text Layer B (the rewrite) can run
     GET  /openapi.json   -> dynamically generated OpenAPI 3.0.3 spec
     POST /inspect        -> {"file": <base64>, "name": "x.png"} -> findings JSON
     POST /detect         -> {"file": <base64>, "name": "x.txt"} -> watermark detector reports
@@ -74,6 +75,7 @@ from container_meta import (
     DEEP_IMAGE_MODES,
     DEFAULT_CLEAN_ATTACHMENTS,
     clean_container,
+    detect_container_format,
     inspect_container,
 )
 from format_dispatch import classify_bytes
@@ -102,6 +104,12 @@ MAX_BODY_BYTES = MAX_INPUT_BYTES + (MAX_INPUT_BYTES >> 1)
 # a request packing many tiny files into one call.
 MAX_BATCH_FILES = int(os.environ.get("WATERMARKS_MAX_BATCH_FILES", "50"))
 
+# Seconds each Layer B rewrite-backend call may take (WATERMARKS_REWRITE_TIMEOUT).
+# A local model on a laptop GPU can need minutes for one call, so the default is
+# only a default; the cap bounds a typo that would park a request for hours.
+REWRITE_TIMEOUT_DEFAULT = 120.0
+REWRITE_TIMEOUT_MAX = 3600.0
+
 ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
     "aggressive_homoglyphs": bool,
@@ -117,11 +125,26 @@ ALLOWED_CLEAN_OPTIONS = {
     "clean_attachments": str,
     "style": str,
     "strategy": str,
+    "protect_latex": str,
+    "rewrite": bool,
 }
 
 # Default Layer B strategy loaded from the strategy config file (overridable by
 # env/CLI). None means no Layer B rewrite on text.
 _DEFAULT_STRATEGY: str | None = None
+
+# Text suffixes that get the default Layer B rewrite in /clean. The text kind
+# also covers code, config, data, markup and localization files (TEXT_EXTS in
+# format_dispatch is kept broad for Layer A), and an LLM paraphrase plus a
+# masked-LM infill would rewrite their identifiers, keys and values -- so they
+# get Layer B only when the request passes options.strategy.
+LAYER_B_DEFAULT_EXTS = frozenset({".txt", ".text"})
+
+# Container formats whose prose can take the Layer B rewrite on request
+# (options.rewrite: true or options.strategy): their math, commands,
+# environments, citation keys, code spans and front matter are masked out first
+# (latex_mask), and the metadata strip + Layer A have already run.
+LAYER_B_CONTAINER_FORMATS = frozenset({"latex", "markdown"})
 
 
 @cache
@@ -196,6 +219,60 @@ def _tool_usable(cmd: str) -> bool:
     return r.returncode == 0
 
 
+@cache
+def _mlm_import_error() -> str | None:
+    """rewrite_text.mlm_import_error(), probed once per process.
+
+    Cached like _tool_usable: /capabilities is polled and the probe imports
+    torch in a child interpreter, which takes seconds. After installing
+    requirements-mlm.txt, restart the service for /capabilities to see it.
+    """
+    from rewrite_text import mlm_import_error
+
+    return mlm_import_error()
+
+
+def _layer_b_status() -> dict[str, Any]:
+    """Which Layer B tactics can run here, and whether the default strategy can.
+
+    Text /clean always runs a strategy and answers 400 when one of its steps
+    can't run, so this is what a caller reads before sending text. LLM tactics
+    need the rewrite backend configured (the same check _apply_layer_b rejects
+    with); `mlm` needs its torch + transformers stack importable.
+    """
+    from rewrite_text import (
+        KNOWN_TACTICS,
+        LLM_TACTICS,
+        MLM_MODEL,
+        MLM_REQUIREMENTS,
+        parse_strategy,
+    )
+
+    backend_error = _rewrite_backend_error()
+    mlm_error = _mlm_import_error()
+    tactics = {
+        tactic: (backend_error if tactic in LLM_TACTICS else mlm_error) is None
+        for tactic in sorted(KNOWN_TACTICS)
+    }
+    steps = parse_strategy(_DEFAULT_STRATEGY) if _DEFAULT_STRATEGY else []
+    return {
+        "default_strategy": _DEFAULT_STRATEGY,
+        "default_strategy_usable": bool(steps) and all(tactics[t] for t, _ in steps),
+        "tactics": tactics,
+        "rewrite_backend": {
+            "backend": os.environ.get("WATERMARKS_REWRITE_BACKEND", "print-prompt"),
+            "configured": backend_error is None,
+            "error": backend_error,
+        },
+        "mlm": {
+            "importable": mlm_error is None,
+            "model": MLM_MODEL,
+            "requirements": MLM_REQUIREMENTS,
+            "error": mlm_error,
+        },
+    }
+
+
 def capabilities() -> dict[str, Any]:
     return {
         "version": VERSION,
@@ -223,6 +300,7 @@ def capabilities() -> dict[str, Any]:
         "harnesses": {
             "markllm": bool(os.environ.get("MARKLLM_DIR")),
         },
+        "layer_b": _layer_b_status(),
     }
 
 
@@ -449,6 +527,119 @@ def _watermark_request_schema() -> dict[str, Any]:
     )
 
 
+def _layer_b_report_schema() -> dict[str, Any]:
+    """OpenAPI schema for `report.layer_b`, served once as a component."""
+    from rewrite_text import (
+        LENGTH_DRIFT_MAX_RATIO,
+        LENGTH_DRIFT_MIN_RATIO,
+        LENGTH_DRIFT_SLACK_CHARS,
+        LENGTH_PRESERVING_TACTICS,
+        WRAPPER_KINDS,
+    )
+
+    kinds = _schema(type="array", items=_schema(type="string", enum=list(WRAPPER_KINDS)))
+    drift = (
+        f"length drift: output/input ratio outside {LENGTH_DRIFT_MIN_RATIO:g}-"
+        f"{LENGTH_DRIFT_MAX_RATIO:g}, beyond {LENGTH_DRIFT_SLACK_CHARS} chars"
+    )
+    step = _schema(
+        type="object",
+        properties={
+            "tactic": _schema(type="string"),
+            "intensity": _schema(type="number"),
+            "in_chars": _schema(type="integer"),
+            "out_chars": _schema(type="integer", description="The input's when ok is false"),
+            "ok": _schema(
+                type="boolean", description="False: no acceptable rewrite; input passed on"
+            ),
+            "attempts": _schema(type="integer"),
+            "generations": _schema(type="integer", description="Model calls made"),
+            "chunks": _schema(type="integer", description="Pieces the step's input was cut into"),
+            "lexical_divergence": _schema(type="number"),
+            "noop": _schema(type="boolean"),
+            "length_ratio": _schema(type="number", nullable=True),
+            "length_checked": _schema(
+                type="boolean",
+                description="Tactics checked: " + ", ".join(sorted(LENGTH_PRESERVING_TACTICS)),
+            ),
+            "wrappers_stripped": {**kinds, "description": "Model meta-commentary removed"},
+            "rejected": _schema(
+                type="array",
+                description=f"Attempts rejected for {drift}",
+                items=_schema(
+                    type="object",
+                    properties={
+                        "out_chars": _schema(type="integer"),
+                        "length_ratio": _schema(type="number", nullable=True),
+                        "wrappers_stripped": kinds,
+                    },
+                ),
+            ),
+            "error": _schema(type="string", description="Only when ok is false"),
+        },
+    )
+    strings = _schema(type="array", items=_schema(type="string"))
+    return _schema(
+        type="object",
+        description="Layer B rewrite of a text file; steps run in order",
+        properties={
+            "backend": _schema(type="string"),
+            "tactic": _schema(type="string", enum=["strategy"]),
+            "mode": _schema(type="string", enum=["strategy"]),
+            "strategy": strings,
+            "steps": _schema(type="array", items=step),
+            "input_chars": _schema(type="integer"),
+            "output_chars": _schema(type="integer"),
+            "ok": _schema(
+                type="boolean",
+                description="False when a step failed and was skipped (still HTTP 200)",
+            ),
+            "warnings": {**strings, "description": "Stripped commentary, regenerated steps"},
+            "errors": {**strings, "description": "Steps that failed on " + drift},
+            "attempt_budget": _schema(
+                type="integer",
+                description="WATERMARKS_REWRITE_CANDIDATES x WATERMARKS_REWRITE_LOOPS",
+            ),
+            "chunk_chars": _schema(
+                type="integer",
+                description="Longest piece sent to the model in one call (0: no chunking)",
+            ),
+            "lexical_divergence": _schema(
+                type="number", description="Bigram Jaccard distance input vs output"
+            ),
+            "noop_lex_floor": _schema(type="number"),
+            "noop": _schema(
+                type="boolean",
+                description="Output ≈ input (divergence under the floor): not a rewrite",
+            ),
+            "protect_latex": _schema(type="string", enum=["auto", "on", "off"]),
+            "latex_protected": _schema(
+                type="integer", description="Math/LaTeX/code spans masked out of the rewrite"
+            ),
+            "latex": _schema(
+                type="object",
+                description="Placeholder round trip; missing > 0 means a span was lost",
+                properties={
+                    "protected": _schema(type="integer"),
+                    "restored": _schema(type="integer"),
+                    "missing": _schema(type="integer"),
+                    "duplicated": _schema(type="integer"),
+                },
+            ),
+            "skipped": _schema(type="boolean", description="No rewrite ran (see reason)"),
+            "reason": _schema(type="string"),
+        },
+    )
+
+
+def _clean_report_schema() -> dict[str, Any]:
+    return _schema(
+        type="object",
+        description="Actions/stats for the detected kind; text files also carry layer_b",
+        properties={"layer_b": {"$ref": "#/components/schemas/LayerBReport"}},
+    )
+
+
 _ERROR_SCHEMA = _schema(
     type="object",
     properties={"ok": _schema(type="boolean", enum=[False]), "error": _schema(type="string")},
@@ -508,6 +699,63 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                             properties={
                                 "synthid_http": _schema(type="boolean"),
                                 "markllm": _schema(type="boolean"),
+                            },
+                        ),
+                        "layer_b": _schema(
+                            type="object",
+                            description=(
+                                "Whether POST /clean on text can run its required Layer B "
+                                "rewrite. Without options.strategy, a text /clean answers "
+                                "400 when default_strategy_usable is false."
+                            ),
+                            properties={
+                                "default_strategy": _schema(
+                                    type="string",
+                                    nullable=True,
+                                    description=(
+                                        "tactic@intensity list from the strategy config; "
+                                        "null when none is loaded"
+                                    ),
+                                ),
+                                "default_strategy_usable": _schema(
+                                    type="boolean",
+                                    description="Every step of default_strategy is usable",
+                                ),
+                                "tactics": _schema(
+                                    type="object",
+                                    additionalProperties=_schema(type="boolean"),
+                                    description="Usable per tactic accepted by options.strategy",
+                                ),
+                                "rewrite_backend": _schema(
+                                    type="object",
+                                    description=(
+                                        "LLM rewrite backend behind every tactic except mlm; "
+                                        "configuration only, never contacted"
+                                    ),
+                                    properties={
+                                        "backend": _schema(type="string"),
+                                        "configured": _schema(type="boolean"),
+                                        "error": _schema(type="string", nullable=True),
+                                    },
+                                ),
+                                "mlm": _schema(
+                                    type="object",
+                                    description=(
+                                        "Local masked-LM tactic: its torch + transformers "
+                                        "stack imports in the service interpreter (probed "
+                                        "once per process); the model weights download on "
+                                        "first use unless cached"
+                                    ),
+                                    properties={
+                                        "importable": _schema(type="boolean"),
+                                        "model": _schema(type="string"),
+                                        "requirements": _schema(
+                                            type="string",
+                                            description="Requirements file that installs it",
+                                        ),
+                                        "error": _schema(type="string", nullable=True),
+                                    },
+                                ),
                             },
                         ),
                     },
@@ -577,7 +825,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                         "cleaned": _schema(
                             type="string", description="Base64-encoded cleaned file bytes"
                         ),
-                        "report": _schema(type="object"),
+                        "report": _clean_report_schema(),
                     },
                 )
             },
@@ -721,7 +969,7 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                         type="string", enum=["text", "image", "container", "av"]
                                     ),
                                     "cleaned": _schema(type="string"),
-                                    "report": _schema(type="object"),
+                                    "report": _clean_report_schema(),
                                     "error": _schema(type="string"),
                                 },
                             ),
@@ -854,12 +1102,12 @@ def openapi_spec() -> dict[str, Any]:
             "Files are passed base64-encoded in JSON; cleaned bytes come back base64-encoded.",
         },
         "paths": paths,
+        # Shared by /clean and /clean/batch through a $ref.
+        "components": {"schemas": {"LayerBReport": _layer_b_report_schema()}},
     }
     if API_KEY:
-        spec["components"] = {
-            "securitySchemes": {
-                "bearerAuth": {"type": "http", "scheme": "bearer"},
-            }
+        spec["components"]["securitySchemes"] = {
+            "bearerAuth": {"type": "http", "scheme": "bearer"},
         }
         spec["security"] = [{"bearerAuth": []}]
     return spec
@@ -935,6 +1183,11 @@ def _parse_clean_options(options: Any) -> dict[str, Any]:
         from rewrite_text import parse_strategy
 
         parse_strategy(options["strategy"])
+    from latex_mask import PROTECT_LATEX_MODES
+
+    protect_latex = options.get("protect_latex")
+    if protect_latex is not None and protect_latex not in PROTECT_LATEX_MODES:
+        raise ValueError(f"option 'protect_latex' must be one of {sorted(PROTECT_LATEX_MODES)}")
     return options
 
 
@@ -960,52 +1213,101 @@ def _load_default_strategy(config_path: Path) -> str | None:
     return spec
 
 
+def _rewrite_backend_error() -> str | None:
+    """Why the LLM rewrite backend can't serve a Layer B step, or None when it can.
+
+    The one check behind both _apply_layer_b (which rejects the request with
+    it) and /capabilities (which reports it), so the advertised status can't
+    drift from the gate. Configuration only: the backend is never contacted,
+    so a configured but unreachable endpoint still reads as usable.
+    """
+    backend = os.environ.get("WATERMARKS_REWRITE_BACKEND", "print-prompt")
+    if backend not in ("openai-compatible", "ollama"):
+        return "Layer B strategy needs an LLM rewrite backend (WATERMARKS_REWRITE_BACKEND)"
+    needs_key = backend == "openai-compatible"
+    base_url = os.environ.get("WATERMARKS_REWRITE_BASE_URL")
+    missing = not os.environ.get("WATERMARKS_REWRITE_MODEL") or not base_url
+    if needs_key:
+        missing = missing or not os.environ.get("WATERMARKS_REWRITE_API_KEY")
+    if missing:
+        required = "WATERMARKS_REWRITE_MODEL/BASE_URL"
+        if needs_key:
+            required += "/API_KEY"
+        return f"Layer B strategy needs the rewrite backend configured ({required})"
+    host = urlparse(base_url).hostname or ""
+    allow_remote = os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if host not in ("127.0.0.1", "localhost", "::1") and not allow_remote:
+        return (
+            "Layer B strategy uses a remote rewrite endpoint; set WATERMARKS_REWRITE_ALLOW_REMOTE=1"
+        )
+    return None
+
+
 def _apply_layer_b(text: str, strategy: str, options: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Apply a Layer B rewrite strategy to *text*, rejecting if unavailable.
 
     Raises ValueError for an unconfigured/unavailable backend or model so the
-    caller surfaces a 400 rather than a 500. Wraps runtime failures the same way.
+    caller surfaces a 400 rather than a 500. Wraps runtime failures the same way;
+    a backend that outlives WATERMARKS_REWRITE_TIMEOUT gets a message that names
+    the variable instead of a bare "timed out". A step whose rewrite fails the
+    length-drift check is not an exception: it is retried within the
+    WATERMARKS_REWRITE_CANDIDATES x WATERMARKS_REWRITE_LOOPS budget, then
+    reported in the returned stats (ok/errors) with its input kept.
     """
-    from rewrite_text import LLM_TACTICS, apply_strategy, parse_strategy
+    from rewrite_text import (
+        DEFAULT_CANDIDATES,
+        DEFAULT_MAX_LOOPS,
+        LLM_TACTICS,
+        MLM_REQUIREMENTS,
+        _env_int,
+        apply_strategy,
+        load_mlm,
+        parse_strategy,
+    )
 
     steps = parse_strategy(strategy)
+    try:
+        timeout = resolve_timeout(
+            None,
+            env_var="WATERMARKS_REWRITE_TIMEOUT",
+            default=REWRITE_TIMEOUT_DEFAULT,
+            ceiling=REWRITE_TIMEOUT_MAX,
+        )
+    except ValueError:
+        raise ValueError("WATERMARKS_REWRITE_TIMEOUT must be a number of seconds") from None
+    # Same default as the rewrite_text.py CLI: "none" stops reasoning models from
+    # thinking for minutes before a rewrite; "off" omits the control entirely.
+    effort = os.environ.get("WATERMARKS_REWRITE_REASONING_EFFORT") or "none"
     needs_llm = any(t in LLM_TACTICS for t, _ in steps)
     backend = os.environ.get("WATERMARKS_REWRITE_BACKEND", "print-prompt")
     if needs_llm:
-        if backend not in ("openai-compatible", "ollama"):
-            raise ValueError(
-                "Layer B strategy needs an LLM rewrite backend (WATERMARKS_REWRITE_BACKEND)"
-            )
-        needs_key = backend == "openai-compatible"
-        missing = not os.environ.get("WATERMARKS_REWRITE_MODEL") or not os.environ.get(
-            "WATERMARKS_REWRITE_BASE_URL"
-        )
-        if needs_key:
-            missing = missing or not os.environ.get("WATERMARKS_REWRITE_API_KEY")
-        if missing:
-            required = "WATERMARKS_REWRITE_MODEL/BASE_URL"
-            if needs_key:
-                required += "/API_KEY"
-            raise ValueError(f"Layer B strategy needs the rewrite backend configured ({required})")
+        backend_error = _rewrite_backend_error()
+        if backend_error:
+            raise ValueError(backend_error)
     if any(t == "mlm" for t, _ in steps):
         import importlib.util
 
         if importlib.util.find_spec("transformers") is None:
-            raise ValueError("Layer B 'mlm' step requires transformers")
-    base_url = os.environ.get("WATERMARKS_REWRITE_BASE_URL")
-    if needs_llm and base_url:
-        host = urlparse(base_url).hostname or ""
-        allow_remote = os.environ.get("WATERMARKS_REWRITE_ALLOW_REMOTE", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if host not in ("127.0.0.1", "localhost", "::1") and not allow_remote:
             raise ValueError(
-                "Layer B strategy uses a remote rewrite endpoint; set "
-                "WATERMARKS_REWRITE_ALLOW_REMOTE=1"
+                f"Layer B 'mlm' step requires transformers (install {MLM_REQUIREMENTS})"
             )
+        # Build the pipeline before any step runs: a broken mlm stack (e.g.
+        # transformers without Pillow) used to fail only after the LLM step
+        # ahead of it in the default strategy had already been paid for.
+        try:
+            load_mlm()
+        except RuntimeError as e:
+            raise ValueError(f"Layer B rewrite failed: {e}") from e
+    # Math/LaTeX protection: a per-request option wins, then the service-wide
+    # env default, then "auto" (protect whenever the text looks like LaTeX).
+    protect_latex = (
+        options.get("protect_latex") or os.environ.get("WATERMARKS_PROTECT_LATEX") or "auto"
+    )
     try:
         out, stats = apply_strategy(
             text,
@@ -1014,16 +1316,23 @@ def _apply_layer_b(text: str, strategy: str, options: dict[str, Any]) -> tuple[s
             model=os.environ.get("WATERMARKS_REWRITE_MODEL"),
             base_url=os.environ.get("WATERMARKS_REWRITE_BASE_URL"),
             api_key=os.environ.get("WATERMARKS_REWRITE_API_KEY"),
-            temperature=float(os.environ.get("WATERMARKS_REWRITE_TEMPERATURE", "0.9")),
-            reasoning_effort=(
-                None
-                if os.environ.get("WATERMARKS_REWRITE_REASONING_EFFORT") == "off"
-                else os.environ.get("WATERMARKS_REWRITE_REASONING_EFFORT") or None
-            ),
+            timeout=timeout,
+            temperature=float(os.environ.get("WATERMARKS_REWRITE_TEMPERATURE", "0.3")),
+            reasoning_effort=None if effort == "off" else effort,
             style=options.get("style"),
             layer_a_after=bool(options.get("also_layer_a_text")),
+            candidates=_env_int("WATERMARKS_REWRITE_CANDIDATES", DEFAULT_CANDIDATES),
+            max_loops=_env_int("WATERMARKS_REWRITE_LOOPS", DEFAULT_MAX_LOOPS),
+            protect_latex=protect_latex,
         )
     except (RuntimeError, TimeoutError, urllib.error.URLError) as e:
+        # A read timeout surfaces as TimeoutError, a connect timeout as a
+        # URLError wrapping one.
+        if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
+            raise ValueError(
+                "Layer B rewrite failed: the rewrite backend did not answer within "
+                f"{timeout:g} s (raise WATERMARKS_REWRITE_TIMEOUT or use a faster model)"
+            ) from e
         raise ValueError(f"Layer B rewrite failed: {e}") from e
     return out, stats
 
@@ -1252,17 +1561,37 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
-            # Layer B is a required step for text cleaning: always apply the
+            # Layer B is a required step for plain-text prose: always apply the
             # default (or per-request) rewrite strategy and reject (400) when no
-            # strategy is available or a step's backend/model can't run.
-            strategy = options.get("strategy") or _DEFAULT_STRATEGY
-            if not strategy:
-                raise ValueError(
-                    "Layer B rewrite is required for text cleaning; configure a "
-                    "default strategy (config/clean_strategy.json) or pass "
-                    "options.strategy"
-                )
-            cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            # strategy is available or a step's backend/model can't run. Other
+            # text-kind files (code, config, data) only get it on request (see
+            # LAYER_B_DEFAULT_EXTS), and options.rewrite: false skips it anywhere.
+            suffix = Path(name).suffix.lower()
+            if options.get("rewrite") is False:
+                layer_b = {"ok": True, "skipped": True, "reason": "Unicode-only cleaning requested"}
+            elif (
+                suffix in LAYER_B_DEFAULT_EXTS
+                or options.get("strategy")
+                or options.get("rewrite") is True
+            ):
+                strategy = options.get("strategy") or _DEFAULT_STRATEGY
+                if not strategy:
+                    raise ValueError(
+                        "Layer B rewrite is required for text cleaning; configure a "
+                        "default strategy (config/clean_strategy.json) or pass "
+                        "options.strategy"
+                    )
+                cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            else:
+                layer_b = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": (
+                        f"{suffix} is not plain prose, and the default rewrite would "
+                        "corrupt it; pass options.strategy (or options.rewrite: true) "
+                        "to rewrite it anyway"
+                    ),
+                }
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
@@ -1371,8 +1700,6 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             ext = Path(name).suffix
             container_fmt = None
             if not ext:
-                from container_meta import detect_container_format
-
                 container_fmt = detect_container_format(Path("input"), data)
                 ext_map = {
                     "svg": ".svg",
@@ -1398,6 +1725,34 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "container", **result}
+            fmt = container_fmt or detect_container_format(Path(name), data)
+            if fmt in LAYER_B_CONTAINER_FORMATS:
+                wants_rewrite = options.get("rewrite") is True or bool(options.get("strategy"))
+                if options.get("rewrite") is False or not wants_rewrite:
+                    report["layer_b"] = {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": (
+                            f"{fmt} source: pass options.rewrite: true (or options.strategy) "
+                            "to run the Layer B strategy over its prose with math, LaTeX "
+                            "commands, environments, citation keys and code spans masked out"
+                        ),
+                    }
+                else:
+                    strategy = options.get("strategy") or _DEFAULT_STRATEGY
+                    if not strategy:
+                        raise ValueError(
+                            "Layer B rewrite requested but no strategy is available; "
+                            "configure a default strategy (config/clean_strategy.json) "
+                            "or pass options.strategy"
+                        )
+                    text = cleaned_bytes.decode("utf-8", errors="surrogateescape")
+                    # A source file is LaTeX/Markdown by name: protect its spans
+                    # unless the request says otherwise.
+                    b_options = {**options, "protect_latex": options.get("protect_latex") or "on"}
+                    rewritten, layer_b = _apply_layer_b(text, strategy, b_options)
+                    cleaned_bytes = rewritten.encode("utf-8", errors="surrogateescape")
+                    report["layer_b"] = layer_b
         report.pop("input", None)
         report.pop("output", None)
 
