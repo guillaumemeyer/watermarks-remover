@@ -474,8 +474,11 @@ exactly as written: do not paraphrase terminology and never swap a technical
 term for an everyday synonym, even when the everyday word reads more smoothly.
 Keep the epistemic force of each statement — hedges, attributions, scope
 conditions, and stated limitations stay exactly as strong or as weak as in the
-original, and a conjecture must not become a result. Keep passive and
-impersonal constructions where they are the disciplinary norm. Do not
+original, and a conjecture must not become a result. Keep modal verbs,
+negations and contrasts as written: 'cannot' stays 'cannot' (not 'fails to'),
+'would' stays 'would' (not 'should'), 'does not' stays 'does not', and
+'while'/'whereas' stay contrasts. Keep passive and impersonal constructions
+where they are the disciplinary norm. Do not
 simplify, summarize, explain, add examples, add transitions that announce
 structure, or add a concluding flourish. Preserve all facts, numbers, names,
 equations, and technical identifiers. Do not add or remove claims. Output only
