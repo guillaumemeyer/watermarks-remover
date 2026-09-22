@@ -164,9 +164,17 @@ def is_actionable(item: dict[str, Any]) -> bool:
 
 
 def aggregate(files: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the summary block shared by directory and website audits."""
+    """Build the summary block shared by directory and website audits.
+
+    "total" is every item the audit considered; "read" is the subset a scanner
+    actually opened, and "unrecognized" the rest. They are separate numbers
+    because a file no pipeline claimed carries no verdict: reporting it as
+    scanned turns "no findings" into "clean" for content nothing looked at.
+    """
     summary = {
         "total": len(files),
+        "read": 0,
+        "unrecognized": 0,
         "by_kind": {},
         "with_c2pa": 0,
         "with_ai_metadata": 0,
@@ -177,6 +185,10 @@ def aggregate(files: list[dict[str, Any]]) -> dict[str, Any]:
     for item in files:
         kind = str(item.get("kind") or "error")
         summary["by_kind"][kind] = summary["by_kind"].get(kind, 0) + 1
+        if kind == "unknown":
+            summary["unrecognized"] += 1
+        else:
+            summary["read"] += 1
         if item.get("has_c2pa"):
             summary["with_c2pa"] += 1
         if item.get("has_ai_metadata"):
@@ -197,7 +209,10 @@ def print_human_report(
     """Shared plain-text rendering for audit scripts."""
     for key, value in (extra_header or {}).items():
         print(f"{key}: {value}")
-    print(f"Files scanned: {summary['total']}")
+    print(f"Files scanned: {summary['read']}")
+    # Counted, not listed, the same way "Files skipped" is: the paths are in
+    # --json, where each unrecognized item carries its "not scanned" note.
+    print(f"Files unrecognized: {summary['unrecognized']}")
     print(f"By kind: {summary['by_kind']}")
     print(f"With C2PA: {summary['with_c2pa']}")
     print(f"With AI metadata: {summary['with_ai_metadata']}")

@@ -35,6 +35,7 @@ def main() -> int:
     args = p.parse_args()
 
     actionable: list[dict] = []
+    unrecognized: list[Path] = []
     for path in args.paths:
         if not path.is_file():
             eprint(f"not a file: {path}")
@@ -44,10 +45,23 @@ def main() -> int:
             continue
         item = scan_file(path, check_stylometry=args.check_stylometry)
         if item.get("kind") == "unknown":
+            # No pipeline claims this suffix, so nothing read the file. Say so:
+            # a silent pass reads as "checked and clean" to whoever staged it.
+            unrecognized.append(path)
             continue
         if is_actionable(item):
             actionable.append(item)
 
+    if unrecognized:
+        eprint(
+            f"watermarks-remover: {len(unrecognized)} file(s) not scanned "
+            "(no pipeline claims the format); this hook has no verdict on them:"
+        )
+        for path in unrecognized:
+            eprint(f"  {path}")
+
+    # An unscanned file is a gap in coverage, not a finding: the exit code is
+    # decided by actionable findings alone, so no existing gate turns red.
     if not actionable:
         return 0
 
