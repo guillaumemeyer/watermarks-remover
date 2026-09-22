@@ -171,6 +171,25 @@ def test_html_jsonld_clean_keeps_plain_jsonld_and_regular_scripts():
     assert not any("json-ld" in a for a in actions)
 
 
+@pytest.mark.parametrize("tag", ["script", "SCRIPT", "ScRiPt"])
+def test_html_jsonld_unicode_offsets_preserve_body_and_other_scripts(tag):
+    prefix = "<p>İstanbul</p>"
+    middle = '<script>const city = "İzmir";</script>'
+    suffix = '<script type="application/ld+json">{"name":"İstanbul"}</script>'
+    ai = (
+        f'<{tag} type="application/ld+json">'
+        '{"digitalSourceType":"trainedAlgorithmicMedia"}'
+        f"</{tag}>"
+    )
+    html = prefix + ai + middle + ai + suffix
+    assert inspect_html(html)[1] is True
+    cleaned, actions = clean_html(html)
+    assert cleaned == prefix + middle + suffix
+    assert actions.count("drop json-ld provenance-like script") == 2
+    assert inspect_html(cleaned)[1] is False
+    assert clean_html(cleaned)[0] == cleaned
+
+
 def test_html_jsonld_form_feed_is_whitespace():
     # HTML treats form feed (\f) as whitespace, so it must separate the tag name
     # from the type attribute rather than being consumed into the tag name.
