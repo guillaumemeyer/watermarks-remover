@@ -127,7 +127,9 @@ def test_installer_force_creates_backup_and_replaces(tmp_path):
 
     _run_installer(tmp_path, "--force")
 
-    backups = list(destination.parent.glob(f"{SKILL.name}.backup.*"))
+    # Backups live under a dot-directory so the host never lists them as skills.
+    backups = list((destination.parent / ".backups").glob(f"{SKILL.name}.*"))
+    assert not list(destination.parent.glob(f"{SKILL.name}.*"))
     assert len(backups) == 1
     assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
     assert (destination / "SKILL.md").is_file()
