@@ -35,6 +35,7 @@ from common import (
     which,
 )
 from image_meta import (
+    AI_GENERATOR_PRODUCTS,
     AI_META_HINTS,
     C2PA_MARKERS,
     inspect_bmp,
@@ -170,10 +171,25 @@ GENERATOR_NAME_KEYS = frozenset(
         "generator",
         "generated_by",
         "generatedby",
+        "generated-by",
+        "generated_with",
+        "generatedwith",
+        "generated-with",
         "created_with",
         "createdwith",
+        "created-with",
         "made_with",
         "madewith",
+        "made-with",
+        "written_by",
+        "writtenby",
+        "written-by",
+        "produced_by",
+        "producedby",
+        "produced-by",
+        "authored_by",
+        "authoredby",
+        "authored-by",
         "creator",
         "producer",
         "software",
@@ -193,7 +209,8 @@ GENERATOR_NAME_KEYS = frozenset(
 AI_FREE_TEXT_MARKER_RE = re.compile(
     r"\bc2pa\b|\bcontent[-_ ]?credentials?\b|\bcontentauth\b|\bcai:|"
     r"\bsynthid\b|\baigc\b|\bdigital[-_ ]?source[-_ ]?type\b|"
-    r"\b(?:trained[-_ ]?)?algorithmic[-_ ]?media\b",
+    r"\b(?:trained[-_ ]?)?algorithmic[-_ ]?media\b|"
+    r"\b(?:generated|created|made|written|produced|authored)\s+(?:with|by|using)\b",
     re.I,
 )
 
@@ -208,7 +225,11 @@ def named_value_is_ai(name: str, value: str) -> bool:
     clean, and the loss is silent because the document still parses.
     """
     if name.lower() in GENERATOR_NAME_KEYS:
-        return bool(AI_META_NAME_RE.search(value))
+        # Reuse PNG's product vocabulary and case-insensitive substring rule,
+        # but only for naming values; descriptions remain free prose.
+        return bool(AI_META_NAME_RE.search(value)) or any(
+            product.decode("ascii").lower() in value.lower() for product in AI_GENERATOR_PRODUCTS
+        )
     return bool(AI_FREE_TEXT_MARKER_RE.search(value))
 
 
@@ -618,6 +639,25 @@ def _parse_simple_yaml_keys(block: str) -> list[tuple[str, str, int]]:
     return rows
 
 
+# Frontmatter keys that are Claude Code agent/skill *configuration* and happen
+# to collide with provenance key names. `model:` is in AI_FRONTMATTER_KEYS --
+# correct for a generated document, wrong for `.claude/agents/*.md`, where
+# dropping it silently changes which model the agent runs on.
+_AGENT_CONFIG_KEYS = frozenset({"model", "tools", "allowed-tools", "name", "description"})
+
+# The shape that identifies such a file without needing its path: a name, a
+# description, and a tool grant. Ordinary prose frontmatter does not carry all
+# three, so this does not hand a real watermark a way to exempt itself -- and
+# values are still checked, so `description: Generated with Claude Code` inside
+# an agent definition is still caught.
+_AGENT_SHAPE_REQUIRED = ({"name"}, {"description"}, {"tools", "allowed-tools"})
+
+
+def _is_agent_frontmatter(keys: list[str]) -> bool:
+    lowered = {k.lower() for k in keys}
+    return all(group & lowered for group in _AGENT_SHAPE_REQUIRED)
+
+
 def inspect_markdown(text: str) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_ai = False
@@ -627,9 +667,13 @@ def inspect_markdown(text: str) -> tuple[bool, bool, list[str], dict]:
     if m:
         has_fm = True
         block = m.group(1)
-        for key, _line, _i in _parse_simple_yaml_keys(block):
+        rows = _parse_simple_yaml_keys(block)
+        is_agent = _is_agent_frontmatter([k for k, _l, _i in rows])
+        for key, _line, _i in rows:
             keys.append(key)
-            if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
+            if is_agent and key.lower() in _AGENT_CONFIG_KEYS:
+                pass  # agent configuration, not provenance -- value still checked below
+            elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
                 has_ai = True
                 findings.append(f"frontmatter key: {key}")
             # also check value
@@ -657,6 +701,7 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
         body = text[m.end() :]
         kept: list[str] = []
         dropping = False  # inside the nested block of a dropped top-level key
+        is_agent = _is_agent_frontmatter([k for k, _l, _i in _parse_simple_yaml_keys(block)])
         for line in block.splitlines():
             stripped = line.strip()
 
@@ -680,7 +725,9 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
 
             key = km.group(1)
             val = line.split(":", 1)[1] if ":" in line else ""
-            if key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
+            if is_agent and key.lower() in _AGENT_CONFIG_KEYS:
+                pass  # agent configuration -- fall through to the value check
+            elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
                 actions.append(f"drop frontmatter key: {key}")
                 dropping = True
                 continue

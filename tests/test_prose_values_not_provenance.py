@@ -19,6 +19,8 @@ ImageMagick" are ordinary prose.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -129,18 +131,66 @@ def test_unambiguous_marker_is_flagged_even_under_a_plain_key(value: str) -> Non
     assert has_ai, findings
 
 
-@pytest.mark.parametrize("value", ["GPT-4o", "ChatGPT", "Midjourney", "DALL-E"])
-def test_product_names_under_naming_keys_are_out_of_scope_today(value: str) -> None:
-    """Pins a pre-existing gap, unchanged by this fix, so it stays visible.
+@pytest.mark.parametrize("value", ["GPT-4o", "ChatGPT", "Midjourney", "DALL-E", "chatgpt 4o"])
+@pytest.mark.parametrize("key", ["generated_by", "software", "creator", "tool"])
+def test_product_names_are_scoped_to_naming_values(key: str, value: str) -> None:
+    """Product labels are provenance only when the field names a producing tool."""
+    assert named_value_is_ai(key, value)
+    assert not named_value_is_ai("description", value)
+    assert not named_value_is_ai("context", value)
 
-    AI_META_NAME_RE lists vendors (claude, openai, gemini, ...) but not the
-    product names a tool actually writes -- image_meta got those in #120 via
-    AI_GENERATOR_PRODUCTS, Markdown never did. So `generated_by: GPT-4o` reads
-    clean, before this change and after it. Widening the vocabulary is a
-    separate change; this test fails the day someone makes it, which is the
-    point.
-    """
-    assert not named_value_is_ai("generated_by", value)
+
+@pytest.mark.parametrize("value", ["GPT-4o", "ChatGPT", "Midjourney", "DALL-E"])
+@pytest.mark.parametrize("suffix", ["md", "html"])
+def test_product_metadata_file_cli_round_trip(tmp_path: Path, value: str, suffix: str) -> None:
+    """Inspect must flag the source and clean must remove only its provenance."""
+    if suffix == "md":
+        source = f"---\ntitle: Demo\ngenerated_by: {value}\ndescription: {value}\n---\nBody\n"
+        expected = f"---\ntitle: Demo\ndescription: {value}\n---\nBody\n"
+    else:
+        source = (
+            f'<html><head><meta name="generated_by" content="{value}">'
+            f'<meta name="description" content="{value}"></head><body>Body</body></html>'
+        )
+        expected = (
+            f'<html><head><meta name="description" content="{value}">'
+            "</head><body>Body</body></html>"
+        )
+    src = tmp_path / f"source.{suffix}"
+    dst = tmp_path / f"cleaned.{suffix}"
+    src.write_text(source, encoding="utf-8")
+
+    def run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / script), *args, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    before = run("inspect_file.py", str(src))
+    assert before.returncode == 1, before.stdout + before.stderr
+    assert json.loads(before.stdout)["has_ai_metadata"]
+    cleaned = run("clean_file.py", str(src), "-o", str(dst))
+    assert cleaned.returncode == 0, cleaned.stdout + cleaned.stderr
+    assert json.loads(cleaned.stdout)["changed"]
+    assert dst.read_text(encoding="utf-8") == expected
+    assert src.read_text(encoding="utf-8") == source
+    after = run("inspect_file.py", str(dst))
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert not json.loads(after.stdout)["has_ai_metadata"]
+
+
+@pytest.mark.parametrize("key", ["generated_by", "software", "creator", "tool"])
+def test_non_ai_naming_values_survive(key: str) -> None:
+    """Adding products must not turn every tool declaration into AI provenance."""
+    doc = _doc(key, "WordPress 6.5")
+    assert not inspect_markdown(doc)[1]
+    assert clean_markdown(doc)[0] == doc
+    page = _page(key, "WordPress 6.5")
+    assert not inspect_html(page)[1]
+    assert clean_html(page)[0] == page
 
 
 @pytest.mark.parametrize("value", ["aigcorp", "raigcode", "c2pattern"])
