@@ -129,7 +129,9 @@ def main() -> int:
     summary = aggregate(files)
     report = {
         "root": str(root),
-        "files_scanned": len(files),
+        # Not len(files): "files" also holds the items no pipeline claimed, and
+        # those were never opened. Their count is summary["unrecognized"].
+        "files_scanned": summary["read"],
         "files_skipped": skipped,
         "summary": summary,
         "files": files,
