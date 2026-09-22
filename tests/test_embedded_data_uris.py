@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import base64
+import struct
 import sys
+import zlib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
@@ -20,7 +24,41 @@ from container_meta import (
     inspect_svg,
 )
 
-from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text
+from tests.test_clean_image import _minimal_jpeg_with_app11, _minimal_png_with_text, _png_chunk
+
+
+@pytest.mark.parametrize("fmt", ["html", "markdown", "svg"])
+@pytest.mark.parametrize("scheme", ["data:image/", "DATA:IMAGE/"])
+def test_embedded_png_unicode_offsets_preserve_uri_and_pixels(fmt, scheme):
+    # A complete 1x1 RGB PNG: compare the output with the same image without
+    # its metadata, so a malformed URI cannot pass merely by evading inspection.
+    header = b"\x89PNG\r\n\x1a\n" + _png_chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    )
+    pixels = _png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
+    tail = pixels + _png_chunk(b"IEND", b"")
+    png = header + _png_chunk(b"tEXt", b"Software\x00ChatGPT") + tail
+    original_uri = scheme + "png;base64," + base64.b64encode(png).decode("ascii")
+    cleaned_uri = "data:image/png;base64," + base64.b64encode(header + tail).decode("ascii")
+    if fmt == "html":
+        template = '<p>İstanbul</p><img src="{uri}"><p>İzmir</p><img src="{uri}">'
+        inspect, clean = inspect_html, clean_html
+    elif fmt == "markdown":
+        template = "İstanbul\n![one]({uri})\nİzmir\n![two]({uri})\n"
+        inspect, clean = inspect_markdown, clean_markdown
+    else:
+        template = '<svg><text>İstanbul</text><image href="{uri}"/><text>İzmir</text><image href="{uri}"/></svg>'
+        inspect, clean = inspect_svg, clean_svg
+    original = template.format(uri=original_uri)
+    expected = template.format(uri=cleaned_uri)
+    if fmt == "svg":
+        original, expected = original.encode(), expected.encode()
+    assert inspect(original)[1] is True
+    cleaned, actions = clean(original)
+    assert cleaned == expected
+    assert sum("cleaned embedded data:image/png" in action for action in actions) == 2
+    assert inspect(cleaned)[1] is False
+    assert clean(cleaned)[0] == cleaned
 
 
 def test_svg_embedded_png_c2pa_cleaned():
