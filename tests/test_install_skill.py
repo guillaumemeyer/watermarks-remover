@@ -1,4 +1,4 @@
-"""Installer coverage for the Claude Code, Cowork, and Cursor targets."""
+"""Installer coverage for the Claude Code, Codex, Cowork, and Cursor targets."""
 
 from __future__ import annotations
 
@@ -159,7 +159,9 @@ def test_claude_code_force_backs_up_and_replaces(tmp_path):
 
     _run(tmp_path, "--skill", "remove-ai-marks", "--target", "claude-code", "--force")
 
-    backups = list(destination.parent.glob("remove-ai-marks.backup.*"))
+    # Backups live under a dot-directory so the host never lists them as skills.
+    backups = list((destination.parent / ".backups").glob("remove-ai-marks.*"))
+    assert not list(destination.parent.glob("remove-ai-marks.*"))
     assert len(backups) == 1
     assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
     assert (destination / "SKILL.md").is_file()
@@ -278,3 +280,36 @@ def test_unknown_skill_fails_without_touching_the_filesystem(tmp_path):
     assert result.returncode == 2
     assert "unknown skill" in result.stderr
     assert not (tmp_path / ".claude").exists()
+
+
+def test_codex_target_installs_into_codex_home(tmp_path):
+    _run(tmp_path, "--skill", "remove-ai-marks", "--target", "codex")
+    installed = tmp_path / ".codex" / "skills" / "remove-ai-marks"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references").is_dir()
+
+
+def test_codex_target_honours_codex_home(tmp_path):
+    custom = tmp_path / "elsewhere"
+    _run(
+        tmp_path,
+        "--skill",
+        "remove-ai-marks",
+        "--target",
+        "codex",
+        "--codex-home",
+        str(custom),
+    )
+    assert (custom / "skills" / "remove-ai-marks" / "SKILL.md").is_file()
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_codex_target_preserves_existing_install_without_force(tmp_path):
+    _run(tmp_path, "--skill", "remove-ai-marks", "--target", "codex")
+    installed = tmp_path / ".codex" / "skills" / "remove-ai-marks" / "SKILL.md"
+    installed.write_text("customised", encoding="utf-8")
+    result = _run(tmp_path, "--skill", "remove-ai-marks", "--target", "codex", check=False)
+    assert result.returncode == 1
+    assert installed.read_text(encoding="utf-8") == "customised"
+    _run(tmp_path, "--skill", "remove-ai-marks", "--target", "codex", "--force")
+    assert installed.read_text(encoding="utf-8") != "customised"

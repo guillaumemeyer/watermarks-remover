@@ -5,7 +5,8 @@ backend (WATERMARKS_REWRITE_*) and/or transformers for the `mlm` tactic that the
 test environment does not configure. Tests that are not about Layer B (options,
 detection, traversal, batch, images) use text cleaning as a vehicle, so we no-op
 the Layer B choke point for them; `tests/test_clean_strategy.py` is excluded and
-exercises the real apply/reject logic.
+exercises the real apply/reject logic. The `mlm` import probe behind
+/capabilities is stubbed everywhere for the same reason.
 """
 
 from __future__ import annotations
@@ -41,3 +42,14 @@ def _noop_layer_b_for_non_strategy_tests(monkeypatch: pytest.MonkeyPatch, reques
             {"strategy": list(strategy.split(",")), "steps": []},
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_mlm_import_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep /capabilities from importing torch in a child interpreter.
+
+    The real probe takes seconds on a host with torch installed, and its answer
+    depends on that host. tests/test_mlm_tactic.py exercises it directly with
+    stand-in packages; capability tests set the answer they need.
+    """
+    monkeypatch.setattr(server, "_mlm_import_error", lambda: "mlm import probe disabled in tests")

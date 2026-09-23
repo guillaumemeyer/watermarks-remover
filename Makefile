@@ -3,8 +3,10 @@
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
 	bench-synthid-text bench-full bench-semantic \
-	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
+	docker-core-build docker-core-help bootstrap-mlm smoke-mlm serve \
+	compose-up compose-up-heavy compose-check \
 	install-skill install-claude-code-skill install-claude-code-text-skill \
+	install-codex-skill install-codex-text-skill \
 	install-claude-project-skill package-cowork-skill package-cowork-text-skill \
 	install-cursor-text-skill plugin-validate clean
 
@@ -119,7 +121,29 @@ docker-core-build:
 docker-core-help:
 	docker run --rm watermarks-remover /app/scripts/server.py --help
 
-# Run the HTTP service locally (stdlib only, no Docker).
+# Layer B `mlm` tactic: the default /clean text strategy runs it inside the
+# service process, so service/scripts/requirements-mlm.txt goes into the
+# interpreter `make serve` uses (.venv when present -- create it first with
+# `python3 -m venv .venv` to keep torch out of the system Python). torch alone
+# comes from TORCH_INDEX_URL (CPU by default; .../whl/cuXXX for CUDA) at the
+# version pinned in that file; --no-deps keeps that index from also supplying
+# torch's dependencies (it serves a vulnerable setuptools), so they resolve
+# from PyPI with the file's other pins. The smoke run fetches roberta-large
+# (~1.4 GB) on first use and proves the tactic loads. Restart the service
+# afterwards; GET /capabilities -> layer_b.
+TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cpu
+MLM_SMOKE = echo "The weather was mild and the meeting ended early." | $(PYTHON) $(SCRIPTS)/rewrite_text.py --backend print-prompt --strategy mlm@0.5 -
+
+bootstrap-mlm:
+	$(PYTHON) -m pip install --no-deps --index-url "$(TORCH_INDEX_URL)" "$$(grep -E '^torch==' $(SCRIPTS)/requirements-mlm.txt)"
+	$(PYTHON) -m pip install -r $(SCRIPTS)/requirements-mlm.txt
+	$(MLM_SMOKE)
+
+smoke-mlm:
+	$(MLM_SMOKE)
+
+# Run the HTTP service locally (stdlib only, no Docker). Text /clean's default
+# strategy also needs bootstrap-mlm and a WATERMARKS_REWRITE_* LLM backend.
 serve:
 	$(PYTHON) $(SCRIPTS)/server.py --host 127.0.0.1 --port 8765
 
@@ -141,6 +165,13 @@ install-skill:
 # Claude Code: personal skills (~/.claude/skills), available in every project.
 install-claude-code-skill:
 	$(PYTHON) install_skill.py --skill remove-ai-marks --target claude-code
+
+# Codex (OpenAI): personal skills directory read at session start.
+install-codex-skill:
+	$(PYTHON) install_skill.py --skill remove-ai-marks --target codex $(INSTALL_FLAGS)
+
+install-codex-text-skill:
+	$(PYTHON) install_skill.py --skill clean-user-facing-text --target codex $(INSTALL_FLAGS)
 
 install-claude-code-text-skill:
 	$(PYTHON) install_skill.py --skill clean-user-facing-text --target claude-code

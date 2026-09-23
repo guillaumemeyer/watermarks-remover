@@ -84,6 +84,8 @@ jobs:
   # --dry-run resolves the full dependency graph without downloading, so a
   # "ResolutionImpossible" regression now fails the build cheaply. pip-audit is
   # deliberately NOT used here: these research pins carry known, accepted CVEs.
+  # requirements-mlm.txt (the default /clean strategy's `mlm` step, installed by
+  # `make bootstrap-mlm`) resolves on its own, the way it is installed.
   deps:
     runs-on: ubuntu-latest
     steps:
@@ -101,3 +103,4 @@ jobs:
             -r service/scripts/requirements-markllm.txt \
             -r service/scripts/requirements-semantic.txt
           python -m pip install --dry-run --ignore-installed -r service/scripts/requirements-markdiffusion.txt
+          python -m pip install --dry-run --ignore-installed -r service/scripts/requirements-mlm.txt

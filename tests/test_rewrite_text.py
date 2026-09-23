@@ -26,6 +26,7 @@ from rewrite_text import (
     _tokens,
     build_prompt,
     rewrite,
+    strip_model_wrappers,
 )
 
 
@@ -662,7 +663,7 @@ def test_select_max_margin_prefers_largest_margin(monkeypatch):
 def test_tactic_chunk_reassembles_fragments(monkeypatch):
     calls = []
 
-    def fake_ollama(base_url, model, prompt, timeout, temperature):
+    def fake_ollama(base_url, model, prompt, timeout, temperature, reasoning_effort=None):
         calls.append(prompt.split("---")[-1].strip())
         return "RE: " + prompt.split("---")[-1].strip()
 
@@ -692,7 +693,7 @@ def test_tactic_chunk_reassembles_fragments(monkeypatch):
 def test_tactic_chunk_leading_blank_line_kept(monkeypatch):
     calls = []
 
-    def fake_ollama(base_url, model, prompt, timeout, temperature):
+    def fake_ollama(base_url, model, prompt, timeout, temperature, reasoning_effort=None):
         calls.append(prompt.split("---")[-1].strip())
         return "RE: " + prompt.split("---")[-1].strip()
 
@@ -721,7 +722,7 @@ def test_tactic_chunk_leading_blank_line_kept(monkeypatch):
 def test_tactic_chunk_shuffle_reorders_fragments(monkeypatch):
     calls = []
 
-    def fake_ollama(base_url, model, prompt, timeout, temperature):
+    def fake_ollama(base_url, model, prompt, timeout, temperature, reasoning_effort=None):
         calls.append(prompt.split("---")[-1].strip())
         return "RE: " + prompt.split("---")[-1].strip()
 
@@ -842,6 +843,43 @@ def test_openai_compatible_sends_reasoning_effort_when_set():
         assert "reasoning_effort" not in captured["body"]
     finally:
         server.shutdown()
+
+
+def test_ollama_sends_think_false_only_for_reasoning_effort_none():
+    # Ollama runs a thinking model's reasoning by default (gemma4:12b spent
+    # ~200 s on a two-word paraphrase), while "think": true is an error on
+    # models without a thinking mode -- so only "none" may send the flag.
+    bodies = []
+
+    class Collector(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"message": {"content": "rewritten"}}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for effort in ("none", "high", None):
+            result, _ = rewrite(
+                "hello",
+                **_rewrite_http_kwargs(
+                    base_url, backend="ollama", api_key=None, reasoning_effort=effort
+                ),
+            )
+            assert result == "rewritten"
+    finally:
+        server.shutdown()
+
+    assert bodies[0]["think"] is False
+    assert "think" not in bodies[1]
+    assert "think" not in bodies[2]
 
 
 def test_rewrite_denies_remote_host_without_opt_in():
@@ -973,3 +1011,471 @@ def test_rewrite_noop_guard_flags_verbatim_output(monkeypatch):
     )
     assert info["noop"] is True
     assert out == text
+
+
+# ---------------------------------------------------------------------------
+# Model-wrapper stripping and the length-drift guard
+# ---------------------------------------------------------------------------
+
+PROBE_INPUT = "The weather was mild and the meeting ended early.\n"
+PROBE_REWRITE = "The atmosphere was agreeable, and the conference concluded ahead of schedule."
+# What a chatty model (Ollama backend) returned for PROBE_INPUT in the bug report:
+# the rewrite between a "Here is ...:" preamble and a list of the changes.
+WRAPPED = (ROOT / "tests" / "fixtures" / "rewrite_wrapped_ollama.txt").read_text(encoding="utf-8")
+# Commentary inside the rewrite's own paragraph: nothing to strip, but ~5x longer.
+CHATTY_INLINE = (
+    f"{PROBE_REWRITE} In this version the nouns and verbs were swapped for synonyms, "
+    "the clause order was kept, and roughly eighty percent of the tokens differ from "
+    "the source sentence, which matches the requested intensity."
+)
+
+
+def test_strip_model_wrappers_removes_preamble_and_change_list():
+    out, removed = strip_model_wrappers(WRAPPED, PROBE_INPUT)
+    assert out == PROBE_REWRITE
+    assert removed == ["preamble", "trailer"]
+
+
+@pytest.mark.parametrize(
+    ("wrapped", "removed"),
+    [
+        ("Sure! Here's a paraphrased version:\n\nThe sky was clear.", ["preamble"]),
+        ("Sure!\n\nHere is the rewritten text:\n\nThe sky was clear.", ["preamble"]),
+        ("Here is the rewritten text: The sky was clear.", ["preamble"]),
+        ("**Rewritten text:**\n\nThe sky was clear.", ["preamble"]),
+        ("The sky was clear.\n\nChanges made:\n- day -> sky", ["trailer"]),
+        ("The sky was clear.\n\n**Note:** every fact was kept.", ["trailer"]),
+        ("The sky was clear.\n\n(Note: I kept every fact.)", ["trailer"]),
+        ("The sky was clear.\n\nLet me know if you'd like any other changes!", ["trailer"]),
+        ("The sky was clear.\n\nThis rewrite keeps every fact of the original.", ["trailer"]),
+        ("```\nThe sky was clear.\n```", ["code_fence"]),
+        ("\u201cThe sky was clear.\u201d", ["quotes"]),
+        ('"The sky was clear."', ["quotes"]),
+        ("<think>Swap a few words.</think>\n\nThe sky was clear.", ["think"]),
+        (
+            "Here is the rewritten text:\n\n---\n\nThe sky was clear.\n\n---\n\nNote: kept facts.",
+            ["preamble", "separator", "trailer"],
+        ),
+        (
+            "Here is the rewritten text:\r\n\r\nThe sky was clear.\r\n\r\n---\r\n\r\nNote: kept.",
+            ["preamble", "trailer", "separator"],
+        ),
+    ],
+)
+def test_strip_model_wrappers_common_wrappers(wrapped, removed):
+    assert strip_model_wrappers(wrapped, "It was a clear day.") == ("The sky was clear.", removed)
+    assert set(removed) <= set(rewrite_text.WRAPPER_KINDS)
+
+
+def test_strip_model_wrappers_unwraps_code_and_keeps_indentation():
+    original = "def f(x):\n    return sum(x)\n"
+    wrapped = (
+        "Here's the updated code:\n\n```python\ndef f(values):\n    return sum(values)\n```"
+        "\n\nChanges made:\n- renamed x to values"
+    )
+    assert strip_model_wrappers(wrapped, original) == (
+        "def f(values):\n    return sum(values)",
+        ["preamble", "trailer", "code_fence"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "original"),
+    [
+        # A "Here is ...:" line that does not mention the rewrite is content.
+        ("Here's what you need to know:\n\n- pack water", "This is what matters:\n\n- pack water"),
+        # The input has its own "Note:" paragraph.
+        ("The sky was clear.\n\nNote: carry water.", "It was a clear day.\n\nNote: bring water."),
+        # First-person input: "I kept ..." is narrative, not commentary.
+        (
+            "I stuck with the plan.\n\nI kept the original route.",
+            "I kept to the plan.\n\nI took the first route.",
+        ),
+        # A lone interjection may be dialogue.
+        ("Sure.\n\nThe sky was clear.", "Yes.\n\nIt was a clear day."),
+        # Quoted or fenced input stays quoted or fenced.
+        ('"The sky was clear."', '"It was a clear day."'),
+        ("```\nprint(1)\n```", "```\nprint(2)\n```"),
+        # A code comment is not commentary.
+        ("# Note: fast path\ndef f():\n    pass", "# Remark: fast path\ndef f():\n    pass"),
+        # Ordinary closing lines that only look like model sign-offs.
+        (
+            "The budget grew.\n\nIn the revised budget, rent is lower.",
+            "Spending rose.\n\nUnder the updated budget, rent drops.",
+        ),
+        (
+            "Your order has shipped.\n\nIf you need changes to your order, call us.",
+            "The order is on its way.\n\nCall us to modify the order.",
+        ),
+        # A "Here are ...:" lead-in that is not about the rewrite is content.
+        (
+            "We met twice. Here are the revised dates:\n\n- May 3\n- May 9",
+            "There were two meetings. The new dates follow:\n\n- May 3\n- May 9",
+        ),
+        # Prompt-like words in ordinary prose are not an echo of the prompt.
+        (
+            "Training was hard.\n\nHigh-intensity intervals helped, by the same token.",
+            "Workouts were tough.\n\nStrenuous intervals helped, likewise.",
+        ),
+        # Nothing would be left after the preamble.
+        ("Here is the rewritten text:", "x y z"),
+        # Nothing to strip: returned byte for byte, whitespace included.
+        ("  The sky was clear.  \n", "It was a clear day."),
+    ],
+)
+def test_strip_model_wrappers_keeps_content(text, original):
+    assert strip_model_wrappers(text, original) == (text, [])
+
+
+LLAMA32 = json.loads(
+    (ROOT / "tests" / "fixtures" / "rewrite_wrapped_llama32.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("sample", LLAMA32["samples"], ids=lambda s: s["rewrite"][:24])
+def test_strip_model_wrappers_real_llama32_commentary(sample):
+    # Commentary that echoes the prompt ("At low intensity:", "0.32 tokens",
+    # "Function words:", "Modulation adjustment:") after the rewrite.
+    out, removed = strip_model_wrappers(sample["raw"], LLAMA32["input"])
+    assert out == sample["rewrite"]
+    assert "trailer" in removed
+    assert not rewrite_text._length_drift(len(LLAMA32["input"]), len(out))
+
+
+def test_strip_model_wrappers_keeps_prompt_jargon_the_input_uses():
+    # The same echo phrases are content when the input already uses them.
+    original = "Tokenizers split text.\n\nAbout 30 tokens fit in a line."
+    rewrite = "A tokenizer splits text.\n\nRoughly 30 tokens fit on one line."
+    assert strip_model_wrappers(rewrite, original) == (rewrite, [])
+
+
+def test_length_drift_bounds_and_short_input_slack():
+    assert not rewrite_text._length_drift(len(PROBE_INPUT), len(PROBE_REWRITE))
+    assert rewrite_text._length_drift(len(PROBE_INPUT), len(WRAPPED))
+    assert rewrite_text._length_drift(400, 150)  # truncated
+    assert not rewrite_text._length_drift(3, 12)  # "Hi." -> "Hello there.": within slack
+    assert not rewrite_text._length_drift(50, 111)  # a verbose one-sentence paraphrase
+    assert not rewrite_text._length_drift(0, 10)
+
+
+def test_select_candidate_skips_length_drift():
+    best, scores = _select_candidate(PROBE_INPUT, [PROBE_REWRITE, WRAPPED])
+    assert best == PROBE_REWRITE
+    # Divergence alone would have picked the commentary-laden candidate.
+    assert scores[1] > scores[0]
+
+
+def test_rewrite_strips_wrapped_output_from_fake_backend(monkeypatch):
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: WRAPPED)
+    out, info = rewrite(PROBE_INPUT, **_rewrite_candidates_kwargs(candidates=1))
+    assert out == PROBE_REWRITE
+    assert info["length_guard"] is True
+    assert info["wrappers_stripped"] == ["preamble", "trailer"]
+    assert info["length_drift_rejected"] == 0
+    rec = info["candidate_scores"][0]
+    assert rec["length_drift"] is False
+    assert rec["length_ratio"] == round(len(PROBE_REWRITE) / len(PROBE_INPUT), 4)
+
+
+def test_rewrite_chunk_strips_wrappers_per_fragment(monkeypatch):
+    def fake_ollama(base_url, model, prompt, timeout, temperature, reasoning_effort=None):
+        fragment = prompt.split("---")[-1].strip()
+        return f"Here is the rewritten fragment:\n\nRE: {fragment}\n\nNote: kept the facts."
+
+    monkeypatch.setattr(rewrite_text, "call_ollama", fake_ollama)
+    out, info = rewrite(
+        "First sentence. Second sentence!",
+        **_rewrite_candidates_kwargs(tactic="chunk", candidates=1),
+    )
+    assert out == "RE: First sentence. RE: Second sentence!"
+    assert info["wrappers_stripped"] == ["preamble", "trailer"]
+
+
+def test_rewrite_rejects_length_drift_even_when_more_divergent(monkeypatch):
+    texts = iter([CHATTY_INLINE, PROBE_REWRITE])
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
+    out, info = rewrite(PROBE_INPUT, **_rewrite_candidates_kwargs(candidates=2))
+    # The lexical evaluator maximises divergence, which the padded candidate
+    # wins; the length guard rejects it anyway.
+    assert out == PROBE_REWRITE
+    cs = info["candidate_scores"]
+    assert cs[0]["lexical_divergence"] > cs[1]["lexical_divergence"]
+    assert cs[0]["length_drift"] is True
+    assert cs[0]["passed"] is False
+    assert [c["selected"] for c in cs] == [False, True]
+    assert info["length_drift_rejected"] == 1
+
+
+def test_rewrite_length_drift_retries_within_loop_budget(monkeypatch):
+    # _FakeMarkLLM reports the padded candidate not watermarked, so without the
+    # guard the loop would stop on it; instead it is a failed attempt and the
+    # next loop generates a fresh variant.
+    monkeypatch.setattr(rewrite_text, "MarkLLMTextDetector", _FakeMarkLLM)
+    texts = iter([CHATTY_INLINE, PROBE_REWRITE])
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
+    out, info = rewrite(
+        PROBE_INPUT,
+        **_rewrite_candidates_kwargs(
+            candidates=1, max_loops=2, markllm_scheme="kgw", markllm_dir="/x"
+        ),
+    )
+    assert out == PROBE_REWRITE
+    assert info["attempts_made"] == 2
+    assert info["passed"] is True
+    cs = info["candidate_scores"]
+    assert [c["passed"] for c in cs] == [False, True]
+    assert "length drifted" in cs[0]["evaluation"]["error"]
+    assert info["markllm"]["after"]["is_watermarked"] is False
+
+
+def test_rewrite_fails_when_every_attempt_drifts(monkeypatch):
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: CHATTY_INLINE)
+    with pytest.raises(RuntimeError, match="drifted in length"):
+        rewrite(PROBE_INPUT, **_rewrite_candidates_kwargs(candidates=2))
+
+
+def test_structural_tactic_is_not_length_guarded(monkeypatch):
+    # structural rebuilds the text from an outline: its length legitimately drifts.
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: CHATTY_INLINE)
+    out, info = rewrite(
+        PROBE_INPUT, **_rewrite_candidates_kwargs(tactic="structural", candidates=1)
+    )
+    assert out == CHATTY_INLINE
+    assert info["length_guard"] is False
+    assert info["candidate_scores"][0]["length_drift"] is False
+
+
+def _cli_argv(src, dest, *extra):
+    return [
+        "rewrite_text.py",
+        str(src),
+        "-o",
+        str(dest),
+        "--backend",
+        "ollama",
+        "--model",
+        "m",
+        "--base-url",
+        "http://127.0.0.1:11434",
+        *extra,
+    ]
+
+
+@pytest.fixture
+def _cli_env(monkeypatch):
+    for var in (
+        "WATERMARKS_REWRITE_CANDIDATES",
+        "WATERMARKS_REWRITE_LOOPS",
+        "WATERMARKS_GUMBEL_KEY",
+        "WATERMARKS_REWRITE_ALLOW_REMOTE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_cli_exits_nonzero_when_every_attempt_drifts(monkeypatch, tmp_path, capsys, _cli_env):
+    src = tmp_path / "in.txt"
+    src.write_text(PROBE_INPUT, encoding="utf-8")
+    dest = tmp_path / "out.txt"
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: CHATTY_INLINE)
+    monkeypatch.setattr(sys, "argv", _cli_argv(src, dest))
+    assert rewrite_text.main() == 1
+    assert "drifted in length" in capsys.readouterr().err
+    assert not dest.exists()
+
+
+def test_cli_strategy_retries_drift_within_candidates_budget(monkeypatch, tmp_path, _cli_env):
+    src = tmp_path / "in.txt"
+    src.write_text(PROBE_INPUT, encoding="utf-8")
+    dest = tmp_path / "out.txt"
+    texts = iter([CHATTY_INLINE, WRAPPED])
+    monkeypatch.setattr(rewrite_text, "call_ollama", lambda *a, **k: next(texts))
+    monkeypatch.setattr(
+        sys, "argv", _cli_argv(src, dest, "--strategy", "paraphrase@0.8", "--candidates", "2")
+    )
+    assert rewrite_text.main() == 0
+    assert dest.read_text(encoding="utf-8") == PROBE_REWRITE
+
+
+# ---------------------------------------------------------------------------
+# apply_strategy: two-generation tactics and the no-op guard
+# ---------------------------------------------------------------------------
+
+_SOURCE = "The gluon propagator is suppressed in the infrared below the Gribov horizon."
+
+
+class _ShortcutModel:
+    """Stub ollama backend that shortcuts the way the real model did on /clean.
+
+    Scripted prompts get their scripted answer; any other prompt (notably the
+    combined one-shot backtranslate/structural prompt) gets the original text
+    echoed back verbatim. Prompts are recorded in call order.
+    """
+
+    def __init__(self, original: str, script: dict[str, str] | None = None):
+        self.original = original
+        self.script = script or {}
+        self.prompts: list[str] = []
+
+    def __call__(self, base_url, model, prompt, timeout, temperature, reasoning_effort=None):
+        self.prompts.append(prompt)
+        return self.script.get(prompt, self.original)
+
+
+def _strategy_kwargs(**overrides):
+    kwargs = dict(backend="ollama", model="m", base_url="http://127.0.0.1:11434", api_key=None)
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.parametrize(
+    ("tactic", "keys", "intermediate", "final"),
+    [
+        pytest.param(
+            "backtranslate",
+            ("backtranslate_out", "backtranslate_back"),
+            "Le propagateur du gluon est supprimé dans l'infrarouge sous l'horizon de Gribov.",
+            "Below the Gribov horizon, the gluon propagator is suppressed in the infrared.",
+            id="backtranslate",
+        ),
+        pytest.param(
+            "structural",
+            ("structural_outline", "structural_write"),
+            "- gluon propagator: suppressed in the infrared\n- regime: below the Gribov horizon",
+            "In the infrared, below the Gribov horizon, the gluon propagator is suppressed.",
+            id="structural",
+        ),
+    ],
+)
+def test_strategy_two_step_tactic_runs_two_generations_in_order(
+    monkeypatch, tactic, keys, intermediate, final
+):
+    langs = {"LANG": "French", "ORIGINAL_LANG": "English"}
+    first_prompt = rewrite_text.PROMPTS[keys[0]].format(TEXT=_SOURCE, **langs)
+    final_prompt = rewrite_text.PROMPTS[keys[1]].format(TEXT=intermediate, **langs)
+    # What the strategy path used to send; this model shortcuts it (echo).
+    combined_prompt = build_prompt(tactic, _SOURCE, rewrite_level=0.8)
+    model = _ShortcutModel(
+        _SOURCE,
+        {combined_prompt: _SOURCE, first_prompt: intermediate, final_prompt: final},
+    )
+    monkeypatch.setattr(rewrite_text, "call_ollama", model)
+
+    out, stats = rewrite_text.apply_strategy(_SOURCE, [(tactic, 0.8)], **_strategy_kwargs())
+
+    # Two generations, in order, and the final one sees only the intermediate
+    # (pivot translation / outline), never the source. The exact match also
+    # pins that no intensity clause rides on either prompt.
+    assert model.prompts == [first_prompt, final_prompt]
+    assert out == final
+    assert stats["steps"][0]["generations"] == 2
+    assert stats["noop"] is False
+    assert stats["warnings"] == []
+
+
+@pytest.mark.parametrize("tactic", ["backtranslate", "structural"])
+def test_strategy_two_step_style_joins_final_prompt_only(monkeypatch, tactic):
+    model = _ShortcutModel(_SOURCE)
+    monkeypatch.setattr(rewrite_text, "call_ollama", model)
+
+    rewrite_text.apply_strategy(
+        _SOURCE, [(tactic, 0.3)], **_strategy_kwargs(style="terse and plain")
+    )
+
+    first_prompt, final_prompt = model.prompts
+    style_clause = rewrite_text._style_clause("terse and plain")
+    assert style_clause not in first_prompt
+    assert final_prompt.endswith(style_clause)
+    # A token-fraction request has no meaning for a translation or an outline.
+    assert rewrite_text._intensity_clause(0.3) not in first_prompt + final_prompt
+
+
+def test_strategy_two_step_empty_intermediate_raises(monkeypatch):
+    first_prompt = rewrite_text.PROMPTS["backtranslate_out"].format(TEXT=_SOURCE, LANG="French")
+    model = _ShortcutModel(_SOURCE, {first_prompt: "  \n"})
+    monkeypatch.setattr(rewrite_text, "call_ollama", model)
+
+    with pytest.raises(RuntimeError, match="first generation returned empty output"):
+        rewrite_text.apply_strategy(_SOURCE, [("backtranslate", 0.8)], **_strategy_kwargs())
+    assert model.prompts == [first_prompt]  # nothing is written from an empty pivot
+
+
+def test_strategy_noop_guard_flags_verbatim_output(monkeypatch, capsys):
+    # A model that shortcuts even the two-step prompts hands the input back;
+    # that must be reported as a no-op, not passed off as a rewrite.
+    monkeypatch.setattr(rewrite_text, "call_ollama", _ShortcutModel(_SOURCE))
+
+    out, stats = rewrite_text.apply_strategy(
+        _SOURCE, [("backtranslate", 0.8)], **_strategy_kwargs()
+    )
+
+    assert out == _SOURCE
+    assert stats["noop"] is True
+    assert stats["lexical_divergence"] == 0.0
+    assert stats["noop_lex_floor"] == rewrite_text.DEFAULT_NOOP_LEX_FLOOR
+    assert stats["steps"][0]["noop"] is True
+    assert len(stats["warnings"]) == 1
+    assert "no-op" in stats["warnings"][0]
+    assert "no-op" in capsys.readouterr().err
+
+
+def test_strategy_noop_guard_disabled_by_zero_floor(monkeypatch):
+    monkeypatch.setattr(rewrite_text, "call_ollama", _ShortcutModel(_SOURCE))
+
+    _out, stats = rewrite_text.apply_strategy(
+        _SOURCE, [("paraphrase", 0.8)], **_strategy_kwargs(noop_lex_floor=0)
+    )
+
+    assert stats["noop"] is False
+    assert stats["steps"][0]["noop"] is False
+    assert stats["warnings"] == []
+
+
+def test_strategy_names_noop_step_hidden_by_later_step(monkeypatch):
+    paraphrased = "Beneath the Gribov horizon, infrared gluon propagation is damped."
+    paraphrase_prompt = build_prompt("paraphrase", _SOURCE, rewrite_level=0.5)
+    # backtranslate is shortcut (echo); the paraphrase after it does rewrite.
+    model = _ShortcutModel(_SOURCE, {paraphrase_prompt: paraphrased})
+    monkeypatch.setattr(rewrite_text, "call_ollama", model)
+
+    out, stats = rewrite_text.apply_strategy(
+        _SOURCE, [("backtranslate", 0.8), ("paraphrase", 0.5)], **_strategy_kwargs()
+    )
+
+    assert out == paraphrased
+    assert stats["noop"] is False
+    assert [s["noop"] for s in stats["steps"]] == [True, False]
+    assert len(stats["warnings"]) == 1
+    assert stats["warnings"][0].startswith("step 1 (backtranslate@0.8)")
+
+
+def test_cli_strategy_honors_noop_lex_floor(monkeypatch, tmp_path, capsys):
+    src = tmp_path / "in.txt"
+    src.write_text(_SOURCE, encoding="utf-8")
+    monkeypatch.setattr(rewrite_text, "call_ollama", _ShortcutModel(_SOURCE))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rewrite_text.py",
+            str(src),
+            "-o",
+            str(tmp_path / "out.txt"),
+            "--backend",
+            "ollama",
+            "--model",
+            "m",
+            "--base-url",
+            "http://127.0.0.1:11434",
+            "--strategy",
+            "backtranslate@0.8",
+            "--noop-lex-floor",
+            "0.5",
+            "--json-stats",
+        ],
+    )
+
+    assert rewrite_text.main() == 0
+    err = capsys.readouterr().err
+    stats = json.loads(err[err.index("{") :])
+    assert stats["noop_lex_floor"] == 0.5
+    assert stats["noop"] is True

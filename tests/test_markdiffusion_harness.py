@@ -22,6 +22,23 @@ from image_meta import run_markdiffusion_purify
 
 HARNESS_SCRIPT = SCRIPTS / "markdiffusion_harness.py"
 
+
+@pytest.fixture(autouse=True)
+def _isolate_fake_modules(monkeypatch):
+    """The fake upstream must not reuse or leak real Pillow/MarkDiffusion modules."""
+    prefixes = ("PIL", "markdiffusion")
+    before = {k: v for k, v in sys.modules.items() if k.split(".")[0] in prefixes}
+    old_path = sys.path[:]
+    for name in before:
+        monkeypatch.delitem(sys.modules, name)
+    yield
+    for name in list(sys.modules):
+        if name.split(".")[0] in prefixes:
+            sys.modules.pop(name, None)
+    sys.modules.update(before)
+    sys.path[:] = old_path
+
+
 FAKE_PIL = """\
 class Image:
     def __init__(self, mode="RGB", size=(10, 20)):

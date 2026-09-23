@@ -46,13 +46,15 @@ python3 install_skill.py --skill remove-ai-marks --target claude-code
 | --- | --- | --- |
 | Claude Code (personal) | `--target claude-code` | `~/.claude/skills/<skill>` (honors `CLAUDE_CONFIG_DIR`) |
 | Claude Code (project) | `--target claude-project --project-dir PATH` | `PATH/.claude/skills/<skill>` |
+| Codex (OpenAI CLI / app / IDE extension) | `--target codex` | `~/.codex/skills/<skill>` (honors `CODEX_HOME`) |
 | Cowork, claude.ai, cloud sessions, routines | `--target cowork` | `dist/<skill>.zip` to upload under **Customize → Skills** |
 | Cursor | `--target cursor` (default) | `~/.cursor/skills/<skill>` |
 
 Shipped skills: `remove-ai-marks` (full, service-backed) and
 `clean-user-facing-text` (text only, self-contained). `--list` prints them.
 Existing installations are preserved unless you pass `--force`; replacement is
-staged first and the previous install is kept as a uniquely named backup.
+staged first and the previous install is kept as a uniquely named backup under
+`<skills dir>/.backups/` (a dot-directory, so hosts do not list it as a skill).
 `--link` symlinks this checkout instead of copying, so edits are picked up
 live. On Windows, use `py install_skill.py ...`; the `install-skill.sh` wrapper
 is provided for macOS/Linux shells.
@@ -171,6 +173,22 @@ watermarks / C2PA / Claude marks / SynthID-class text.” A project install is
 also what [cloud sessions](https://code.claude.com/docs/en/cloud-environments)
 read, since they clone the repository and load its `.claude/skills/`.
 
+### Codex
+
+```bash
+python3 install_skill.py --skill remove-ai-marks --target codex
+# or: make install-codex-skill
+```
+
+Codex reads personal skills from `~/.codex/skills/` (the same Agent Skills
+layout) when a session starts, so open a new Codex session afterwards and
+invoke the skill as `$remove-ai-marks` or by describing the task. The skill is
+the same thin HTTP client as everywhere else: the Codex sandbox must be able
+to reach the service (`WATERMARKS_SERVICE_URL`, default `http://127.0.0.1:8765`),
+so start it on the host first (`make serve`, or the Windows login task in
+[docs/windows-autostart.md](docs/windows-autostart.md)) and allow loopback
+network access in the Codex sandbox settings if it is restricted.
+
 ### Cowork (and claude.ai, cloud sessions, routines)
 
 Cowork sessions do **not** read `~/.claude/skills` on your machine — they load
@@ -246,9 +264,57 @@ make serve                 # http://127.0.0.1:8765
 python3 service/scripts/server.py --host 127.0.0.1 --port 8765
 ```
 
+### Text cleaning: Layer B dependencies
+
+Image, document and metadata cleaning need nothing more. **Text** `/clean`
+always runs the Layer B rewrite, and the default strategy
+(`config/clean_strategy.json`: `paraphrase@0.8,mlm@0.2`) needs two things:
+
+- an LLM rewrite backend for `paraphrase`: the `WATERMARKS_REWRITE_*`
+  variables (see [Configuration](#configuration-env-vars-for-docker-compose));
+- for `mlm`, torch + transformers + Pillow, pinned in
+  [`service/scripts/requirements-mlm.txt`](service/scripts/requirements-mlm.txt),
+  installed into **the interpreter that runs the service** (the tactic runs
+  in-process), plus the `roberta-large` weights (~1.4 GB, fetched on first use).
+
+```bash
+python3 -m venv .venv      # optional: keeps torch out of the system Python; make serve uses .venv
+make bootstrap-mlm         # CPU torch + the pinned stack, then an mlm smoke run (fetches roberta-large)
+make serve
+curl -s http://127.0.0.1:8765/capabilities   # layer_b.default_strategy_usable: true
+```
+
+`make TORCH_INDEX_URL=https://download.pytorch.org/whl/cuXXX bootstrap-mlm`
+installs a CUDA build instead; `make smoke-mlm` re-runs the check alone.
+Without `make` (e.g. Windows), install torch alone from the CPU index first, so
+pip doesn't pull the multi-GB CUDA wheel, then the pinned file, which brings
+torch's dependencies from PyPI (`--no-deps` keeps the torch index from
+supplying them), using the Python that runs `server.py`:
+
+```powershell
+python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu "torch==2.14.0.*"
+python -m pip install -r service/scripts/requirements-mlm.txt
+```
+
+Restart the service afterwards. `GET /capabilities` → `layer_b` tells an agent,
+before it sends any text, whether the default strategy can run
+(`default_strategy_usable`), which tactics can (`tactics`), and why not
+(`rewrite_backend.error`, `mlm.error`); the mlm check imports the stack in a
+child interpreter once per service process. Once the weights are cached,
+`HF_HUB_OFFLINE=1` stops the service from re-checking the Hugging Face Hub each
+time it loads them.
+
 ### Windows (no Docker)
 
-See [docs/windows-autostart.md](docs/windows-autostart.md) for auto-starting the service at Windows login without Docker.
+`service\scripts\start_service.ps1` starts the service the way the tests and
+the skill expect: from the repo root, with the repo's `.venv` interpreter when
+it exists (that is where `make bootstrap-mlm` puts the `mlm` stack; `-Python`
+or `WATERMARKS_SERVICE_PYTHON` names another one), with `.env` loaded,
+`HF_HUB_OFFLINE=1` unless overridden, and a refusal to start when another
+process already listens on the port (Windows lets a second server bind
+silently, and the older one keeps answering with older code).
+[docs/windows-autostart.md](docs/windows-autostart.md) registers it as a login
+task so the service is always up for Claude Code, Codex and Cowork.
 
 For the whole infra (core + optional harness/heavy backends), see [Docker / compose](#docker--compose) below.
 
@@ -260,7 +326,9 @@ Optional system tools (auto-used when present — preinstalled in the core Docke
 | [`exiftool`](https://exiftool.org/) | Residual metadata strip (esp. **PDF**) |
 | [`qpdf`](https://qpdf.sourceforge.io/) | Structural PDF rebuild — **required** for a real PDF strip (see below) |
 
-Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
+Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional
+for the scripts; text `/clean` in the service runs them (see
+[Text cleaning: Layer B dependencies](#text-cleaning-layer-b-dependencies)).
 
 ## Quick use (scripts)
 
@@ -279,6 +347,8 @@ python3 "$SCRIPTS/clean_text.py" draft.md -o draft.cleaned.md --stats
 
 # Layer B rewrite hook (default: print prompt only — no model required)
 python3 "$SCRIPTS/rewrite_text.py" draft.md --backend print-prompt --tactic paraphrase
+# Academic prose: math/LaTeX is masked out of the rewrite (default: auto)
+python3 "$SCRIPTS/rewrite_text.py" paper.tex --tactic academic --protect-latex on --json-stats
 # Optional local Ollama (loopback only by default — remote endpoints require
 # WATERMARKS_REWRITE_ALLOW_REMOTE=1 or --allow-remote):
 # WATERMARKS_REWRITE_BACKEND=ollama WATERMARKS_REWRITE_MODEL=llama3.2 \
@@ -326,7 +396,7 @@ The same machinery runs as a stdlib HTTP service (`service/scripts/server.py`) �
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/health` | — | `{"ok": true, "version": ...}` |
-| GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`) |
+| GET | `/capabilities` | — | optional tools / backends usable (each tool is version-probed, not just found on `PATH`), and `layer_b`: whether text `/clean` can run its Layer B strategy |
 | GET | `/openapi.json` | — | dynamically generated OpenAPI 3.0.3 spec |
 | POST | `/inspect` | `{"file": "<base64>", "name": "notes.md"}` | `{"ok", "kind", "suspicious", "report"}` |
 | POST | `/detect` | `{"file": "<base64>", "name": "notes.txt"}` | `{"ok", "kind", "detections": [...]}` |
@@ -365,7 +435,32 @@ APIs unless you ask it to:
   is a required step for text). A **`"strategy"`** option (an ordered
   `tactic@intensity` list, e.g. `"paraphrase@0.8,mlm@0.2"`) overrides the
   default from the strategy config file (see below). When the rewrite
-  backend/model for a step isn't configured, `/clean` returns a 400.
+  backend/model for a step isn't configured, `/clean` returns a 400;
+  `GET /capabilities` → `layer_b` reports that before any text is sent.
+  `backtranslate` and `structural` steps each make two model calls
+  (translate out, then back; outline, then write). Long inputs are split at
+  paragraph or sentence boundaries into chunks of at most
+  `WATERMARKS_REWRITE_CHUNK_CHARS` characters (default 2500) and each chunk
+  is rewritten in its own model call, so a whole section never has to fit one
+  context window and a slip in one paragraph never spoils the rest.
+  Model meta-commentary around a rewrite (a `Here is the rewritten text:`
+  preamble, a trailing `I changed the following:` / `Changes made:` / `Note:`
+  section, a `</think>` block, a code fence or quotes around the whole output)
+  is stripped and listed in `report.layer_b.steps[].wrappers_stripped`, as are
+  trailing paragraphs that echo the prompt's own jargon ("At low intensity:",
+  "0.32 tokens changed", "Function words: ..."). If a length-preserving step's
+  output still drifts to an extreme length (outside 0.5–2× its input, with an
+  80-character allowance for short texts), loses a protected math/LaTeX span,
+  or (for `academic`) changes a number or the language, it is regenerated
+  within the `WATERMARKS_REWRITE_CANDIDATES` × `WATERMARKS_REWRITE_LOOPS`
+  budget (default 1, no retry). When no attempt is acceptable the step (or the
+  chunk) is skipped (its input passes through unchanged), `report.layer_b.ok`
+  is `false` and `report.layer_b.errors` says why. A rewrite that comes back
+  ≈ its input (bigram divergence under 0.05) still returns 200, but
+  `report.layer_b` marks it `"noop": true` and adds a `warnings` entry. The
+  response is still a 200 in every one of these cases, so check
+  `report.layer_b.ok` and `report.layer_b.noop` before treating the text as
+  rewritten. `/openapi.json` documents every `report.layer_b` field.
 
 Text detectors (see `/capabilities` → `text_detectors`):
 
@@ -438,8 +533,13 @@ Checks `wr-core` via `GET /health` and runs each harness/heavy service with `--h
 required step for `POST /clean` on text, so the core service needs the rewrite
 backend set up, or text cleaning returns HTTP 400. Image/container metadata
 cleaning works out of the box. For text you must configure the Layer B strategy
-dependencies: `transformers` + `roberta-large` (for the default `mlm` step) and
-the `WATERMARKS_REWRITE_*` LLM config (for the `paraphrase` step):
+dependencies: the `service/scripts/requirements-mlm.txt` stack + `roberta-large`
+(for the default `mlm` step; see
+[Text cleaning: Layer B dependencies](#text-cleaning-layer-b-dependencies)) and
+the `WATERMARKS_REWRITE_*` LLM config (for the `paraphrase` step). The core
+image stays stdlib-only and does not bundle the `mlm` stack, so its
+`/capabilities` reports `layer_b.tactics.mlm: false`; run the default strategy
+from a checkout (`make bootstrap-mlm && make serve`):
 
 ```bash
 echo "Hello\u200bWorld\u00ad!" > /tmp/sample.txt
@@ -477,17 +577,27 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_MARKLLM_SCHEME` | `text_detectors.py` (host) | MarkLLM scheme for `/detect`: `kgw` (default) / `synthid` |
 | `HF_TOKEN` | harness/heavy services | Hugging Face token for gated models |
 | `WATERMARKS_SERVICE_URL` | client only (skill / curl) | Where to reach the service; default `http://127.0.0.1:8765` |
-| `WATERMARKS_REWRITE_BACKEND` | `rewrite_text.py` hook | `print-prompt` (default) / `ollama` / `openai-compatible` |
-| `WATERMARKS_REWRITE_MODEL` | `rewrite_text.py` hook | Model name (e.g. `deepseek-v4-flash`) |
-| `WATERMARKS_REWRITE_BASE_URL` | `rewrite_text.py` hook | API base (e.g. `https://api.deepseek.com`) |
-| `WATERMARKS_REWRITE_API_KEY` | `rewrite_text.py` hook | API key — env only, never on argv |
-| `WATERMARKS_REWRITE_ALLOW_REMOTE` | `rewrite_text.py` hook | `1` to allow non-loopback endpoints |
-| `WATERMARKS_REWRITE_REASONING_EFFORT` | `rewrite_text.py` hook | `none` (default) / `low` / `medium` / `high` / `off` |
+| `WATERMARKS_SERVICE_API_KEY` | client only (skill / curl) | The service's `WATERMARKS_SERVER_API_KEY`, sent as the bearer key |
+| `WATERMARKS_REWRITE_BACKEND` | `server.py` `/clean` + `rewrite_text.py` hook | `print-prompt` (default) / `ollama` / `openai-compatible` |
+| `WATERMARKS_REWRITE_MODEL` | `server.py` `/clean` + `rewrite_text.py` hook | Model name (e.g. `deepseek-v4-flash`) |
+| `WATERMARKS_REWRITE_BASE_URL` | `server.py` `/clean` + `rewrite_text.py` hook | API base (e.g. `https://api.deepseek.com`) |
+| `WATERMARKS_REWRITE_API_KEY` | `server.py` `/clean` + `rewrite_text.py` hook | API key — env only, never on argv |
+| `WATERMARKS_REWRITE_ALLOW_REMOTE` | `server.py` `/clean` + `rewrite_text.py` hook | `1` to allow non-loopback endpoints |
+| `WATERMARKS_REWRITE_REASONING_EFFORT` | `server.py` `/clean` + `rewrite_text.py` hook | `none` (default) / `low` / `medium` / `high` / `off`; sent as `reasoning_effort` to `openai-compatible`, and on `ollama` `none` sends `think: false` |
+| `WATERMARKS_REWRITE_TIMEOUT` | `server.py` `/clean` + `rewrite_text.py` hook | Seconds per rewrite-backend call (default 120; the service caps it at 3600) |
+| `WATERMARKS_REWRITE_TEMPERATURE` | `server.py` `/clean` | Sampling temperature for the rewrite backend (default 0.3; the CLI takes `--temperature`) |
+| `WATERMARKS_REWRITE_CHUNK_CHARS` | `server.py` `/clean` + `rewrite_text.py` hook | Longest text sent to the model in one call for a strategy step (default 2500; `0` disables chunking) — longer inputs are split at paragraph or sentence boundaries |
+| `WATERMARKS_REWRITE_CANDIDATES` | `rewrite_text.py` hook, `server.py` `/clean` | Variants per evaluation round (default 1). On `/clean`, candidates × loops caps the attempts per Layer B step whose output length drifted |
+| `WATERMARKS_REWRITE_LOOPS` | `rewrite_text.py` hook, `server.py` `/clean` | Max evaluation rounds (default 1); see `WATERMARKS_REWRITE_CANDIDATES` for `/clean` |
+| `WATERMARKS_PROTECT_LATEX` | `rewrite_text.py` hook, `server.py` `/clean` | `auto` (default) / `on` / `off` — hold math, LaTeX commands/environments and verbatim spans out of the Layer B rewrite |
+| `WATERMARKS_OLLAMA_CONTEXT` / `WATERMARKS_OLLAMA_MAX_TOKENS` / `WATERMARKS_OLLAMA_THREADS` | `server.py` `/clean` + `rewrite_text.py` hook | Floors for the Ollama `num_ctx` / `num_predict` options (the call also grows them with the prompt) and an optional `num_thread` |
 | `WATERMARKS_CLEAN_STRATEGY_FILE` | `server.py` `/clean` | Path to the Layer B strategy config JSON (default `config/clean_strategy.json`) |
 | `WATERMARKS_GUMBEL_KEY` | `detect_gumbel.py` / `text_detectors.py` | Secret key for keyed-Gumbel (EXP) same-key replay (e.g. `0x…`); preferred over argv — never logged |
 
-**Layer B is required for text cleaning.** `/clean` always applies the default
-strategy (from `config/clean_strategy.json`, `{"default_strategy": "paraphrase@0.8,mlm@0.2"}`) to a text file after Layer A, unless the request passes its own `"strategy"` option (an ordered `tactic@intensity` list). A strategy step is `tactic@intensity`; the `mlm` step needs `transformers` + `roberta-large`, and any LLM step (`paraphrase`, `humanize`, …) needs the `WATERMARKS_REWRITE_*` config. If the required backend/model isn't configured — or no strategy is available — `/clean` **rejects the request with a 400**. Precedence for the config path: `--strategy-config` CLI flag > `WATERMARKS_CLEAN_STRATEGY_FILE` env var > the default `config/clean_strategy.json`.
+**Layer B is required for plain-text cleaning.** `/clean` always applies the default
+strategy (from `config/clean_strategy.json`, `{"default_strategy": "academic@0.4"}`) to a `.txt` / `.text` file after Layer A, unless the request passes its own `"strategy"` option (an ordered `tactic@intensity` list) or `"rewrite": false` (Layer A only). A strategy step is `tactic@intensity`; the `mlm` step needs the `requirements-mlm.txt` stack in the service's interpreter plus the `roberta-large` weights, and any LLM step (`paraphrase`, `humanize`, `academic`, …) needs the `WATERMARKS_REWRITE_*` config. If the required backend/model isn't configured — or no strategy is available — `/clean` **rejects the request with a 400** (a broken `mlm` stack is caught before any LLM step runs), and so does a backend call that outlives `WATERMARKS_REWRITE_TIMEOUT` (the error names the variable); `GET /capabilities` → `layer_b` shows which tactics can run, and why not, before any text is sent. Code, config, data, markup and localization files (`.py`, `.json`, `.csv`, `.rst`, `.po`, …) share the text pipeline for Layer A but skip the default rewrite, which would change their identifiers, keys and values; `report.layer_b.skipped` says so, and an explicit `"strategy"` (or `"rewrite": true`) still rewrites them. LaTeX and Markdown sources (`.tex`, `.ltx`, `.md`) are containers: they get the metadata strip and Layer A by default, and `"rewrite": true` (or a `"strategy"`) additionally runs the Layer B strategy over their prose with the math, commands, environments and code spans masked out. Precedence for the config path: `--strategy-config` CLI flag > `WATERMARKS_CLEAN_STRATEGY_FILE` env var > the default `config/clean_strategy.json`.
+
+Math, LaTeX and verbatim spans are protected by default; see [Academic sources](#academic-sources-math-and-latex-are-held-out-of-the-rewrite).
 
 Images publish automatically on `v*` tags via [`.github/workflows/release-images.yml`](.github/workflows/release-images.yml).
 
@@ -757,6 +867,48 @@ records:
               "cleared": true, "note": "same-config only"}
 }
 ```
+
+### Academic sources: math and LaTeX are held out of the rewrite
+
+A statistical watermark lives in the wording, not in an equation: there is
+nothing to strip inside `$\gamma^4$`, `\cite{Gribov:1977wm}` or a `tikzpicture`,
+and a model that "improves" one of them corrupts the document silently. Layer B
+therefore swaps those spans for opaque placeholders before generation and
+restores them afterwards (`--protect-latex auto|on|off`, default **auto** —
+`WATERMARKS_PROTECT_LATEX`; `/clean` takes the same value as the
+`protect_latex` option).
+
+| Protected | Left to the rewrite |
+| --- | --- |
+| `$...$`, `$$...$$`, `\[...\]`, `\(...\)` | Prose, including prose inside `abstract`, `itemize`, `theorem`, … |
+| Math/verbatim/layout environments (`equation`, `align`, `verbatim`, `lstlisting`, `tikzpicture`, `tabular`, …) | Section text and captions outside those environments |
+| Reference-like commands (`\cite*`, `\ref`, `\eqref`, `\label`, `\input`, `\usepackage`, `\url`, …) | Everything else |
+| Markdown fenced blocks and inline `` `code` `` | |
+
+Restoration is **reported, not assumed** — a model can drop or duplicate a
+placeholder, so `--json-stats` carries the round trip and a dropped span also
+prints a warning on stderr:
+
+```json
+{"protect_latex": "auto", "latex_protection": "placeholders", "latex_protected": 5,
+ "latex": {"protected": 5, "restored": 5, "missing": 0, "duplicated": 0}}
+```
+
+Because the spans are masked until after the deterministic passes, the
+humanizer never rewrites a LaTeX en dash and the Layer A scrub never reaches
+inside an equation. The `print-prompt` backend is the exception: it hands the
+prompt to another agent and never sees the output, so there is no map to
+restore from and the prompt carries a preserve-verbatim instruction instead
+(`"latex_protection": "prompt-guard"`) — a request, not a guarantee.
+
+**`--tactic academic`** is the matching prompt for scholarly prose: it varies
+connectives, clause order and sentence boundaries while keeping the language of
+the original (no translation), every technical term and unit as written, and the
+epistemic force of each statement — a conjecture must not come back as a result.
+It does not simplify, summarize, add examples, or add a concluding flourish, and
+unlike `humanize` it does not treat disciplinary vocabulary or an impersonal
+passive as a defect. Use it as a strategy step like any other, e.g.
+`--strategy "academic@0.7,mlm@0.2"`.
 
 A detector that is unconfigured, times out, or errors yields an
 `"available": false` entry with an `error` reason and never fails the
@@ -1301,6 +1453,19 @@ v0.7.0 brings the Layer B statistical-mark rewrite into the `/clean` service its
 - Docs: voice-preserving rewrite guidance and protecting voice/accessibility choices; Ecosystem additions (ClaudeWatermarks, unmark-web) and a note discouraging look-alike names; arXiv 2402.14904 reference; Windows auto-start guide via Task Scheduler; portable base64 in curl examples; pin the vendored Cursor-skill text engine to the service copy (#96)
 
 ### Unreleased
+
+**Layer B on real prose (consolidation of the local Layer B branches)**
+
+- `academic` tactic and `--protect-latex` / `protect_latex` (default `auto`): math, LaTeX commands and environments, citation keys, code spans, YAML front matter and Markdown link targets are swapped for placeholders before the rewrite and restored after it; the round trip is reported (`report.layer_b.latex`), and an `academic` piece whose numbers, language or LaTeX structure changed is rejected and regenerated. The default strategy is now `academic@0.4` (was `paraphrase@0.8,mlm@0.2`, which was tuned on `opt-1.3b` English general prose and swapped terms of art on technical text).
+- `/clean` runs every LLM strategy step **piece by piece**: long inputs are cut at paragraph or sentence boundaries into pieces of at most `WATERMARKS_REWRITE_CHUNK_CHARS` characters (default 2500), each with its own model call and checks, so a section never has to fit one context window and one damaged paragraph never spoils the rest.
+- `.tex` / `.ltx` / `.md` sources take the Layer B strategy on request (`options.rewrite: true` or `options.strategy`) after the metadata strip and Layer A, with the spans above masked out; `options.rewrite: false` gives a Layer A-only text clean.
+- Ollama: `think: false` is sent for `WATERMARKS_REWRITE_REASONING_EFFORT=none` (the default; gemma4 and qwen3.5 otherwise think for minutes), `num_ctx` / `num_predict` grow with the prompt so an instruction is never dropped and an output never truncated, and `WATERMARKS_REWRITE_TIMEOUT` (default 120 s, cap 3600) bounds each call with an error that names the variable. The service's default temperature is 0.3 (was 0.9).
+- Model meta-commentary (preambles, "changes made" lists, `</think>` blocks, fences, quotes, prompt-jargon echoes) is stripped; length-drifted outputs are regenerated within the `WATERMARKS_REWRITE_CANDIDATES` × `WATERMARKS_REWRITE_LOOPS` budget; `backtranslate` and `structural` make two model calls each instead of one shortcut-prone prompt; a rewrite that comes back ≈ its input is reported as `noop`.
+- `GET /capabilities` → `layer_b` reports whether the default strategy and each tactic can run, and why not; `/openapi.json` documents every `report.layer_b` field.
+- Sentence splitting (`chunk` tactic and chunk boundaries) no longer breaks after `e.g.`, `Sect.`, `Eq.`, `et al.` or an initial; `humanize_pass` keeps `12--18` ranges; the `humanize` prompt keeps hedges that limit a claim.
+- Code, config and data files get Layer A only unless a strategy is requested (`report.layer_b.skipped`).
+- Installer: `--target codex` (`~/.codex/skills`, `CODEX_HOME`) plus `make install-codex-skill`; the skill's shell helpers use `${1}` so a skill loader cannot substitute the slash-command arguments into them. `service/scripts/start_service.ps1` and the updated Windows auto-start guide start the service with the right interpreter, `.env`, and a port-in-use refusal.
+
 
 - Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
 - **OOXML container preservation**: keep `<AppVersion>` intact in `docProps/app.xml` during DOCX, XLSX, and PPTX metadata cleaning to satisfy ECMA-376 schema constraints and avoid Microsoft Word/Office "unreadable content" errors (#283)

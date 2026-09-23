@@ -54,3 +54,7 @@ stealer/prompts/**
 posts.md
 *.cleaned.*
 *.bak
+
+# Local build/run artifacts: Cowork upload bundles and the Windows launcher log
+dist/
+logs/

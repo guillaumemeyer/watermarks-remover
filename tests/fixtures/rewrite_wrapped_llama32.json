@@ -1,0 +1,82 @@
+{
+  "note": "Real llama3.2 (Ollama) replies to the paraphrase@0.8 prompt for `input` (long change lists abridged); `rewrite` is the rewrite each reply wraps in commentary.",
+  "input": "The weather was mild and the meeting ended early.\n",
+  "samples": [
+    {
+      "raw": "Here's a rewritten text that uses substantially different wording at the token level, changing clause order, connectors, transition words, sentence boundaries, and length, while preserving all facts, numbers, names, and technical identifiers:\n\nThe weather proved to be conducive to an early meeting conclusion.\n\nThis change in wording maintains the same structure, but alters the sentence to better convey the same idea.",
+      "rewrite": "The weather proved to be conducive to an early meeting conclusion."
+    },
+    {
+      "raw": "The atmosphere was pleasant, culminating in a hasty conclusion to the assembly.\n\nAt low intensity: The atmosphere was pleasant, culminating in a hasty conclusion to the assembly. (minor changes: \"weather\" to \"atmosphere\", \"mild\" to \"pleasant\", \"meeting\" to \"assembly\")\n\nAt moderate intensity: The pleasant atmosphere led to a swift termination of the gathering. (changes: \"mild\" to \"pleasant\", \"ended\" to \"termination\", \"meeting\" to \"gathering\")\n\nAt high intensity: The ambiance was welcoming, resulting in a sudden and expedited conclusion to the conclave. (changes: \"weather\" to \"ambiance\", \"mild\" to \"welcoming\", \"meeting\" to \"conclave\")",
+      "rewrite": "The atmosphere was pleasant, culminating in a hasty conclusion to the assembly."
+    },
+    {
+      "raw": "Here is the rewritten text:\n\nEarly termination occurred due to favorable atmospheric conditions.\n\nOr, in a moderate intensity version:\n\nAlthough the meeting was convened in a pleasant temperature environment, it concluded earlier than expected.\n\nOr, in a high intensity version:\n\nThe favorable atmospheric conditions led to a decision to conclude the meeting, which was in line with the expected outcome of a low-temperature setting.\n\nNote that the high intensity version changes most of the wording at the token level, while the low intensity version mainly changes function words and a few content words.",
+      "rewrite": "Early termination occurred due to favorable atmospheric conditions."
+    },
+    {
+      "raw": "Early cessation of the meeting was due to favorable atmospheric conditions.\n\nThis revised text changes approximately 0.32 tokens (32% of the original text). It maintains the same sentence structure, word order, and content words, with only a few subtle changes. Function words such as \"the\" and \"was\" remain unchanged, while a few non-essential content words like \"mild\" and \"meeting\" are replaced. The overall meaning and claims remain intact.",
+      "rewrite": "Early cessation of the meeting was due to favorable atmospheric conditions."
+    },
+    {
+      "raw": "Early on, a pleasant climate prevailed, culminating in an abrupt conclusion to the gathering.\n\nTo achieve the desired level of rewrite intensity, I followed these guidelines:\n\n*   Changed the first sentence to maintain a similar structure and word order, but with different wording.\n*   Replaced function words, such as \"The\" and \"was,\" with synonyms like \"Early on\" and \"prevailed.\"\n*   Modified content words, like \"mild\" and \"meeting,\" to \"pleasant\" and \"gathering,\" respectively.\n*   Changed the sentence boundary and transition words to create a more varied and dynamic text.",
+      "rewrite": "Early on, a pleasant climate prevailed, culminating in an abrupt conclusion to the gathering."
+    },
+    {
+      "raw": "Here's the rewritten text:\n\nThe atmosphere was balmy, and the assembly concluded beforehand.\n\nModulation adjustment: 0.6\n\nHere, I've made changes to function words (e.g., \"weather\" -> \"atmosphere\", \"meeting\" -> \"assembly\"), and kept the sentence structure and most content words intact. The change in wording is noticeable, but the original meaning and facts remain preserved.",
+      "rewrite": "The atmosphere was balmy, and the assembly concluded beforehand."
+    },
+    {
+      "raw": "In a remarkably pleasant atmospheric condition, the conference concluded ahead of schedule.\n\nModified to roughly 0.80 token change intensity:\n\nThe atmosphere was pleasantly warm, and the conference concluded early.\n\nModified to roughly 0.40 token change intensity:\n\nIt was a mild day, and the meeting finished ahead of schedule.\n\nModified to roughly 0.20 token change intensity:\n\nThe weather was mild, and the meeting concluded early.",
+      "rewrite": "In a remarkably pleasant atmospheric condition, the conference concluded ahead of schedule."
+    },
+    {
+      "raw": "Early on, a gentle climate prevailed, allowing the gathering to conclude its proceedings in a concise manner.\n\n\nModulated to a low intensity: \nThe meeting concluded in a short, pleasant session.\n\n\nModulated to a high intensity:\nConversely, the atmosphere was characterized by mild temperatures, facilitating a swift termination of the assembly's proceedings.",
+      "rewrite": "Early on, a gentle climate prevailed, allowing the gathering to conclude its proceedings in a concise manner."
+    },
+    {
+      "raw": "Here is the rewritten text with a moderate level of token-level change (roughly 0.80 fraction):\n\nThe ambient temperature was tolerable, allowing the conference to conclude sooner than anticipated.\n\nIn this version, I've replaced \"mild\" with \"tolerable\", changed \"the meeting\" to \"the conference\", and used \"sooner than anticipated\" instead of \"early\" to convey the same meaning. I've also used different words for \"weather\" (\"ambient temperature\") and \"meeting\" (\"conference\"). The sentence structure and word order remain largely the same, but with some subtle adjustments.",
+      "rewrite": "The ambient temperature was tolerable, allowing the conference to conclude sooner than anticipated."
+    },
+    {
+      "raw": "At a recent gathering, a gentle climate prevailed, leading to a swift conclusion.\n\n\nFor the low intensity rewrite:\n\nThe meeting concluded in a timely manner, thanks to the pleasant weather.\n\nFor the high intensity rewrite:\n\nIn the aftermath of a conference, a favorable climate contributed to a hasty termination of the proceedings, characterized by moderate temperatures and an overall sense of relaxation.",
+      "rewrite": "At a recent gathering, a gentle climate prevailed, leading to a swift conclusion."
+    },
+    {
+      "raw": "Here is the rewritten text with a fraction of 0.8 token change intensity:\n\nThe conditions were favorable and we concluded the conference in advance.\n\n\nExplanation of the change intensity:\n\n* Low intensity (0.2): Changed function words (e.g., \"was\" -> \"were\", \"meeting\" -> \"conference\")\n* Medium intensity (0.4): Replaced a few content words (e.g., \"mild\" -> \"favorable\", \"ended\" -> \"concluded\")\n* High intensity (0.8): Changed wording substantially at the token level, preserving facts, numbers, names, and technical identifiers.",
+      "rewrite": "The conditions were favorable and we concluded the conference in advance."
+    },
+    {
+      "raw": "Here is the rewritten text with a moderate level of token-level change, roughly 0.8 fraction:\n\nThe atmospheric conditions were favorable, and as a result, the conference concluded in a condensed manner.\n\nExplanation of changes:\n\n1. \"Weather\" -> \"atmospheric conditions\" (rephrased content word)\n2. \"Mild\" -> \"favorable\" (rephrased content word)\n\nThe rewritten text has changed the wording of 6 tokens (77.8% of the original tokens), while preserving the original sentence structure and the facts, numbers, names, and technical identifiers.",
+      "rewrite": "The atmospheric conditions were favorable, and as a result, the conference concluded in a condensed manner."
+    },
+    {
+      "raw": "Here is the rewritten text with substantially different wording at the token level, changing clause order, connectors, and transition words, varying sentence boundaries and length, and replacing both content words and function words where meaning allows.\n\nThe ambiance was tranquil, culminating in an expedient conclusion.\n\nAt low intensity, this might become:\nThe weather was pleasant and the meeting concluded sooner than expected.\n\nAt moderate intensity, this might become:\nThe weather was pleasant, and the meeting concluded with remarkable swiftness.\n\nAt high intensity, this might become:\nA tranquil atmosphere characterized the entire meeting, which concluded remarkably quickly.\n\nNote that I've preserved all facts, numbers, names, and technical identifiers, and ensured that all claims remain unchanged. The changes made are primarily at the token level, aiming to alter the wording substantially while maintaining the original meaning.",
+      "rewrite": "The ambiance was tranquil, culminating in an expedient conclusion."
+    },
+    {
+      "raw": "At the conclusion of a meeting, a gentle climate prevailed, allowing the assembly to conclude its proceedings in a hasty manner.\n\n\nHere's a breakdown of the changes made to achieve the desired intensity:\n\nIntensity level: 0.8 (moderate)\n\nChanges:\n\n* \"The weather was mild\" became \"a gentle climate prevailed\"\n* \"the meeting\" became \"the assembly\"\n* Sentence structure and word order remained relatively intact",
+      "rewrite": "At the conclusion of a meeting, a gentle climate prevailed, allowing the assembly to conclude its proceedings in a hasty manner."
+    },
+    {
+      "raw": "Here's a rewritten text with a fraction of 0.8 change intensity:\n\nThe atmosphere remained pleasant; the conference convened briefly.\n\nI replaced:\n- \"weather\" with \"atmosphere\"\n- \"mild\" with \"pleasant\"\n\nThis rewritten text maintains the original sentence structure and word order, while changing some function words and content words to preserve the original meaning.",
+      "rewrite": "The atmosphere remained pleasant; the conference convened briefly."
+    },
+    {
+      "raw": "Given the original instruction, I will rephrase the text at a moderate intensity, roughly 0.80 of token change. Here's the rewritten text:\n\nThe meeting concluded with pleasant temperatures, thanks to the early departure from the conference room.\n\n\nIn this version, I've made the following changes:\n\n- Changed the sentence structure\n- Changed function words: \"was\" became \"concluded\"",
+      "rewrite": "The meeting concluded with pleasant temperatures, thanks to the early departure from the conference room."
+    },
+    {
+      "raw": "The atmospheric conditions were pleasant, leading to an abrupt conclusion.\n\n\nHere's a breakdown of the changes:\n\n- \"weather\" -> \"atmospheric conditions\"\n- \"mild\" -> \"pleasant\"\n- \"early\" -> \"abrupt\"",
+      "rewrite": "The atmospheric conditions were pleasant, leading to an abrupt conclusion."
+    },
+    {
+      "raw": "Given the constraints of rewriting the text to a fraction of 0.80 token change, I'll implement this change by altering function words and non-essential content words. Here's the rewritten text:\n\nThe atmosphere was comfortable, and the convention concluded with a shorter duration.\n\nIn this version, I've changed:\n\n- \"weather\" to \"atmosphere\" (function word)\n- \"mild\" to \"comfortable\" (non-essential content word)\n\nThese changes result in a rewritten text that preserves the original meaning while varying the wording at the token level.",
+      "rewrite": "The atmosphere was comfortable, and the convention concluded with a shorter duration."
+    },
+    {
+      "raw": "Here is the rewritten text with roughly 0.8 of token-level change:\n\nThe atmosphere was pleasant, and the assembly concluded swiftly.\n\nI changed:\n\n- \"weather\" to \"atmosphere\" (synonym)\n- \"early\" to \"swiftly\" (adverb replacement)\n\nThis rewrite maintains the original sentence structure and preserves the facts, numbers, names, and technical identifiers, while introducing some variation in wording.",
+      "rewrite": "The atmosphere was pleasant, and the assembly concluded swiftly."
+    }
+  ]
+}

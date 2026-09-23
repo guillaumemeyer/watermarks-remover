@@ -24,7 +24,9 @@ updates:
   # setup_synthid.sh / Dockerfile.synthid (REVERSE_SYNTHID_REF). Before merging
   # a bump, re-verify the scorer against that upstream commit — CI's pip-audit
   # step will flag any security regression, but functional compatibility must
-  # be checked by a human.
+  # be checked by a human. requirements-mlm.txt shares its pins with
+  # requirements-markllm.txt (tests/test_requirements_mlm.py fails when they
+  # diverge), so a bump to one needs the same bump in the other.
   - package-ecosystem: "pip"
     directory: "/service/scripts"
     schedule:

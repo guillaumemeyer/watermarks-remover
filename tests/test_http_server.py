@@ -151,6 +151,35 @@ def test_openapi_spec_describes_request_bodies(conn):
     assert "file" in inspect["requestBody"]["content"]["application/json"]["schema"]["properties"]
 
 
+def test_openapi_spec_documents_layer_b_report(conn):
+    import rewrite_text
+
+    status, body = _get(conn, "/openapi.json")
+    assert status == 200
+
+    def success(path):
+        return body["paths"][path]["post"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+
+    reports = (
+        success("/clean")["properties"]["report"],
+        success("/clean/batch")["properties"]["results"]["items"]["properties"]["report"],
+    )
+    for report in reports:
+        assert report["properties"]["layer_b"] == {"$ref": "#/components/schemas/LayerBReport"}
+    layer_b = body["components"]["schemas"]["LayerBReport"]["properties"]
+    # The fields /clean already returned stay documented next to the new ones.
+    assert {"backend", "tactic", "mode", "strategy", "steps"} <= set(layer_b)
+    assert {"input_chars", "output_chars"} <= set(layer_b)
+    assert {"ok", "warnings", "errors", "attempt_budget"} <= set(layer_b)
+    step = layer_b["steps"]["items"]["properties"]
+    assert {"tactic", "intensity", "in_chars", "out_chars", "ok", "attempts"} <= set(step)
+    assert {"length_ratio", "length_checked", "wrappers_stripped", "rejected"} <= set(step)
+    assert "error" in step
+    assert step["wrappers_stripped"]["items"]["enum"] == list(rewrite_text.WRAPPER_KINDS)
+
+
 def test_openapi_spec_reflects_auth(conn, monkeypatch):
     monkeypatch.setattr(server, "API_KEY", "sekret")
     conn.request("GET", "/openapi.json", headers={"Authorization": "Bearer sekret"})

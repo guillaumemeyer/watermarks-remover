@@ -12,8 +12,11 @@ Env (optional):
   WATERMARKS_REWRITE_MODEL
   WATERMARKS_REWRITE_API_KEY      (env-only; never pass keys on argv)
   WATERMARKS_REWRITE_ALLOW_REMOTE (set to 1 to allow non-loopback endpoints)
+  WATERMARKS_REWRITE_REASONING_EFFORT (default none; see --reasoning-effort)
+  WATERMARKS_REWRITE_TIMEOUT      (default 120; seconds per backend call)
   WATERMARKS_REWRITE_CANDIDATES   (default 1; variants generated per loop)
   WATERMARKS_REWRITE_LOOPS        (default 1; max evaluation rounds)
+  WATERMARKS_PROTECT_LATEX        (auto|on|off; math/LaTeX protection, default auto)
 
 Rewriting is iterative and evaluation-driven: each loop generates
 --candidates (default 1) variants, evaluates each, and stops as soon as an
@@ -27,6 +30,14 @@ attempts are generated and the most diverged one is selected). A vendor-detector
 seam (Google's retired SynthID-text detector) is reserved ahead of the
 same-config detectors should a vendor endpoint return.
 
+--protect-latex (auto|on|off, default auto) holds mathematics, LaTeX commands and
+environments, citation keys, and verbatim/code spans out of the rewrite: they are
+swapped for opaque placeholders before generation and restored after the
+deterministic passes, so no model reformats an equation or drops a citation key
+in the name of better prose. Restoration is reported (protected / restored /
+missing / duplicated), never assumed. The print-prompt backend has no output to
+restore from, so there the prompt carries a preserve-verbatim instruction instead.
+
 The rewrite instruction comes from --tactic (a named prompt) and, when
 --rewrite-level is set, that prompt is further modulated by a numeric rewrite
 intensity in (0,1] that controls how many tokens change (0 — the unchanged
@@ -38,6 +49,15 @@ the fact/voice rules. The humanize tactic additionally runs a deterministic
 humanizer pass (humanize_pass.py) over each generated candidate — straight
 quotes, no em/en dashes or double hyphens, filler-phrase collapses, and the
 utilize->use swap — before evaluation, so the scored text is the text returned.
+
+LLM output is stripped of model wrappers before anything else sees it (a
+"Here is the rewritten text ...:" preamble, a trailing "I changed the
+following:" / "Changes made:" / "Note:" section, a </think> reasoning block,
+a code fence or quotes around the whole output), unless the input itself
+carries the same construct. For length-preserving tactics
+(LENGTH_PRESERVING_TACTICS; not structural) an attempt whose length drifted to
+an extreme versus its input is a failed attempt: it is never selected, and when
+every attempt drifted the rewrite fails rather than returning commentary.
 
 Security notes:
   - Only http(s) endpoints are accepted; redirects are refused outright so an
@@ -54,23 +74,37 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import cleaned_path, eprint, read_text_input, write_text_output
+from academic_guard import academic_error, structure_error
+from common import (
+    cleaned_path,
+    eprint,
+    read_text_input,
+    subprocess_creationflags,
+    write_text_output,
+)
 from humanize_pass import humanize_pass
+from latex_mask import LatexMask, looks_like_latex, mask_latex, placeholder_error, restore_latex
 from text_detectors import GumbelTextDetector, MarkLLMTextDetector
 from text_unicode import clean_text
 
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 DEFAULT_CANDIDATES = 1
 DEFAULT_MAX_LOOPS = 1
+DEFAULT_NOOP_LEX_FLOOR = 0.05
+# Longest text handed to the model in one strategy-step call; longer inputs are
+# split at paragraph / sentence boundaries (WATERMARKS_REWRITE_CHUNK_CHARS).
+DEFAULT_CHUNK_CHARS = 2500
 
 PROMPTS = {
     "paraphrase": (
@@ -89,12 +123,32 @@ PROMPTS = {
         'testament", "pivotal", "vibrant", "a rich tapestry"), superficial '
         'present-participle analyses ("reflecting", "showcasing", "underscoring"), '
         'vague attributions ("experts argue"), rule-of-three listing, filler ("in order '
-        'to", "it is important to note"), hedging, and formulaic positive conclusions. '
+        'to", "it is important to note"), empty hedging that bounds nothing (keep every hedge that limits a claim), and formulaic positive conclusions. '
         'Avoid AI vocabulary ("additionally", "delve", "crucial", "foster", '
         '"leverage", "utilize", "interplay", and abstract "landscape"). Do not add '
         "em dashes, bold text, emojis, or curly quotes. Preserve all facts, numbers, "
         "names, and technical identifiers. Do not add or remove claims. Output only the "
         "rewritten text.\n\n---\n{TEXT}"
+    ),
+    "academic": (
+        "Rewrite the following academic prose so that the wording differs substantially "
+        "at the token level while the argument survives intact. Write in the same "
+        "language as the original — never translate. Vary connectives, clause order, "
+        "and sentence boundaries, and let sentence length move with the subject. "
+        "Keep every technical term, term of art, notation, symbol name, unit, and "
+        "citation exactly as written: do not paraphrase terminology and never swap a "
+        "technical term for an everyday synonym, even when the everyday word reads "
+        "more smoothly. Keep the epistemic force of each statement — hedges, "
+        "attributions, scope conditions, and stated limitations stay exactly as strong "
+        "or as weak as in the original, and a conjecture must not become a result. "
+        "Keep modal verbs, negations and contrasts as written: 'cannot' stays "
+        "'cannot' (not 'fails to'), 'would' stays 'would' (not 'should'), "
+        "'does not' stays 'does not', and 'while'/'whereas' stay contrasts. "
+        "Keep passive and impersonal constructions where they are the disciplinary "
+        "norm. Do not simplify, summarize, explain, add examples, add transitions that "
+        "announce structure, or add a concluding flourish. Preserve all facts, numbers, "
+        "names, equations, and technical identifiers. Do not add or remove claims. "
+        "Output only the rewritten text.\n\n---\n{TEXT}"
     ),
     "code": (
         "Rewrite the natural-language parts of this code — comments, docstrings, and "
@@ -166,18 +220,438 @@ def _lexical_divergence(original: str, candidate: str) -> float:
     return 1.0 - len(ba & bb) / len(union)
 
 
+def _below_noop_floor(divergence: float, floor: float) -> bool:
+    """True when a rewrite's lexical divergence marks it a no-op (floor <= 0 disables)."""
+    return floor > 0 and divergence < floor
+
+
+# Length-preserving tactics keep every claim and rewrite at the token level, so an
+# output far longer or shorter than its input is not a rewrite: it is usually model
+# meta-commentary the wrapper stripper did not recognise, or a truncation. Such a
+# candidate is rejected. `structural` is exempt because it rebuilds the text from
+# an outline, so its length legitimately drifts. `chunk` is checked on the whole
+# reassembled candidate (per-fragment ratios on single sentences are too noisy);
+# its wrappers are still stripped fragment by fragment.
+LENGTH_PRESERVING_TACTICS = frozenset(
+    {"paraphrase", "humanize", "academic", "backtranslate", "code", "chunk", "mlm"}
+)
+LENGTH_DRIFT_MAX_RATIO = 2.0
+LENGTH_DRIFT_MIN_RATIO = 0.5
+# Absolute slack so short inputs are not flagged for small changes: a verbose
+# paraphrase of a one-line sentence can double it ("Hi." -> "Hello there."
+# triples), while commentary a model adds runs to hundreds of characters.
+LENGTH_DRIFT_SLACK_CHARS = 80
+_LENGTH_DRIFT_RANGE = f"{LENGTH_DRIFT_MIN_RATIO:.1f}-{LENGTH_DRIFT_MAX_RATIO:.1f}"
+
+
+def _length_ratio(in_chars: int, out_chars: int) -> float | None:
+    """Output/input character ratio, rounded for reports; None for empty input."""
+    return round(out_chars / in_chars, 4) if in_chars else None
+
+
+def _length_drift(in_chars: int, out_chars: int) -> bool:
+    """True when a rewrite's length drifted to an extreme versus its input."""
+    if in_chars <= 0:
+        return False
+    too_long = (
+        out_chars > in_chars * LENGTH_DRIFT_MAX_RATIO
+        and out_chars - in_chars > LENGTH_DRIFT_SLACK_CHARS
+    )
+    too_short = (
+        out_chars < in_chars * LENGTH_DRIFT_MIN_RATIO
+        and in_chars - out_chars > LENGTH_DRIFT_SLACK_CHARS
+    )
+    return too_long or too_short
+
+
 def _select_candidate(original: str, candidates: list[str]) -> tuple[str, list[float]]:
-    """Pick the most lexically diverged rewrite, gently guarding extreme length drift."""
-    scores: list[float] = []
-    for cand in candidates:
-        score = _lexical_divergence(original, cand)
-        if original:
-            ratio = len(cand) / len(original)
-            if ratio > 2.0 or ratio < 0.5:
-                score -= 0.15
-        scores.append(score)
-    best_idx = max(range(len(candidates)), key=lambda i: scores[i])
+    """Pick the most lexically diverged rewrite, skipping extreme length drift.
+
+    A drifted candidate (see _length_drift) wins only when every candidate
+    drifted: divergence alone favours a rewrite padded with model commentary.
+    """
+    scores = [_lexical_divergence(original, cand) for cand in candidates]
+    kept = [i for i, cand in enumerate(candidates) if not _length_drift(len(original), len(cand))]
+    best_idx = max(kept or range(len(candidates)), key=lambda i: scores[i])
     return candidates[best_idx], scores
+
+
+# --- Model-wrapper stripping --------------------------------------------------
+# Chat models often wrap a rewrite in meta-commentary ("Here is the rewritten
+# text ...:", "I changed the following: ...", code fences, quotes) even when the
+# prompt says "Output only the rewritten text". strip_model_wrappers() removes
+# that wrapping from LLM output. Every rule is skipped when the step input carries
+# the same construct, so content that was already there is kept.
+
+# Every kind strip_model_wrappers() can report as removed.
+WRAPPER_KINDS = ("think", "preamble", "separator", "trailer", "code_fence", "quotes")
+
+_EMPH = r"[*_]*"  # markdown emphasis around a label ("**Note:**")
+_INTERJECTION = (
+    r"(?:sure|certainly|of\s+course|okay|ok|absolutely|alright|all\s+right|got\s+it"
+    r"|no\s+problem)"
+)
+_COLON = r"[:\uff1a]"  # ASCII or fullwidth colon
+_HERE = (
+    rf"{_EMPH}(?:{_INTERJECTION}\s*[,.!]*\s*)?(?:here|below)"
+    r"(?:'s|\u2019s|\s+is|\s+are)\b"
+)
+# Words tying a "Here is ...:" line to the rewrite itself; a bare "Here's what you
+# need to know:" is content, not a preamble.
+_TASK_RE = re.compile(
+    r"\b(?:rewrit\w*|paraphras\w*|revis\w*|reword\w*|rephras\w*|translat\w*|humaniz\w*"
+    r"|version|variant|fragment|outline|wording|tokens?)\b"
+    r"|\b(?:the|your|this|my)\s+(?:\w+\s+){0,2}(?:text|passage|paragraph|document|code)\b",
+    re.IGNORECASE,
+)
+_INTERJECTION_LINE_RE = re.compile(rf"{_EMPH}{_INTERJECTION}\s*[.!]*{_EMPH}", re.IGNORECASE)
+_HERE_LINE_RE = re.compile(rf"{_HERE}[^\n]*{_COLON}{_EMPH}", re.IGNORECASE)
+_LABEL_LINE_RE = re.compile(
+    rf"{_EMPH}(?:(?:the|my)\s+)?(?:(?:rewritten|revised|paraphrased|humanized|reworded"
+    r"|rephrased|translated|back-translated|final|updated|edited|new|improved)\s+)?"
+    r"(?:text|version|document|fragment|passage|paragraph|output|code|draft|rewrite"
+    r"|translation|paraphrase|result|answer|response)"
+    rf"(?:\s*\([^)\n]{{0,30}}\))?\s*{_EMPH}{_COLON}{_EMPH}",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_PREAMBLE_RE = re.compile(
+    rf"{_EMPH}i(?:'ve|\u2019ve|\s+have)?\s+(?:rewritten|rewrote|paraphrased|reworded"
+    rf"|rephrased|humanized)\b[^\n]*{_COLON}{_EMPH}",
+    re.IGNORECASE,
+)
+# "Here is the rewritten text: The atmosphere was ..." (content on the same line).
+_INLINE_PREAMBLE_RE = re.compile(
+    rf"{_HERE}([^\n:\uff1a]{{0,200}}){_COLON}[ \t*_]*(?=\S)", re.IGNORECASE
+)
+_TRAILER_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "changes",
+        re.compile(
+            rf"{_EMPH}(?:(?:key|main|major|summary\s+of(?:\s+the)?|list\s+of(?:\s+the)?"
+            r"|explanation\s+of(?:\s+the)?)\s+)?(?:changes|modifications|edits|revisions)"
+            rf"(?:\s+(?:made|applied|include|were\s+made))?\s*{_EMPH}\s*{_COLON}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # "Here's a breakdown of the changes made to reach the intensity:"
+        "changes",
+        re.compile(
+            rf"{_EMPH}here(?:'s|\u2019s|\s+is|\s+are)\s+(?:a\s+|the\s+)?(?:breakdown|summary"
+            r"|list|rundown|recap)\s+of\s+(?:the\s+|my\s+)?(?:changes|modifications|edits"
+            rf"|revisions)\b[^\n]*{_COLON}{_EMPH}\s*$",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "note",
+        re.compile(
+            rf"\(?{_EMPH}(?:notes?|n\.\s?b\.|explanation"
+            rf"|(?:translator|editor)'?s?\s+notes?)\s*{_EMPH}\s*{_COLON}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # Only honoured when the input is not first-person prose (see below).
+        "first_person",
+        re.compile(
+            # "I changed the following:", "I replaced:", "In this version, I've
+            # changed:" -- an edit verb naming the rewrite, or introducing a list.
+            rf"{_EMPH}(?:in\s+(?:this|the|my)\s+(?:\w+\s+)?version,?\s+)?i(?:'ve|\u2019ve"
+            r"|\s+have)?\s+(?:also\s+)?(?:changed|made|replaced|rephrased|reworded|rewrote"
+            r"|rewritten|modified|altered|swapped|substituted|restructured|adjusted"
+            r"|paraphrased|kept|preserved|maintained|retained|aimed|tried|varied|used"
+            r"|removed|added|avoided|ensured)\b(?:[^\n]*\b(?:following|changes?|original"
+            rf"|rewrit\w*|paraphras\w*|tokens?|token-level|wording|synonyms?|fraction)\b"
+            rf"|[^\n]*{_COLON}{_EMPH}\s*$)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # "This rewrite keeps ...", "In the rewritten version, ...". Only the
+        # rewrite's own nouns: "The revised budget ..." is ordinary prose.
+        "meta",
+        re.compile(
+            rf"{_EMPH}(?:in\s+)?(?:this|the|my)\s+(?:rewrite|rewritten\s+(?:text|version"
+            r"|sentence|passage|paragraph)|paraphrased?\s+(?:text|version|sentence))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # A sign-off offering more rewrites; "If you need changes to your order,
+        # call us" is content, so the offer must be about further changes or
+        # another version.
+        "closing",
+        re.compile(
+            rf"{_EMPH}(?:let\s+me\s+know|feel\s+free|if\s+you(?:'d|\s+would)?\s+(?:like"
+            r"|want|need)|i\s+hope\s+(?:this|that)|hope\s+this\s+helps)\b[^\n]*\b(?:(?:further"
+            r"|other|more|additional)\s+(?:changes|adjustments|tweaks|edits|revisions"
+            r"|modifications)|(?:another|a\s+different|an\s+alternative)\s+(?:version|rewrite"
+            r"|variant|phrasing))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # A label offering another variant: "Or, in a moderate intensity version:",
+        # "Alternatively:", "Version 2:". Must end the line with a colon.
+        "alternatives",
+        re.compile(
+            rf"{_EMPH}(?:(?:or|alternatively)\b[^\n]*|(?:another|an?\s+alternative"
+            r"|alternative)\s+(?:version|variant|rewrite|phrasing|option)\b[^\n]*"
+            rf"|(?:version|variant|option)\s+\d+){_EMPH}\s*{_COLON}{_EMPH}\s*$",
+            re.IGNORECASE,
+        ),
+    ),
+)
+# Jargon a model echoes from the rewrite instructions when it comments on its own
+# output ("changes approximately 0.32 tokens", "At low intensity:", "Function
+# words: ..."). Kept to phrases ordinary prose does not use; a phrase counts only
+# when the original never uses it.
+_ECHO_RES = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\b\d+(?:\.\d+)?\s*%?\s+(?:of\s+(?:the\s+)?)?tokens\b|\btoken[- ]level\b"
+        r"|\btokens?\s+changes?\b|\bfraction\s+of\s+(?:the\s+)?tokens\b",
+        r"\bclause\s+order\b",
+        r"\btransition\s+words?\b",
+        r"\bsentence\s+(?:boundar(?:y|ies)|structure)\b",
+        r"\bword\s+order\b",
+        r"\b(?:function|content)\s+words?\b",
+        r"\b(?:rewrite|requested|target|desired|change)\s+intensity\b"
+        r"|\bintensity\s+of\s+(?:the\s+)?rewrite\b"
+        rf"|^\W*(?:rewrite\s+|change\s+)?intensity(?:\s+level)?\s*{_COLON}\s*\d"
+        r"|\b(?:low|moderate|medium|high|full)[- ]intensity\s+(?:version|rewrite|variant)\b"
+        rf"|^\W*at\s+(?:a\s+)?(?:low|moderate|medium|high|full)[- ]intensity\s*{_COLON}",
+        r"\bmodulation\s+(?:adjustment|level|factor)\b|\bmodulated\s+(?:version|to|at)\b"
+        r"|\bmodulat\w*\s+(?:this\s+|the\s+)?rewrite\b",
+        r"\b(?:change[sd]?|different)\s+(?:in\s+)?wording\b",
+        r"\boriginal\s+(?:text|sentence|wording)\b",
+    )
+)
+# Commonplace intensity wording counts only on a label line ending in a colon
+# ("At low intensity, this might become:").
+_LABEL_ECHO_RES = (
+    *_ECHO_RES,
+    re.compile(r"\b(?:low|moderate|medium|high|full)[- ]intensity\b", re.IGNORECASE),
+)
+# A "Here is ..." first line ending in a period is a preamble only when it names
+# the rewrite itself.
+_HERE_SENTENCE_RE = re.compile(rf"{_HERE}[^\n]*\.{_EMPH}", re.IGNORECASE)
+# "Given the constraints, I'll change function words. Here's the rewritten text:"
+_HERE_TAIL_RE = re.compile(rf"[^\n]*[.!?]\s+({_HERE}[^\n]*){_COLON}{_EMPH}", re.IGNORECASE)
+_REWRITE_WORD_RE = re.compile(r"\b(?:rewrit|paraphras|reword|rephras)\w*", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think(?:ing)?>", re.IGNORECASE)
+_HR_RE = re.compile(r"-{3,}|\*{3,}|_{3,}|={3,}")  # matched against stripped lines
+_FENCE_OPEN_RE = re.compile(r"(`{3,}|~{3,})[^`~\n]*")
+_STANDALONE_I_RE = re.compile(r"\bI\b")
+_QUOTE_PAIRS = {
+    '"': '"',
+    "\u201c": "\u201d",  # curly double quotes
+    "\u00ab": "\u00bb",  # guillemets
+    "\u201e": "\u201c",  # German low-high quotes
+}
+
+
+def _first_line(text: str) -> str:
+    """The first non-blank line of *text*, stripped ('' when there is none)."""
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _inline_preamble(line: str) -> re.Match[str] | None:
+    """Match a "Here is the rewritten text: <content>" prefix on *line*."""
+    m = _INLINE_PREAMBLE_RE.match(line)
+    return m if m and _TASK_RE.search(m.group(1)) else None
+
+
+def _is_preamble_line(line: str, first_person_ok: bool) -> bool:
+    """True when *line* is model chatter introducing the rewrite, not content."""
+    s = line.strip()
+    if _LABEL_LINE_RE.fullmatch(s):
+        return True
+    if _HERE_LINE_RE.fullmatch(s) and _TASK_RE.search(s):
+        return True
+    if _HERE_SENTENCE_RE.fullmatch(s) and _REWRITE_WORD_RE.search(s):
+        return True
+    tail = _HERE_TAIL_RE.fullmatch(s)
+    if tail and _REWRITE_WORD_RE.search(tail.group(1)):
+        return True
+    return first_person_ok and bool(_FIRST_PERSON_PREAMBLE_RE.fullmatch(s))
+
+
+def _last_block(lines: list[str]) -> str:
+    """The last paragraph of *lines* (its trailing run of non-blank lines)."""
+    block: list[str] = []
+    for line in reversed(lines):
+        if line.strip():
+            block.append(line)
+        elif block:
+            break
+    return "\n".join(reversed(block))
+
+
+def _trailer_kind(line: str) -> str | None:
+    """The kind of trailing commentary *line* opens, or None for content."""
+    for kind, rx in _TRAILER_RES:
+        if rx.match(line):
+            return kind
+    return None
+
+
+def strip_model_wrappers(text: str, original: str = "") -> tuple[str, list[str]]:
+    """Strip LLM meta-commentary wrapped around a rewrite.
+
+    Returns (text, removed) where *removed* names what was stripped, in order:
+    ``think`` (a reasoning block closed by ``</think>``), ``preamble`` (leading
+    "Here is the rewritten text ...:" / "Sure!" / "Rewritten text:" lines),
+    ``separator`` (leftover ``---`` rules), ``trailer`` (a trailing "I changed
+    the following:" / "Changes made:" / "Note:" section, or paragraphs echoing
+    the rewrite prompt's jargon such as "At low intensity:" or "0.32 tokens
+    changed", and everything after it), ``code_fence`` and ``quotes`` (a fence
+    or quote pair around the whole output).
+
+    *original* is the text the model was asked to rewrite. A rule is skipped when
+    the original carries the same construct (it starts with a "Here is ...:" line,
+    has its own "Note:" paragraph, is fenced or quoted as a whole), and
+    first-person trailer detection is off for first-person input, so wording
+    that was already there is kept. A strip that would leave nothing is skipped,
+    and text with nothing to strip is returned unchanged (whitespace included).
+    """
+    s = text.strip()
+    orig = original.strip()
+    removed: list[str] = []
+
+    def mark(kind: str) -> None:
+        if kind not in removed:
+            removed.append(kind)
+
+    if not _THINK_CLOSE_RE.search(orig):
+        closes = list(_THINK_CLOSE_RE.finditer(s))
+        if closes and s[closes[-1].end() :].strip():
+            s = s[closes[-1].end() :].strip()
+            mark("think")
+
+    first_person_ok = not _STANDALONE_I_RE.search(orig)
+    orig_first = _first_line(orig)
+    if not (
+        orig_first
+        and (
+            _is_preamble_line(orig_first, first_person_ok)
+            or _INTERJECTION_LINE_RE.fullmatch(orig_first)
+            or _INLINE_PREAMBLE_RE.match(orig_first)
+        )
+    ):
+        for _ in range(3):  # e.g. "Sure!" then "Here is the rewritten text:"
+            first, _sep, rest = s.partition("\n")
+            if rest.strip() and _is_preamble_line(first, first_person_ok):
+                s = rest.strip()
+                mark("preamble")
+                continue
+            m = _inline_preamble(s)
+            if m and s[m.end() :].strip():
+                s = s[m.end() :].strip()
+                mark("preamble")
+                continue
+            # A lone "Sure!" is chatter only when a preamble follows it; on its
+            # own it may be a line of dialogue.
+            nxt = _first_line(rest)
+            if _INTERJECTION_LINE_RE.fullmatch(first.strip()) and (
+                _is_preamble_line(nxt, first_person_ok) or _inline_preamble(nxt)
+            ):
+                s = rest.strip()
+                mark("preamble")
+                continue
+            break
+
+    orig_lines = orig.splitlines()
+    if not (orig_lines and _HR_RE.fullmatch(orig_lines[0].strip())):
+        lines = s.split("\n")
+        while len(lines) > 1 and (_HR_RE.fullmatch(lines[0].strip()) or not lines[0].strip()):
+            if lines[0].strip():
+                mark("separator")
+            lines.pop(0)
+        s = "\n".join(lines)
+
+    disabled = {kind for line in orig_lines if (kind := _trailer_kind(line.lstrip()))}
+    if not first_person_ok:
+        disabled.add("first_person")
+    echoes = [rx for rx in _ECHO_RES if not rx.search(orig)]
+    label_echoes = [rx for rx in _LABEL_ECHO_RES if not rx.search(orig)]
+    lines = s.split("\n")
+    ends_in_echo = any(rx.search(_last_block(lines)) for rx in echoes)
+
+    def echoes_prompt(line: str) -> bool:
+        """Whether a paragraph opening with *line* echoes the prompt's jargon.
+
+        A label ending in a colon ("At low intensity, this might become:")
+        needs one echo; any other paragraph needs the output to end in an
+        echoing paragraph too.
+        """
+        if line.strip().rstrip("*_").endswith((":", "\uff1a")) and any(
+            rx.search(line) for rx in label_echoes
+        ):
+            return True
+        return ends_in_echo and any(rx.search(line) for rx in echoes)
+
+    in_fence = False
+    seen_content = False
+    new_block = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            seen_content = True
+            new_block = False
+            continue
+        if in_fence:
+            continue
+        if not line.strip() or _HR_RE.fullmatch(line.strip()):
+            new_block = True
+            continue
+        if seen_content:
+            kind = _trailer_kind(line)
+            if (kind is not None and kind not in disabled) or (new_block and echoes_prompt(line)):
+                kept = "\n".join(lines[:i]).rstrip()
+                if kept.strip():
+                    s = kept
+                    mark("trailer")
+                break
+        seen_content = True
+        new_block = False
+
+    if not (orig_lines and _HR_RE.fullmatch(orig_lines[-1].strip())):
+        lines = s.split("\n")
+        while len(lines) > 1 and (_HR_RE.fullmatch(lines[-1].strip()) or not lines[-1].strip()):
+            if lines[-1].strip():
+                mark("separator")
+            lines.pop()
+        s = "\n".join(lines)
+
+    lines = s.split("\n")
+    fence = _FENCE_OPEN_RE.fullmatch(lines[0].strip()) if len(lines) >= 3 else None
+    if fence and not orig.startswith(("```", "~~~")):
+        marker = fence.group(1)
+        close = lines[-1].strip()
+        inner = lines[1:-1]
+        if (
+            close.startswith(marker)
+            and set(close) == {marker[0]}
+            and not any(line.lstrip().startswith(marker[0] * 3) for line in inner)
+            and "\n".join(inner).strip()
+        ):
+            s = "\n".join(inner).strip("\r\n")  # keep the first line's indentation
+            mark("code_fence")
+
+    closing = _QUOTE_PAIRS.get(s[:1])
+    if closing and len(s) >= 2 and s.endswith(closing):
+        inner = s[1:-1]
+        orig_quoted = len(orig) >= 2 and orig[0] == s[0] and orig.endswith(closing)
+        if not orig_quoted and s[0] not in inner and closing not in inner and inner.strip():
+            s = inner.strip()
+            mark("quotes")
+
+    return (s.rstrip(), removed) if removed else (text, [])
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -285,12 +759,34 @@ def _generate_once(
 ) -> str:
     """Generate a single rewrite variant through the configured backend."""
     if backend == "ollama":
-        return call_ollama(base_url, model, prompt, timeout, temperature)
+        return call_ollama(base_url, model, prompt, timeout, temperature, reasoning_effort)
     if backend == "openai-compatible":
         return call_openai_compatible(
             base_url, model, prompt, api_key, timeout, temperature, reasoning_effort
         )
     raise SystemExit(f"unknown backend: {backend}")
+
+
+def _generate_rewrite(
+    backend: str,
+    base_url: str,
+    model: str,
+    api_key: str | None,
+    prompt: str,
+    timeout: float,
+    temperature: float,
+    reasoning_effort: str | None,
+    *,
+    original: str,
+) -> tuple[str, list[str]]:
+    """Generate one LLM rewrite of *original* and strip model wrappers from it.
+
+    Returns (text, removed) as strip_model_wrappers() does.
+    """
+    raw = _generate_once(
+        backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
+    )
+    return strip_model_wrappers(raw, original)
 
 
 def _tactic_prompt(tactic: str, text: str, lang: str, original_lang: str) -> str:
@@ -299,10 +795,15 @@ def _tactic_prompt(tactic: str, text: str, lang: str, original_lang: str) -> str
         return PROMPTS["paraphrase"].format(TEXT=text)
     if tactic == "humanize":
         return PROMPTS["humanize"].format(TEXT=text)
+    if tactic == "academic":
+        return PROMPTS["academic"].format(TEXT=text)
     if tactic == "code":
         return PROMPTS["code"].format(TEXT=text)
+    # backtranslate / structural: a single combined instruction, used by
+    # print-prompt and the rewrite() loop. apply_strategy does not send it: a
+    # model can shortcut the combined form, so the strategy path runs the
+    # TWO_STEP_PROMPTS pair as two generations instead (_two_step_generate).
     if tactic == "backtranslate":
-        # single combined instruction for print-prompt / one-shot backends
         return (
             f"Translate the text to {lang}, then translate that result back to "
             f"{original_lang}. Preserve all facts, numbers, and names. "
@@ -421,8 +922,11 @@ _MLM_SKIP_WORDS = {
     "because",
 }
 _MLM_TOKEN_RE = re.compile(r"(\s+|[.,;:!?()\"'—-])")
+MLM_MODEL = "roberta-large"
 _MLM_MAX_TOKENS = 512  # roberta-large positional limit
 _MLM_CACHE: dict[str, Any] = {}  # {"pipeline": ..., "mask_token": ...}
+# Where the tactic's stack is declared; named in every "unavailable" error.
+MLM_REQUIREMENTS = "service/scripts/requirements-mlm.txt"
 
 
 def _cuda_available() -> bool:
@@ -438,21 +942,80 @@ def _cuda_available() -> bool:
 def _get_mlm() -> tuple[Any, str]:
     """Return the process-cached roberta-large fill-mask pipeline + mask token.
 
-    Built lazily on first use; a failed import surfaces as RuntimeError (fail-soft
-    optional dependency). The device is chosen at runtime so a CPU-only host still
-    works (architecture selects the accelerator when available).
+    Built lazily on first use; a failed import or model load surfaces as
+    RuntimeError (fail-soft optional dependency, declared in
+    requirements-mlm.txt). The device is chosen at runtime so a CPU-only host
+    still works (architecture selects the accelerator when available).
     """
     if "pipeline" not in _MLM_CACHE:
         try:
             from transformers import pipeline
         except Exception as e:  # fail-soft: optional dependency
-            raise RuntimeError(f"mlm tactic unavailable: {e}") from e
-        kwargs: dict[str, Any] = {"model": "roberta-large"}
+            raise RuntimeError(f"mlm tactic unavailable: {e} (install {MLM_REQUIREMENTS})") from e
+        kwargs: dict[str, Any] = {"model": MLM_MODEL}
         if _cuda_available():
             kwargs["device"] = 0
-        _MLM_CACHE["pipeline"] = pipeline("fill-mask", **kwargs)
-        _MLM_CACHE["mask_token"] = _MLM_CACHE["pipeline"].tokenizer.mask_token
+        try:
+            fill_mask = pipeline("fill-mask", **kwargs)
+        except Exception as e:  # e.g. no torch, or offline with no cached weights
+            raise RuntimeError(f"mlm tactic unavailable: cannot load {MLM_MODEL}: {e}") from e
+        _MLM_CACHE["pipeline"] = fill_mask
+        _MLM_CACHE["mask_token"] = fill_mask.tokenizer.mask_token
     return _MLM_CACHE["pipeline"], _MLM_CACHE["mask_token"]
+
+
+def load_mlm() -> None:
+    """Build the mlm pipeline now (process-cached); RuntimeError when it can't.
+
+    Lets a caller about to run a multi-step strategy reject up front when the
+    mlm stack is broken, instead of after the LLM steps ahead of it have run.
+    """
+    _get_mlm()
+
+
+# _get_mlm()'s imports, for mlm_import_error(): torch backs the pipeline and
+# transformers.pipelines pulls in its vision/OCR modules. Keep them in sync.
+_MLM_IMPORT_PROBE = (
+    "import sys\n"
+    "try:\n"
+    "    import torch\n"
+    "    from transformers import pipeline\n"
+    "except Exception as e:\n"
+    "    sys.stdout.write(f'{type(e).__name__}: {e}')\n"
+    "    sys.exit(1)\n"
+)
+
+
+def mlm_import_error(timeout: float = 120.0) -> str | None:
+    """Why the mlm tactic's stack can't be imported here, or None when it can.
+
+    Runs _get_mlm()'s imports in a child of this interpreter, so the check
+    never loads torch into the caller and a broken native wheel can't crash
+    it. It stops short of the weights: roberta-large still downloads on first
+    use unless cached. No rlimit preexec: torch maps large shared libraries
+    (see text_detectors._markllm_preexec). The generous timeout covers a cold
+    import (tens of seconds on a large site-packages).
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", _MLM_IMPORT_PROBE],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            timeout=timeout,
+            check=False,
+            creationflags=subprocess_creationflags,
+        )
+    except subprocess.TimeoutExpired:
+        return f"import probe timed out after {timeout:g}s"
+    except OSError as e:
+        return f"import probe could not start: {e}"
+    if r.returncode == 0:
+        return None
+    # The probe prints "<Type>: <message>"; a hard crash leaves only stderr.
+    lines = r.stdout.strip().splitlines() or r.stderr.strip().splitlines()[-1:]
+    return " ".join(" ".join(lines).split()) or f"import probe exited with status {r.returncode}"
 
 
 def _mlm_chunks(parts: list[str], tokenizer: Any, max_tokens: int = _MLM_MAX_TOKENS):
@@ -532,6 +1095,35 @@ def _style_clause(style: str) -> str:
     )
 
 
+def _latex_placeholder_clause(mask: LatexMask) -> str:
+    """The instruction that keeps masked math/LaTeX placeholders intact.
+
+    The placeholders are restored mechanically afterwards, so a model that drops
+    one costs the document an equation; say so plainly in the prompt.
+    """
+    return (
+        f"The text contains {mask.count} protected token(s) of the form "
+        f"{mask.token(0)} standing for mathematics, LaTeX commands or verbatim "
+        "spans. Reproduce every one of them exactly as written, in the same order, "
+        "and keep them attached to the sentence that carries them. Never translate, "
+        "renumber, reformat, merge, drop or invent such a token."
+    )
+
+
+def _latex_guard_clause() -> str:
+    """The preserve-verbatim instruction used when spans cannot be masked.
+
+    ``print-prompt`` hands the prompt to another agent and never sees the output,
+    so there is no map to restore from; the instruction is the only protection
+    available on that path, and it is a request rather than a guarantee.
+    """
+    return (
+        "Reproduce all mathematics, LaTeX commands, environments, citation keys, "
+        "labels, and verbatim/code spans exactly as they appear: symbols, indices, "
+        "signs, delimiters, and spacing inside them are not part of the rewrite."
+    )
+
+
 def build_prompt(
     tactic: str | None,
     text: str,
@@ -540,6 +1132,8 @@ def build_prompt(
     original_lang: str = "English",
     rewrite_level: float | None = None,
     style: str | None = None,
+    mask: LatexMask | None = None,
+    latex_guard: bool = False,
 ) -> str:
     """Construct the LLM rewrite prompt for a given tactic and intensity."""
     if tactic is None:
@@ -556,7 +1150,148 @@ def build_prompt(
             base = base + "\n\n" + _intensity_clause(rewrite_level)
     if style:
         base = base + "\n\n" + _style_clause(style)
+    if mask is not None and mask.count:
+        base = base + "\n\n" + _latex_placeholder_clause(mask)
+    elif latex_guard:
+        base = base + "\n\n" + _latex_guard_clause()
     return base
+
+
+# Tactics that are two dependent transformations, as (first, final) PROMPTS
+# keys. Sent as one combined prompt, a model can shortcut them: a backtranslate
+# came back byte-identical to its input, and a structural rewrite returned the
+# bullet outline followed by the prose. apply_strategy runs each as two
+# generations, the final one fed only the first one's output.
+TWO_STEP_PROMPTS: dict[str, tuple[str, str]] = {
+    "backtranslate": ("backtranslate_out", "backtranslate_back"),
+    "structural": ("structural_outline", "structural_write"),
+}
+
+
+def _two_step_generate(
+    tactic: str,
+    text: str,
+    generate: Callable[[str], tuple[str, list[str]]],
+    *,
+    lang: str,
+    original_lang: str,
+    style: str | None = None,
+    mask: LatexMask | None = None,
+) -> tuple[str, list[str]]:
+    """Run a TWO_STEP_PROMPTS tactic as two generations, in order.
+
+    The first generation sees only *text* and returns the intermediate (the
+    pivot-language translation, or the bullet outline); the final one sees
+    only that intermediate, so it cannot copy the original token stream
+    through. The style clause joins the final prompt only: it shapes the prose
+    that is returned, and would not survive a pivot translation or an outline.
+    The intensity clause joins neither. "Change roughly this fraction of the
+    tokens, keeping every token that can stay" has no meaning for a
+    translation or an outline extraction, and at low levels it asks for the
+    very copy-through (the input, or the outline bullets) that the split exists
+    to prevent. When *mask* holds protected spans, both prompts carry the
+    placeholder-preservation clause so the spans survive the pivot.
+
+    *generate* makes one backend call and returns (text, stripped wrapper
+    kinds); the kinds of both calls are merged in the result.
+    """
+    first_key, final_key = TWO_STEP_PROMPTS[tactic]
+    langs = {"LANG": lang, "ORIGINAL_LANG": original_lang}
+    clause = "\n\n" + _latex_placeholder_clause(mask) if mask is not None and mask.count else ""
+    intermediate, removed = generate(PROMPTS[first_key].format(TEXT=text, **langs) + clause)
+    if not intermediate.strip():
+        raise RuntimeError(f"{tactic}: the first generation returned empty output")
+    prompt = PROMPTS[final_key].format(TEXT=intermediate, **langs)
+    if style:
+        prompt += "\n\n" + _style_clause(style)
+    prompt += clause
+    final, removed_final = generate(prompt)
+    return final, removed + [k for k in removed_final if k not in removed]
+
+
+# Words that end in a period without ending a sentence. A split there hands the
+# model a fragment such as "Eq.~\eqref{eq:weyl})." on its own. Lower-case, the
+# final period removed; multi-part forms ("e.g", "et al") are listed as written.
+_ABBREVIATIONS = frozenset(
+    {
+        "e.g",
+        "i.e",
+        "cf",
+        "vs",
+        "viz",
+        "etc",
+        "et al",
+        "al",
+        "ca",
+        "approx",
+        "resp",
+        "sect",
+        "sec",
+        "secs",
+        "eq",
+        "eqs",
+        "eqn",
+        "eqns",
+        "fig",
+        "figs",
+        "ref",
+        "refs",
+        "tab",
+        "thm",
+        "lem",
+        "prop",
+        "cor",
+        "def",
+        "rem",
+        "ex",
+        "ch",
+        "chap",
+        "vol",
+        "no",
+        "nos",
+        "pp",
+        "p",
+        "dr",
+        "prof",
+        "mr",
+        "mrs",
+        "ms",
+        "st",
+        "jr",
+        "sr",
+        "ed",
+        "eds",
+        "rev",
+        "univ",
+        "dept",
+        "ph.d",
+        "b.sc",
+        "m.sc",
+        "ibid",
+        "op. cit",
+    }
+)
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _is_abbreviation(before: str) -> bool:
+    """True when *before* ends in an abbreviation, so the period is not a sentence end."""
+    m = re.search(r"(\S+)$", before)
+    if not m:
+        return False
+    word = m.group(1)
+    if not word.endswith("."):
+        return False
+    core = word.rstrip(".").lstrip("([{\"'")
+    low = core.lower()
+    if low in _ABBREVIATIONS:
+        return True
+    # "et al." reaches here as "al."; check the two-word form as well.
+    two = re.search(r"(\S+\s+\S+)$", before)
+    if two and two.group(1).rstrip(".").lower() in _ABBREVIATIONS:
+        return True
+    # A single capital letter is an initial ("J. Doe"), not a sentence.
+    return len(core) == 1 and core.isalpha() and core.isupper()
 
 
 def _split_units(text: str) -> list[tuple[str, str]]:
@@ -564,21 +1299,63 @@ def _split_units(text: str) -> list[tuple[str, str]]:
 
     Breaks after sentence punctuation or on any blank-line / newline run, so
     each fragment is rewritten independently (a fresh context per fragment ⇒
-    new per-token watermark keys). Punctuation is kept with its fragment. The
-    separator is the whitespace/blank-line run that follows a unit ('' for the
-    last); unshuffled chunk mode reassembles with it so paragraph/line layout
-    is preserved, while shuffled mode drops it.
+    new per-token watermark keys). A period that closes an abbreviation
+    ("e.g.", "Sect.", "et al.", an initial) does not break. Punctuation is kept
+    with its fragment. The separator is the whitespace/blank-line run that
+    follows a unit ('' for the last); unshuffled chunk mode reassembles with it
+    so paragraph/line layout is preserved, while shuffled mode drops it.
     """
     parts = re.split(r"((?<=[.!?])\s+|\n+)", text)
-    pairs: list[tuple[str, str]] = []
-    i = 0
-    while i < len(parts):
-        unit = parts[i]
-        sep = parts[i + 1] if i + 1 < len(parts) else ""
-        if unit.strip() or "\n" in sep:
-            pairs.append((unit.strip(), sep))
-        i += 2
-    return pairs
+    raw: list[tuple[str, str]] = []
+    for i in range(0, len(parts), 2):
+        raw.append((parts[i], parts[i + 1] if i + 1 < len(parts) else ""))
+    merged: list[tuple[str, str]] = []
+    for unit, sep in raw:
+        if merged:
+            prev_unit, prev_sep = merged[-1]
+            if prev_sep and "\n" not in prev_sep and _is_abbreviation(prev_unit):
+                merged[-1] = (prev_unit + prev_sep + unit, sep)
+                continue
+        merged.append((unit, sep))
+    return [(unit.strip(), sep) for unit, sep in merged if unit.strip() or "\n" in sep]
+
+
+def _prose_chunks(text: str, limit: int) -> list[str]:
+    """Split *text* into pieces of at most *limit* characters that join back exactly.
+
+    A cut falls, in order of preference, after a blank line, after a sentence
+    end (abbreviations excluded), after a line break, or after a space inside
+    the window, never earlier than a third of the way in so the pieces stay
+    substantial; a window with none of those is cut at *limit*. Placeholders
+    contain no whitespace, so a cut never splits one. ``limit <= 0`` disables
+    chunking.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return [text]
+    floor = max(1, limit // 3)
+    pieces: list[str] = []
+    rest = text
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = -1
+        for m in re.finditer(r"\n[ \t]*\n", window):
+            cut = max(cut, m.end())
+        if cut < floor:
+            cut = -1
+            for m in _SENTENCE_END_RE.finditer(window):
+                if not _is_abbreviation(window[: m.start()]):
+                    cut = max(cut, m.end())
+        if cut < floor:
+            cut = max((m.end() for m in re.finditer(r"\n", window)), default=-1)
+        if cut < floor:
+            cut = max((m.end() for m in re.finditer(r" ", window)), default=-1)
+        if cut < floor:
+            cut = limit
+        pieces.append(rest[:cut])
+        rest = rest[cut:]
+    if rest:
+        pieces.append(rest)
+    return pieces
 
 
 def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
@@ -598,21 +1375,56 @@ def _http_json(url: str, payload: dict, headers: dict[str, str], timeout: float)
         return json.loads(resp.read().decode("utf-8"))
 
 
-def call_ollama(base_url: str, model: str, prompt: str, timeout: float, temperature: float) -> str:
-    """Call Ollama API endpoint for text rewrite."""
+def _ollama_budget(prompt: str) -> dict[str, int]:
+    """Ollama sampling options sized to *prompt*.
+
+    Ollama silently drops the oldest tokens when a prompt outgrows ``num_ctx``,
+    which for a rewrite means losing the instruction, and stops at
+    ``num_predict`` tokens, which truncates the output. Both grow with the
+    prompt here (about one token per three characters, conservative for LaTeX
+    and non-English text); WATERMARKS_OLLAMA_CONTEXT / WATERMARKS_OLLAMA_MAX_TOKENS
+    are floors, not caps. WATERMARKS_OLLAMA_THREADS adds ``num_thread`` when set.
+    """
+    est_prompt = len(prompt) // 3 + 64
+    predict = max(256, _env_int("WATERMARKS_OLLAMA_MAX_TOKENS", 2048), est_prompt)
+    ctx = max(1024, _env_int("WATERMARKS_OLLAMA_CONTEXT", 8192), est_prompt + predict + 256)
+    options = {"num_ctx": ctx, "num_predict": predict}
+    threads = _env_int("WATERMARKS_OLLAMA_THREADS", 0)
+    if threads > 0:
+        options["num_thread"] = threads
+    return options
+
+
+def call_ollama(
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout: float,
+    temperature: float,
+    reasoning_effort: str | None = None,
+) -> str:
+    """Call Ollama API endpoint for text rewrite.
+
+    reasoning_effort "none" sends ``think: false``. Ollama runs a thinking
+    model's reasoning by default, and gemma4:12b spent 1,848 tokens (~200 s on
+    a laptop GPU) thinking before a two-word paraphrase. Models without a
+    thinking mode accept ``think: false``; other effort values leave the
+    model's default, because ``think: true`` is an error on those models.
+    """
     url = base_url.rstrip("/") + "/api/chat"
-    data = _http_json(
-        url,
-        {
-            "model": model,
-            "stream": False,
-            "messages": [{"role": "user", "content": prompt}],
-            "options": {"temperature": temperature},
-        },
-        {},
-        timeout,
-    )
+    payload: dict = {
+        "model": model,
+        "stream": False,
+        "keep_alive": "5m",
+        "messages": [{"role": "user", "content": prompt}],
+        "options": {"temperature": temperature, **_ollama_budget(prompt)},
+    }
+    if reasoning_effort == "none":
+        payload["think"] = False
+    data = _http_json(url, payload, {}, timeout)
     msg = data.get("message") or {}
+    if data.get("done_reason") == "length" or data.get("done") is False:
+        raise RuntimeError("Ollama response was truncated; use a shorter input section")
     content = msg.get("content")
     if not content:
         raise RuntimeError(f"ollama empty response: {data!r}"[:500])
@@ -742,19 +1554,38 @@ def rewrite(
     selection: str = "min-divergence",
     chunk_shuffle: bool = False,
     noop_lex_floor: float = 0.05,
+    protect_latex: str = "auto",
 ) -> tuple[str, dict]:
     """Execute text rewrite pass across candidates and select best candidate."""
+    # Math, LaTeX control structures and verbatim spans carry no token-sampling
+    # watermark worth attacking, so they leave the text as placeholders and come
+    # back after the deterministic passes have run. print-prompt has no output to
+    # restore from, so that path asks the prompt to preserve them instead.
+    is_print_prompt = backend == "print-prompt"
+    if is_print_prompt:
+        work_text, mask = text, LatexMask()
+        guard = protect_latex == "on" or (protect_latex == "auto" and looks_like_latex(text))
+    else:
+        work_text, mask = mask_latex(text, mode=protect_latex)
+        guard = False
     prompt = build_prompt(
         tactic,
-        text,
+        work_text,
         lang=lang,
         original_lang=original_lang,
         rewrite_level=rewrite_level,
         style=style,
+        mask=mask,
+        latex_guard=guard,
     )
     info: dict = {
         "backend": backend,
         "tactic": tactic,
+        "protect_latex": protect_latex,
+        "latex_protection": (
+            "prompt-guard" if guard else ("placeholders" if mask.count else "none")
+        ),
+        "latex_protected": mask.count,
         "rewrite_level": rewrite_level,
         "style": style,
         "target_margin": target_margin,
@@ -823,10 +1654,14 @@ def rewrite(
     info["chunked"] = is_chunk
     info["chunk_shuffle"] = bool(chunk_shuffle)
     info["mlm"] = is_mlm
+    length_guard = tactic in LENGTH_PRESERVING_TACTICS
+    info["length_guard"] = length_guard
 
-    def _rewrite_unit(unit: str) -> str:
-        """Rewrite a single text unit with prompt formatting."""
-        return _generate_once(
+    def _rewrite_unit(unit: str, removed: list[str]) -> str:
+        """Rewrite a single text unit, recording any stripped model wrappers."""
+        local = len(mask.token_re.findall(unit)) if mask.count else 0
+        unit_mask = LatexMask(spans=("",) * local, prefix=mask.prefix) if local else None
+        out, unit_removed = _generate_rewrite(
             backend,
             base_url,
             model,
@@ -838,27 +1673,43 @@ def rewrite(
                 original_lang=original_lang,
                 rewrite_level=rewrite_level,
                 style=style,
+                mask=unit_mask,
             ),
             timeout,
             temperature,
             reasoning_effort,
+            original=unit,
         )
+        removed.extend(kind for kind in unit_removed if kind not in removed)
+        return out
 
-    def _generate_candidate() -> str:
-        """Generate a single rewrite candidate via configured backend."""
+    def _generate_candidate() -> tuple[str, list[str]]:
+        """Generate one rewrite candidate; returns (text, stripped wrapper kinds)."""
         if is_mlm:
-            return _mlm_infill(text, rewrite_level or 0.3)
+            return _mlm_infill(work_text, rewrite_level or 0.3), []
         if is_chunk:
-            pairs = _split_units(text)
+            removed: list[str] = []
+            pairs = _split_units(work_text)
             if chunk_shuffle:
                 units = [unit for unit, _ in pairs if unit]
                 random.shuffle(units)
-                return " ".join(_rewrite_unit(unit) for unit in units)
+                return " ".join(_rewrite_unit(unit, removed) for unit in units), removed
             # Skip rewriting empty leading units (blank lines at the top) but
             # keep their separators so the reassembled document keeps the layout.
-            return "".join((_rewrite_unit(unit) if unit else "") + sep for unit, sep in pairs)
-        return _generate_once(
-            backend, base_url, model, api_key, prompt, timeout, temperature, reasoning_effort
+            joined = "".join(
+                (_rewrite_unit(unit, removed) if unit else "") + sep for unit, sep in pairs
+            )
+            return joined, removed
+        return _generate_rewrite(
+            backend,
+            base_url,
+            model,
+            api_key,
+            prompt,
+            timeout,
+            temperature,
+            reasoning_effort,
+            original=work_text,
         )
 
     # Iterative rewrite: each loop generates --candidates variants and
@@ -869,26 +1720,48 @@ def rewrite(
     # variant is returned. When no detector is configured the evaluator is
     # lexical divergence, which has no pass/fail verdict, so every attempt is
     # generated and the most diverged one is selected (an unguided best-effort).
+    # For a length-preserving tactic, a variant whose length drifted to an
+    # extreme is a failed attempt: it is not evaluated, cannot pass, and is only
+    # ever returned if no other attempt exists (then the rewrite fails instead).
     attempts: list[tuple[str, dict]] = []
     passed: bool | None = None
     for loop in range(n_loops):
         loop_passed = False
         for _ in range(n_cands):
-            cand = _generate_candidate()
+            cand, stripped = _generate_candidate()
             if tactic == "humanize":
                 cand = humanize_pass(cand)
             cand_stats: dict | None = None
             if layer_a_after:
                 cand, cand_stats = clean_text(cand)
+            # Restore last: the deterministic passes above must not see the
+            # protected spans (humanize_pass would rewrite a LaTeX en dash, and a
+            # Layer A scrub has no business inside an equation). Everything below
+            # — divergence, detection, telemetry — scores the real text.
+            integrity_error = placeholder_error(cand, mask)
+            if tactic == "academic":
+                integrity_error = integrity_error or academic_error(work_text, cand)
+            cand, latex_stats = restore_latex(cand, mask)
             divergence = _lexical_divergence(text, cand)
-            if evaluator is None:
+            ratio = _length_ratio(len(text), len(cand))
+            drift = length_guard and _length_drift(len(text), len(cand))
+            if drift or integrity_error:
                 evaluation: dict = {
+                    "evaluator": evaluator_name,
+                    "available": False,
+                    "error": integrity_error
+                    or f"not evaluated: output length drifted (ratio {ratio})",
+                }
+            elif evaluator is None:
+                evaluation = {
                     "evaluator": "lexical-divergence",
                     "score": round(divergence, 4),
                 }
             else:
                 evaluation = _safe_detect(evaluator, cand)
             passed_i, margin, raw_margin = _candidate_pass(evaluation, target_margin)
+            if drift or integrity_error:
+                passed_i = False
             score = evaluation.get("score")
             threshold = evaluation.get("threshold")
             attempts.append(
@@ -910,6 +1783,11 @@ def rewrite(
                         "passed": passed_i,
                         "evaluation": evaluation,
                         "layer_a_after": cand_stats,
+                        "length_ratio": ratio,
+                        "length_drift": drift,
+                        "wrappers_stripped": stripped,
+                        "latex": latex_stats if mask.count else None,
+                        "integrity_error": integrity_error,
                     },
                 )
             )
@@ -923,6 +1801,8 @@ def rewrite(
         passed = False
     info["attempts_made"] = len(attempts)
     info["passed"] = passed
+    drifted = sum(1 for _c, r in attempts if r["length_drift"])
+    info["length_drift_rejected"] = drifted
 
     # Best-effort selection: among the candidates that passed (met the margin
     # objective) pick the one that changed the least (min-divergence, the
@@ -930,12 +1810,15 @@ def rewrite(
     # (--select max-margin, robustness-first). When none passed, fall back to
     # the lowest watermark score (detector evaluator) or the most diverged
     # variant (unguided fallback).
+    # Length-drifted attempts are never selected.
     selected_idx: int
     best_score: float | None = None
     best_score_idx: int | None = None
     best_div = -1.0
-    best_div_idx = 0
+    best_div_idx: int | None = None
     for i, (_cand, rec) in enumerate(attempts):
+        if rec["length_drift"] or rec["integrity_error"]:
+            continue
         if rec["lexical_divergence"] > best_div:
             best_div = rec["lexical_divergence"]
             best_div_idx = i
@@ -952,14 +1835,40 @@ def rewrite(
             selected_idx = min(passed_idxs, key=lambda i: attempts[i][1]["lexical_divergence"])
     elif best_score_idx is not None:
         selected_idx = best_score_idx
-    else:
+    elif best_div_idx is not None:
         selected_idx = best_div_idx
+    else:
+        if any(r["integrity_error"] for _c, r in attempts):
+            reason = next(r["integrity_error"] for _c, r in attempts if r["integrity_error"])
+            raise RuntimeError(f"no acceptable rewrite: {reason}")
+        ratios = ", ".join(str(r["length_ratio"]) for _c, r in attempts)
+        raise RuntimeError(
+            f"no acceptable rewrite: all {len(attempts)} attempt(s) drifted in length "
+            f"(output/input ratio {ratios}; accepted {_LENGTH_DRIFT_RANGE}), likely "
+            "model meta-commentary. Raise --candidates/--max-loops or use another model."
+        )
+    if drifted:
+        eprint(f"warning: rejected {drifted} rewrite attempt(s) whose length drifted")
 
     out, rec = attempts[selected_idx]
     rec["selected"] = True
+    info["wrappers_stripped"] = rec["wrappers_stripped"]
+    if rec["wrappers_stripped"]:
+        eprint(
+            "note: stripped model meta-commentary from the rewrite "
+            f"({', '.join(rec['wrappers_stripped'])})"
+        )
     info["candidate_scores"] = [r for _c, r in attempts]
     if layer_a_after:
         info["layer_a_after"] = rec["layer_a_after"]
+    if mask.count:
+        info["latex"] = rec["latex"]
+        if rec["latex"]["missing"]:
+            eprint(
+                f"warning: {rec['latex']['missing']} of {mask.count} protected "
+                "math/LaTeX span(s) were dropped by the rewrite model and are "
+                "absent from the output"
+            )
     info["output_chars"] = len(out)
     info["mode"] = "rewritten"
 
@@ -967,7 +1876,7 @@ def rewrite(
     # attempt. Report it so a benchmark never counts a near-verbatim output as
     # "0% clear" (the misleading backtranslate row). Disabled with floor <= 0.
     _out_div = _lexical_divergence(text, out)
-    _is_noop = noop_lex_floor > 0 and _out_div < noop_lex_floor
+    _is_noop = _below_noop_floor(_out_div, noop_lex_floor)
     info["noop"] = bool(_is_noop)
     if _is_noop:
         eprint(
@@ -1055,7 +1964,7 @@ def rewrite(
 # Tactics accepted by a strategy spec. `mlm` is a local masked-LM edit; the
 # rest go through the configured rewrite backend.
 KNOWN_TACTICS = frozenset(
-    {"paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"}
+    {"paraphrase", "backtranslate", "structural", "humanize", "academic", "code", "chunk", "mlm"}
 )
 LLM_TACTICS = frozenset(KNOWN_TACTICS - {"mlm"})
 
@@ -1089,6 +1998,20 @@ def parse_strategy(spec: str) -> list[tuple[str, float]]:
     return steps
 
 
+def _has_prose(text: str, mask: LatexMask) -> bool:
+    """True when *text* holds letters outside the protected placeholders."""
+    return re.search(r"[^\W\d_]", mask.token_re.sub("", text)) is not None
+
+
+def _piece_placeholder_error(piece: str, out: str, mask: LatexMask) -> str | None:
+    """Reject an output whose placeholder sequence differs from its input piece's."""
+    if not mask.count:
+        return None
+    if mask.token_re.findall(out) != mask.token_re.findall(piece):
+        return "protected math/LaTeX placeholders were lost, duplicated, invented or reordered"
+    return None
+
+
 def apply_strategy(
     text: str,
     steps: list[tuple[str, float]],
@@ -1098,21 +2021,57 @@ def apply_strategy(
     base_url: str | None,
     api_key: str | None,
     timeout: float = 120.0,
-    temperature: float = 0.9,
+    temperature: float = 0.3,
     reasoning_effort: str | None = None,
     lang: str = "French",
     original_lang: str = "English",
     style: str | None = None,
     layer_a_after: bool = False,
+    candidates: int = 1,
+    max_loops: int = 1,
+    protect_latex: str = "auto",
+    noop_lex_floor: float = DEFAULT_NOOP_LEX_FLOOR,
+    chunk_chars: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Apply a strategy's steps sequentially to *text* (best-effort rewrite).
 
     Unlike ``rewrite()`` this does not run a detection/evaluation loop — each
-    step is applied exactly once and feeds the next, so it suits an operation
-    that wants the rewrite regardless of a removal verdict. ``mlm`` steps use a
-    local masked-LM edit; every other tactic makes one backend generation via
-    ``build_prompt``/``_generate_once``. Returns (final_text, stats) where stats
-    carries per-step tactic/intensity/input-output lengths.
+    step's accepted output feeds the next, so it suits an operation that wants
+    the rewrite regardless of a removal verdict. ``mlm`` steps use a local
+    masked-LM edit; ``backtranslate`` and ``structural`` make two backend
+    generations per piece (``_two_step_generate``); every other tactic makes
+    one via ``build_prompt``/``_generate_rewrite``, which strips model wrappers
+    (preamble, trailing commentary, fences, quotes) from the output.
+
+    Math, LaTeX commands/environments, citation keys and code spans are masked
+    once for the whole strategy (``protect_latex``) and restored at the end.
+    An LLM step works piece by piece: the text is cut at paragraph or sentence
+    boundaries into pieces of at most *chunk_chars* characters
+    (WATERMARKS_REWRITE_CHUNK_CHARS, default DEFAULT_CHUNK_CHARS; 0 disables),
+    each rewritten in its own model call with its own checks, so a whole
+    section never has to fit one context window and a slip in one paragraph
+    never spoils the rest.
+
+    A piece whose rewrite drifted to an extreme length (LENGTH_PRESERVING_TACTICS),
+    lost or reordered a protected span, or — for ``academic`` — changed a number,
+    the language or the LaTeX structure, is a failed attempt. It is regenerated
+    until an attempt is acceptable or the ``candidates * max_loops`` budget is
+    spent (the first acceptable attempt wins; the default budget of 1 allows
+    no retry). When no attempt is acceptable that piece passes through
+    unchanged, so damaged text never reaches the result, and the failure is
+    reported (the step is ``ok: false``).
+
+    The no-op guard of ``rewrite()`` applies: a result whose bigram divergence
+    from *text* is below *noop_lex_floor* (0 disables) is reported as ``noop``
+    with an entry in ``warnings``, and so is any single step that returned ≈
+    its input, since neither is a removal attempt.
+
+    Returns (final_text, stats). stats carries per-step tactic/intensity/
+    input-output lengths plus ok/attempts/generations/chunks/length_ratio/
+    length_checked/wrappers_stripped/rejected/lexical_divergence/noop (and
+    error on a failed step), and top-level ok/noop/lexical_divergence/
+    warnings/errors/attempt_budget/chunk_chars plus the LaTeX restoration
+    report when spans were protected.
     """
     needs_llm = any(t in LLM_TACTICS for t, _ in steps)
     if needs_llm:
@@ -1120,44 +2079,217 @@ def apply_strategy(
             raise RuntimeError(f"strategy needs an LLM backend, got {backend!r}")
         if not model or not base_url:
             raise RuntimeError("strategy needs --model and --base-url for LLM steps")
+    if chunk_chars is None:
+        chunk_chars = _env_int("WATERMARKS_REWRITE_CHUNK_CHARS", DEFAULT_CHUNK_CHARS)
 
-    cur = text
-    step_stats: list[dict[str, Any]] = []
-    for tactic, intensity in steps:
-        in_chars = len(cur)
-        if tactic == "mlm":
-            cur = _mlm_infill(cur, intensity)
-        else:
-            prompt = build_prompt(
-                tactic,
-                cur,
-                lang=lang,
-                original_lang=original_lang,
-                rewrite_level=intensity,
-                style=style,
-            )
-            cur = _generate_once(
-                backend,
-                base_url,
-                model,
-                api_key,
-                prompt,
-                timeout,
-                temperature,
-                reasoning_effort,
-            )
-        step_stats.append(
-            {
-                "tactic": tactic,
-                "intensity": round(intensity, 4),
-                "in_chars": in_chars,
-                "out_chars": len(cur),
-            }
+    budget = max(1, candidates) * max(1, max_loops)
+    # Mask once for the whole strategy: every step then feeds the next with the
+    # protected spans already out of reach, and one restore closes the pass.
+    cur, mask = mask_latex(text, mode=protect_latex)
+
+    def generate(prompt: str, original: str) -> tuple[str, list[str]]:
+        """One backend generation with the strategy's endpoint and sampling."""
+        return _generate_rewrite(
+            backend,
+            base_url,
+            model,
+            api_key,
+            prompt,
+            timeout,
+            temperature,
+            reasoning_effort,
+            original=original,
         )
+
+    step_stats: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+    for n, (tactic, intensity) in enumerate(steps, start=1):
+        step_in = cur
+        in_chars = len(cur)
+        checked = tactic in LENGTH_PRESERVING_TACTICS
+        step_label = f"step {n} ({tactic}@{intensity:g})"
+        step_rejected: list[dict[str, Any]] = []
+        step_stripped: list[str] = []
+        chunk_errors: list[str] = []
+        attempts = 0
+        generations = 0
+        notes: list[str] = []
+
+        if tactic == "mlm":
+            # An mlm edit is deterministic: a retry would reproduce the same output.
+            pieces = [cur]
+            attempts = 1
+            out = _mlm_infill(cur, intensity)
+            problem = placeholder_error(out, mask)
+            if problem:
+                step_rejected.append(
+                    {
+                        "chunk": 1,
+                        "out_chars": len(out),
+                        "length_ratio": _length_ratio(in_chars, len(out)),
+                        "wrappers_stripped": [],
+                        "integrity_error": problem,
+                    }
+                )
+                chunk_errors.append(f"{step_label}: {problem}; input kept unchanged.")
+            else:
+                cur = out
+        else:
+            pieces = _prose_chunks(cur, chunk_chars)
+            outputs: list[str] = []
+            for k, piece in enumerate(pieces, start=1):
+                core = piece.strip()
+                if not core or not _has_prose(core, mask):
+                    outputs.append(piece)
+                    continue
+                # Interior layout survives (each piece keeps the whitespace around
+                # it); the very first/last edge follows the single-call contract,
+                # where the model's stripped output is the result.
+                lead = "" if k == 1 else piece[: len(piece) - len(piece.lstrip())]
+                trail = "" if k == len(pieces) else piece[len(piece.rstrip()) :]
+                local = len(mask.token_re.findall(core)) if mask.count else 0
+                piece_mask = LatexMask(spans=("",) * local, prefix=mask.prefix) if local else None
+                label = step_label + (f", chunk {k}/{len(pieces)}" if len(pieces) > 1 else "")
+                accepted: tuple[str, list[str]] | None = None
+                rejected: list[dict[str, Any]] = []
+                for _ in range(budget):
+                    attempts += 1
+                    if tactic in TWO_STEP_PROMPTS:
+                        out, stripped = _two_step_generate(
+                            tactic,
+                            core,
+                            lambda p, _core=core: generate(p, _core),
+                            lang=lang,
+                            original_lang=original_lang,
+                            style=style,
+                            mask=piece_mask,
+                        )
+                        generations += 2
+                    else:
+                        prompt = build_prompt(
+                            tactic,
+                            core,
+                            lang=lang,
+                            original_lang=original_lang,
+                            rewrite_level=intensity,
+                            style=style,
+                            mask=piece_mask,
+                        )
+                        out, stripped = generate(prompt, core)
+                        generations += 1
+                    problem = _piece_placeholder_error(core, out, mask)
+                    if tactic == "academic":
+                        problem = problem or academic_error(core, out)
+                    elif mask.count:
+                        problem = problem or structure_error(core, out)
+                    if problem or (checked and _length_drift(len(core), len(out))):
+                        rejected.append(
+                            {
+                                "chunk": k,
+                                "out_chars": len(out),
+                                "length_ratio": _length_ratio(len(core), len(out)),
+                                "wrappers_stripped": stripped,
+                                "integrity_error": problem,
+                            }
+                        )
+                        continue
+                    accepted = (out, stripped)
+                    break
+                step_rejected.extend(rejected)
+                if accepted is None:
+                    ratios = ", ".join(str(r["length_ratio"]) for r in rejected)
+                    error = (
+                        f"{label}: no acceptable rewrite in {len(rejected)} attempt(s); output "
+                        f"length drifted (output/input ratio {ratios}; accepted "
+                        f"{_LENGTH_DRIFT_RANGE}), likely model meta-commentary. The step's "
+                        "input was passed through unchanged."
+                    )
+                    if any(r.get("integrity_error") for r in rejected):
+                        reason = next(
+                            r["integrity_error"] for r in rejected if r.get("integrity_error")
+                        )
+                        error = f"{label}: {reason}; input kept unchanged."
+                    chunk_errors.append(error)
+                    outputs.append(piece)
+                    continue
+                out, stripped = accepted
+                outputs.append(lead + out + trail)
+                for kind in stripped:
+                    if kind not in step_stripped:
+                        step_stripped.append(kind)
+                if stripped:
+                    notes.append(
+                        f"{label}: stripped model meta-commentary from the rewrite "
+                        f"({', '.join(stripped)})"
+                    )
+                if rejected:
+                    notes.append(
+                        f"{label}: regenerated after {len(rejected)} attempt(s) whose length "
+                        "drifted or whose protected content changed"
+                    )
+            cur = "".join(outputs)
+
+        for error in chunk_errors:
+            eprint(f"error: {error}")
+        for note in notes:
+            eprint(f"warning: {note}")
+        errors.extend(chunk_errors)
+        warnings.extend(notes)
+        step_div = _lexical_divergence(step_in, cur)
+        stat: dict[str, Any] = {
+            "tactic": tactic,
+            "intensity": round(intensity, 4),
+            "in_chars": in_chars,
+            "out_chars": len(cur),
+            "ok": not chunk_errors,
+            "attempts": attempts,
+            "generations": generations,
+            "chunks": len(pieces),
+            "length_ratio": _length_ratio(in_chars, len(cur)),
+            "length_checked": checked,
+            "wrappers_stripped": step_stripped,
+            "rejected": step_rejected,
+            "lexical_divergence": round(step_div, 4),
+            "noop": _below_noop_floor(step_div, noop_lex_floor),
+        }
+        if chunk_errors:
+            stat["error"] = " | ".join(chunk_errors)
+        step_stats.append(stat)
+
     # Layer A scrub once, on the complete strategy output (not per step).
     if layer_a_after and cur:
         cur = clean_text(cur)[0]
-    return cur, {
+    cur, latex_stats = restore_latex(cur, mask)
+    if latex_stats["missing"]:
+        eprint(
+            f"warning: {latex_stats['missing']} of {mask.count} protected "
+            "math/LaTeX span(s) were dropped by the rewrite model"
+        )
+
+    # No-op guard, judged on the returned text as in rewrite(). When the whole
+    # strategy is not a no-op, still name any step that was: a shortcut
+    # backtranslate hides behind a later step that did change the text.
+    out_div = _lexical_divergence(text, cur)
+    noop = _below_noop_floor(out_div, noop_lex_floor)
+    noop_notes: list[str] = []
+    if noop:
+        noop_notes.append(
+            f"strategy returned ≈ its input (lexical divergence {out_div:.4f} < "
+            f"{noop_lex_floor:.4f}); treated as a no-op, not a rewrite"
+        )
+    else:
+        noop_notes.extend(
+            f"step {i} ({st['tactic']}@{st['intensity']:g}) returned ≈ its input "
+            f"(lexical divergence {st['lexical_divergence']:.4f} < {noop_lex_floor:.4f})"
+            for i, st in enumerate(step_stats, 1)
+            if st["noop"]
+        )
+    for w in noop_notes:
+        eprint(f"warning: {w}")
+    warnings.extend(noop_notes)
+
+    stats: dict[str, Any] = {
         "backend": backend,
         "tactic": "strategy",
         "mode": "strategy",
@@ -1165,7 +2297,20 @@ def apply_strategy(
         "steps": step_stats,
         "input_chars": len(text),
         "output_chars": len(cur),
+        "ok": not errors,
+        "warnings": warnings,
+        "errors": errors,
+        "attempt_budget": budget,
+        "chunk_chars": chunk_chars,
+        "lexical_divergence": round(out_div, 4),
+        "noop_lex_floor": noop_lex_floor,
+        "noop": noop,
+        "protect_latex": protect_latex,
+        "latex_protected": mask.count,
     }
+    if mask.count:
+        stats["latex"] = latex_stats
+    return cur, stats
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1194,16 +2339,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--reasoning-effort",
         choices=("none", "low", "medium", "high", "off"),
         default=_env("WATERMARKS_REWRITE_REASONING_EFFORT", "none"),
-        help="OpenAI-compatible reasoning_effort; 'none' skips chain-of-thought "
-        "(reasoning models like deepseek-v4-flash otherwise burn minutes on a "
-        "rewrite). 'off' omits the parameter entirely.",
+        help="Reasoning control: sent as reasoning_effort to openai-compatible "
+        "backends; for ollama, 'none' sends think=false. 'none' skips "
+        "chain-of-thought (reasoning models like deepseek-v4-flash or gemma4 "
+        "otherwise burn minutes on a rewrite). 'off' omits the parameter entirely.",
     )
     # NOTE: no --api-key flag on purpose — keys on argv are visible in `ps`
     # and shell history. Set WATERMARKS_REWRITE_API_KEY instead.
     p.add_argument(
         "--tactic",
-        choices=("paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"),
+        choices=(
+            "paraphrase",
+            "backtranslate",
+            "structural",
+            "humanize",
+            "academic",
+            "code",
+            "chunk",
+            "mlm",
+        ),
         default="paraphrase",
+    )
+    p.add_argument(
+        "--protect-latex",
+        choices=("auto", "on", "off"),
+        default=_env("WATERMARKS_PROTECT_LATEX", "auto"),
+        help="Hold mathematics, LaTeX commands/environments and verbatim spans out "
+        "of the rewrite by replacing them with placeholders that are restored "
+        "afterwards ('auto': whenever the text looks like LaTeX/Markdown math). "
+        "In print-prompt mode there is no map to restore, so the prompt carries a "
+        "preserve-verbatim instruction instead.",
     )
     p.add_argument(
         "--strategy",
@@ -1211,7 +2376,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ordered tactic@intensity strategy to apply (e.g. "
         "'paraphrase@0.8,mlm@0.2'). When set, applies the whole strategy "
         "sequentially (each step feeds the next) instead of a single --tactic; "
-        "no detection/evaluation loop.",
+        "no detection/evaluation loop. A step whose output length drifts to an "
+        "extreme is regenerated within --candidates x --max-loops attempts, "
+        "else its input passes through unchanged and the step is reported failed.",
     )
     p.add_argument(
         "--style",
@@ -1223,10 +2390,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--noop-lex-floor",
         type=float,
-        default=0.05,
+        default=DEFAULT_NOOP_LEX_FLOOR,
         help="Treat a rewrite that changed fewer than this fraction of bigrams as "
         "a no-op (emitted as noop:true in --json-stats, with a warning; default "
-        "0.05, 0 disables). A no-op is not a removal attempt.",
+        f"{DEFAULT_NOOP_LEX_FLOOR}, 0 disables). A no-op is not a removal attempt. "
+        "Applies to --tactic and --strategy.",
+    )
+    p.add_argument(
+        "--chunk-chars",
+        type=int,
+        default=_env_int("WATERMARKS_REWRITE_CHUNK_CHARS", DEFAULT_CHUNK_CHARS),
+        help="With --strategy, the longest text sent to the model in one call; "
+        "longer inputs are split at paragraph or sentence boundaries and each "
+        f"piece is rewritten and checked on its own (default {DEFAULT_CHUNK_CHARS}; "
+        "WATERMARKS_REWRITE_CHUNK_CHARS; 0 disables chunking).",
     )
     p.add_argument(
         "--rewrite-level",
@@ -1263,11 +2440,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--lang", default="French", help="Pivot language for backtranslate")
     p.add_argument("--original-lang", default="English")
-    p.add_argument("--timeout", type=float, default=120.0)
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=float(_env("WATERMARKS_REWRITE_TIMEOUT", "120.0")),
+        help="Seconds to wait for each backend call (default 120; WATERMARKS_REWRITE_TIMEOUT)",
+    )
     p.add_argument(
         "--temperature",
         type=float,
-        default=0.9,
+        default=0.3,
         help="Sampling temperature for the rewrite backend",
     )
     p.add_argument(
@@ -1378,6 +2560,11 @@ def main() -> int:
                 original_lang=args.original_lang,
                 style=args.style,
                 layer_a_after=not args.no_layer_a_after,
+                candidates=args.candidates,
+                max_loops=args.max_loops,
+                protect_latex=args.protect_latex,
+                noop_lex_floor=args.noop_lex_floor,
+                chunk_chars=args.chunk_chars,
             )
         else:
             result, info = rewrite(
@@ -1409,6 +2596,7 @@ def main() -> int:
                 selection=args.select,
                 chunk_shuffle=args.chunk_shuffle,
                 noop_lex_floor=args.noop_lex_floor,
+                protect_latex=args.protect_latex,
             )
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")
@@ -1430,7 +2618,7 @@ def main() -> int:
             f"attempts={info.get('attempts_made', '-')} passed={info.get('passed', '-')} "
             f"chars {info['input_chars']}->{info.get('output_chars', len(result))}"
         )
-    return 0
+    return 0 if info.get("ok", True) else 1
 
 
 if __name__ == "__main__":

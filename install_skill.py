@@ -5,6 +5,7 @@ Targets:
 
   claude-code     ~/.claude/skills/<skill>            (personal, all projects)
   claude-project  <project>/.claude/skills/<skill>    (one repository)
+  codex           ~/.codex/skills/<skill>             (OpenAI Codex, all projects)
   cowork          <skill>.zip to upload in Customize > Skills
   cursor          ~/.cursor/skills/<skill>            (default, historical)
 
@@ -214,8 +215,16 @@ def _stage(source: Path, skills_dir: Path) -> tuple[Path, Path]:
     return staging_root, staged_skill
 
 
+# Hosts load every directory under their skills folder, so a backup left next
+# to the skill would show up as a second skill ("remove-ai-marks.backup.…").
+# Backups go under a dot-directory instead, which hosts skip.
+BACKUP_DIR = ".backups"
+
+
 def _backup_name(destination: Path) -> Path:
-    return destination.with_name(f"{destination.name}.backup.{uuid.uuid4().hex[:12]}")
+    backups = destination.parent / BACKUP_DIR
+    backups.mkdir(parents=True, exist_ok=True)
+    return backups / f"{destination.name}.{uuid.uuid4().hex[:12]}"
 
 
 def install_directory(
@@ -319,6 +328,8 @@ def destination_for(args: argparse.Namespace, skill: str) -> Path:
     if args.target == "claude-project":
         project = Path(args.project_dir or Path.cwd()).expanduser().resolve()
         return project / ".claude" / "skills" / skill
+    if args.target == "codex":
+        return _home(args.codex_home, "CODEX_HOME", home / ".codex") / "skills" / skill
     raise SkillError(f"target {args.target} does not install into a directory")
 
 
@@ -330,6 +341,11 @@ HOST_HINTS = {
     "claude-project": (
         "Claude Code loads project skills from .claude/skills in the working directory "
         "and its parents. Commit the directory to share it (cloud sessions read it too)."
+    ),
+    "codex": (
+        "Codex reads ~/.codex/skills at session start; start a new Codex session (CLI, "
+        "app or IDE extension) and invoke the skill as $remove-ai-marks or by describing "
+        "the task."
     ),
 }
 
@@ -347,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         default=DEFAULT_TARGET,
-        choices=("cursor", "claude-code", "claude-project", "cowork"),
+        choices=("cursor", "claude-code", "claude-project", "codex", "cowork"),
         help=f"Where to install (default: {DEFAULT_TARGET})",
     )
     parser.add_argument("--list", action="store_true", help="List available skills and exit")
@@ -363,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cursor-home", help="Override Cursor home (default: ~/.cursor)")
     parser.add_argument("--claude-home", help="Override Claude Code home (default: ~/.claude)")
+    parser.add_argument("--codex-home", help="Override Codex home (default: ~/.codex)")
     parser.add_argument(
         "--project-dir",
         help="Project root for --target claude-project (default: current directory)",
@@ -424,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         "cursor": "Cursor",
         "claude-code": "Claude Code",
         "claude-project": "Claude Code (project)",
+        "codex": "Codex",
     }[args.target]
     if backup is not None:
         print(f"{label}: backed up existing skill to {backup}")
