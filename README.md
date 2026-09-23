@@ -1014,8 +1014,8 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | DOCX | docProps / customXml | Scrub props, drop customXml |
 | EPUB | OPF metadata, XHTML meta/JSON-LD, embedded media | Scrub OPF, strip XHTML meta, clean media + Layer A (skips encrypted parts) |
 | ODT | meta.xml | Drop generator / AI-ish meta |
-| HTML | meta, JSON-LD, data-ai*, `<!-- -->` comments naming an AI tool | Strip tags/attrs/comments |
-| Markdown | YAML frontmatter AI keys, `<!-- -->` comments naming an AI tool (outside code fences) | Drop keys and comments + Layer A body |
+| HTML | meta, JSON-LD, data-ai*, `<!-- -->` comments naming an AI tool or marked AI-generated / C2PA / content credential | Strip tags/attrs/comments |
+| Markdown | YAML frontmatter AI keys, `<!-- -->` comments naming an AI tool or marked AI-generated / C2PA / content credential (outside code fences) | Drop keys and comments + Layer A body |
 | MP4 / MOV / M4A / M4V | ISOBMFF `jumb`/`uuid` boxes (same mechanism as AVIF/HEIC) + `moov/udta` generator tags | Drop boxes |
 | WAV | RIFF `C2PA` / `LIST INFO` chunks, embedded `id3\x20` chunk | Drop chunks |
 | MP3 | ID3v2 frames (v2.3/v2.4 per-frame; v2.2 whole-tag) | Drop matched frames or whole tag |

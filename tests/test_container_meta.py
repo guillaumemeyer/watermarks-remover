@@ -1158,6 +1158,18 @@ def test_markdown_unclosed_fence_is_left_alone():
     assert cleaned == "\n```\n<!-- by Claude -->\n"
 
 
+def test_markdown_fence_line_with_trailing_text_does_not_close():
+    md = "```\nx\n``` not a close\n<!-- by Claude -->\n```\n<!-- by Claude -->\n"
+    cleaned, _actions = clean_markdown(md)
+    assert cleaned == "```\nx\n``` not a close\n<!-- by Claude -->\n```\n\n"
+
+
+def test_markdown_backtick_info_string_with_backtick_is_not_a_fence():
+    md = "``` a`b\n<!-- by Claude -->\n"
+    cleaned, _actions = clean_markdown(md)
+    assert cleaned == "``` a`b\n\n"
+
+
 def test_markdown_frontmatter_and_comment_both_cleaned():
     md = "---\ngenerator: ChatGPT\ntitle: Post\n---\n<!-- Gemini draft -->\nBody\n"
     cleaned, _actions = clean_markdown(md)

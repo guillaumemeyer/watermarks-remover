@@ -635,7 +635,7 @@ _PROVENANCE_COMMENT_RE = re.compile(
 )
 _MARKUP_COMMENT_OPEN_RE = re.compile(r"<!--")
 _MARKUP_COMMENT_CLOSE_RE = re.compile(r"--!?>")
-_MD_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[^\n]*$", re.M)
+_MD_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$", re.M)
 
 
 def _comment_is_provenance(block: str) -> bool:
@@ -651,11 +651,15 @@ def _md_prose_spans(text: str) -> list[tuple[int, int]]:
     fence: str | None = None
     start = 0
     for m in _MD_FENCE_RE.finditer(text):
-        marker = m.group(1)
+        marker, suffix = m.group(1), m.group(2)
         if fence is None:
+            # A backtick info string may not contain a backtick (CommonMark).
+            if marker[0] == "`" and "`" in suffix:
+                continue
             spans.append((start, m.start()))
             fence = marker
-        elif marker[0] == fence[0] and len(marker) >= len(fence):
+        elif marker[0] == fence[0] and len(marker) >= len(fence) and not suffix.strip(" \t\r"):
+            # A closing fence carries nothing but trailing whitespace.
             fence = None
             start = m.end()
     if fence is None:
