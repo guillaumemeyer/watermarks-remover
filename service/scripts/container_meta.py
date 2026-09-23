@@ -58,6 +58,10 @@ from image_meta import (
     detect_format as detect_image_format,
 )
 
+# Search ASCII syntax without changing offsets into the original Unicode text.
+# str.lower() expands U+0130 into two code points, shifting later matches.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
 
 class ZipBudgetExceeded(Exception):
     """A zip's declared decompressed size exceeds the processing cap.
@@ -382,7 +386,7 @@ def _iter_data_uris(text: str) -> Iterator[tuple[int, int, str, str, str]]:
     """
     n = len(text)
     pos = 0
-    low = text.lower()
+    low = text.translate(_ASCII_LOWER)
     while True:
         i = low.find("data:image/", pos)
         if i < 0:
@@ -1387,7 +1391,7 @@ def _iter_script_blocks(
     last_end = 0
     pos = 0
     n = len(text)
-    low = text.lower()
+    low = text.translate(_ASCII_LOWER)
     while True:
         i = low.find("<script", pos)
         if i < 0:
