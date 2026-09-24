@@ -118,6 +118,22 @@ def test_build_prompt_no_style_when_unset():
     assert "Apply this writing style" not in p
 
 
+def test_build_prompt_text_always_placed_at_end_after_clauses():
+    """Text must appear strictly after all instruction, intensity, and style clauses (#337)."""
+    text = "Unique content text 98765."
+    for tactic in ("paraphrase", "humanize", "code", "backtranslate", "structural", "chunk"):
+        p = build_prompt(
+            tactic,
+            text,
+            rewrite_level=0.75,
+            style="poetic and succinct",
+        )
+        assert p.endswith(f"\n\n---\n{text}")
+        if tactic != "code":
+            assert p.find("0.75") < p.find(f"\n\n---\n{text}")
+        assert p.find("poetic and succinct") < p.find(f"\n\n---\n{text}")
+
+
 def test_rewrite_level_modulates_tactic():
     out, info = rewrite(
         "Sample prose about water marks 42.",
