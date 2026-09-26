@@ -1313,7 +1313,9 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
             # "no video", to avoid dropping a video track via the -vn re-encode).
             fmt = result.get("format", "")
             definitely_audio = is_audio_format(fmt) and fmt != "ogg"
-            is_audio = definitely_audio or ((fmt == "ogg" or is_audio_name(name)) and media_has_video(src) is False)
+            is_audio = definitely_audio or (
+                (fmt == "ogg" or is_audio_name(name)) and media_has_video(src) is False
+            )
             if is_audio and options.get("remove_audio_watermark"):
                 # The container-clean dest above is "out" + the input suffix, so an
                 # .m4a input made both paths "out.m4a". ffmpeg refuses to edit a file
