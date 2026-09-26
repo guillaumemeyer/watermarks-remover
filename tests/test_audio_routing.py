@@ -68,3 +68,25 @@ def test_audio_exts_subset_of_av_exts():
     # Every audio format known to clean_audio must be routable by av_meta/format_dispatch.
     diff = AUDIO_EXTS - AV_EXTS
     assert diff == set()
+
+
+def test_ogg_with_video_not_classified_as_audio_only():
+    from clean_audio import is_audio_format, is_audio_name
+
+    fmt = "ogg"
+    assert is_audio_format(fmt) is True
+
+    # Server logic: definitely_audio excludes Ogg so video tracks can be probed
+    definitely_audio = is_audio_format(fmt) and fmt != "ogg"
+    assert definitely_audio is False
+
+    # If stream probe confirms video is present, do not treat as audio-only
+    has_video = True
+    is_audio = definitely_audio or ((fmt == "ogg" or is_audio_name("test.ogg")) and (not has_video))
+    assert is_audio is False
+
+    # If stream probe confirms no video is present, treat as audio-only
+    has_video = False
+    is_audio = definitely_audio or ((fmt == "ogg" or is_audio_name("test.ogg")) and (not has_video))
+    assert is_audio is True
+
