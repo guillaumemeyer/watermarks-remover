@@ -89,4 +89,3 @@ def test_ogg_with_video_not_classified_as_audio_only():
     has_video = False
     is_audio = definitely_audio or ((fmt == "ogg" or is_audio_name("test.ogg")) and (not has_video))
     assert is_audio is True
-
