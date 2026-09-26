@@ -31,6 +31,7 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from container_meta import (
+    _meta_attrs,
     _meta_tag_is_ai,
     clean_html,
     clean_markdown,
@@ -317,3 +318,108 @@ def test_html_inspect_and_clean_agree() -> None:
             dropped = value not in cleaned
             if dropped:
                 assert has_ai, f"clean dropped {name}={value!r} but inspect called it clean"
+
+
+# --- a quoted apostrophe in the value used to defeat the split ------------
+#
+# Issue #368. The split above blanks the `content` value before the *name*
+# vocabulary is matched against the rest of the tag, but both the blanking and
+# the attribute parser assumed a value contains neither quote character:
+#
+#   content="Bob's favorite Claude Code skills"
+#
+# `[^"']*` stops at the apostrophe, so the value was never blanked and "Claude"
+# was matched as a *name*; and the value parsed as "Bob", so the free-prose
+# scan never saw the text either. One way or another the owner's own copy read
+# as provenance, and clean_html deleted the meta description outright.
+#
+# An apostrophe is the single most common character in a meta description, so
+# this was the ordinary case rather than an edge one.
+
+
+def _page_raw(tag: str) -> str:
+    return f"<html><head><title>T</title>{tag}</head><body><p>Body</p></body></html>"
+
+
+QUOTED_PROSE_VALUES = [
+    "Bob's favorite Claude Code skills",
+    "It's a ChatGPT cheatsheet for our team",
+    "Why Anthropic's Claude beats the alternatives",
+    # A literal double quote has to be entity-escaped inside a double-quoted
+    # attribute, so this is the shape a real page actually ships.
+    "Notes on the &quot;generator&quot; pattern in Dave's engine",
+    "Claude's own pricing page, in my own words",
+]
+
+
+@pytest.mark.parametrize("value", QUOTED_PROSE_VALUES)
+def test_meta_description_prose_with_apostrophe_is_not_flagged(value: str) -> None:
+    _c2, has_ai, findings, _d = inspect_html(_page("description", value))
+    assert not has_ai, findings
+
+
+@pytest.mark.parametrize("value", QUOTED_PROSE_VALUES)
+def test_meta_description_with_apostrophe_survives_clean(value: str) -> None:
+    """The destructive half: clean must not delete the page's own copy."""
+    cleaned, _ = clean_html(_page("description", value))
+    assert value in cleaned
+
+
+def test_single_quoted_value_containing_a_double_quote_is_prose() -> None:
+    """The mirror image: the mirror-image quote inside a single-quoted value."""
+    tag = "<meta name='description' content='a note on &quot;Claude&quot; by Bob'>"
+    assert not _meta_tag_is_ai(tag), tag
+    _c2, has_ai, findings, _d = inspect_html(_page_raw(tag))
+    assert not has_ai, findings
+    cleaned, _ = clean_html(_page_raw(tag))
+    assert "Claude" in cleaned
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # The marker is still in the value, so the tag is still provenance.
+        "Bob's page, generated with Claude Code",
+        "Bob's C2PA manifest",
+        "Exported with a C2PA manifest",
+        "Bob's SynthID watermark",
+    ],
+)
+def test_marker_behind_an_apostrophe_is_still_flagged(content: str) -> None:
+    """The apostrophe must not become a way to hide a real marker."""
+    _c2, has_ai, findings, _d = inspect_html(_page("description", content))
+    assert has_ai, findings
+
+
+def test_generator_value_with_apostrophe_is_still_dropped() -> None:
+    """A naming key still wins: generator="Bob's Claude Code" is provenance."""
+    page = _page("generator", "Bob's Claude Code")
+    _c2, has_ai, findings, _d = inspect_html(page)
+    assert has_ai, findings
+    cleaned, actions = clean_html(page)
+    assert "Claude Code" not in cleaned
+    assert any("drop meta" in a for a in actions)
+
+
+def test_unterminated_content_value_keeps_the_whole_tag_scan() -> None:
+    """A value we cannot delimit is not one we may assume is prose."""
+    assert _meta_tag_is_ai('<meta name="description" content="unterminated Claude')
+
+
+def test_marker_in_another_attribute_still_wins_with_an_apostrophe() -> None:
+    """The blanking is scoped to `content`; an apostrophe widens nothing."""
+    tag = '<meta property="c2pa" content="Bob\'s plain description">'
+    assert _meta_tag_is_ai(tag), tag
+
+
+def test_unquoted_content_value_keeps_the_whole_tag_scan() -> None:
+    assert _meta_tag_is_ai("<meta name=description content=Claude>")
+
+
+def test_meta_attrs_reads_past_an_embedded_quote() -> None:
+    """The attribute parser is the other half of the same defect."""
+    assert _meta_attrs('<meta name="description" content="Bob\'s skills">') == {
+        "name": "description",
+        "content": "Bob's skills",
+    }
+    assert _meta_attrs("<meta name='description' content='say \"hi\"'>")["content"] == ('say "hi"')
