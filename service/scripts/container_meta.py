@@ -1378,7 +1378,7 @@ _META_TAG_RE = re.compile(
     re.I,
 )
 _META_ATTR_RE = re.compile(
-    r"""(name|property|content|generator)\s*=\s*["']([^"']*)["']""",
+    r"""(name|property|content|generator)\s*=\s*(["'])((?:(?!\2).)*)\2""",
     re.I,
 )
 
@@ -1391,7 +1391,18 @@ _GENERATOR_AI_RE = re.compile(
 
 
 def _meta_attrs(tag: str) -> dict[str, str]:
-    return {name.lower(): value for name, value in _META_ATTR_RE.findall(tag)}
+    """Return the ``name``/``property``/``content``/``generator`` values of a tag.
+
+    Attribute names and values are lower-cased in the keys, values are kept as
+    written, and a later attribute wins over an earlier one with the same name.
+
+    The value capture is quote-aware: a `[^"']*` body stops at the *other* quote
+    character, so `content="Bob's C2PA manifest"` parsed as the value "Bob" and
+    the free-prose scan never saw the marker that was actually there. An
+    unquoted value is not read at all, which leaves the whole-tag scan to
+    decide that case.
+    """
+    return {m.group(1).lower(): m.group(3) for m in _META_ATTR_RE.finditer(tag)}
 
 
 def _is_cms_generator_meta(tag: str) -> bool:
@@ -1405,8 +1416,14 @@ def _is_cms_generator_meta(tag: str) -> bool:
     return not (_GENERATOR_AI_RE.search(attrs.get("content", "")) or _GENERATOR_AI_RE.search(tag))
 
 
+# Quote-aware on purpose: `[^"']*` stops at the *other* quote character, so a
+# double-quoted value containing an apostrophe -- "Bob's favorite Claude Code
+# skills" -- never matched, the value survived into the skeleton below, and the
+# owner's own prose was read as a provenance name. The tempered dot consumes the
+# value up to its real closing quote whatever it contains. An unquoted value
+# still does not match, which keeps the whole-tag fallback for that form.
 _META_CONTENT_VALUE_RE = re.compile(
-    r"""(\bcontent\s*=\s*)(["'])[^"']*\2""",
+    r"""(\bcontent\s*=\s*)(["'])(?:(?!\2).)*\2""",
     re.I,
 )
 
@@ -1426,6 +1443,8 @@ def _meta_tag_is_ai(tag: str) -> bool:
     # value would also erase an identical string sitting in another attribute
     # -- <meta property="Claude" content="Claude"> would lose both copies and
     # read clean -- which is the opposite of the guarantee this split makes.
+    # Blanking is skipped only when the value is genuinely unterminated, and an
+    # unterminated tag keeps the whole-tag scan.
     skeleton = _META_CONTENT_VALUE_RE.sub(r"\g<1>\g<2>\g<2>", tag)
     if AI_META_NAME_RE.search(skeleton) or any(
         h.decode("ascii", "ignore").lower() in skeleton.lower() for h in AI_META_HINTS[:12]
