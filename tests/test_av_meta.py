@@ -591,6 +591,32 @@ def test_mp4_uuid_box_with_c2pa_bytes_at_invalid_offset_not_treated_as_manifest(
     assert not any("content-provenance" in a for a in result["actions"])
 
 
+def test_mp4_mdat_marker_bytes_do_not_create_c2pa_finding(tmp_path):
+    # Short marker strings can occur by chance in compressed media. A complete
+    # box walk must rely on parsed metadata boxes rather than scanning mdat.
+    media = bytearray(b"\x00" * 256)
+    media[32:36] = b"jumb"
+    media[64:84] = b"uuid" + C2PA_BMFF_UUID
+    media[128:132] = b"JUMB"
+    data = _mp4(
+        _isobmff_box(b"free", b"\x00" * 16),
+        _isobmff_box(b"mdat", bytes(media)),
+        _moov_with_udta(b"Lavf/Remotion"),
+    )
+    src = tmp_path / "chance-markers.mp4"
+    src.write_bytes(data)
+
+    report = inspect_av(src)
+    assert report.has_c2pa is False
+    assert not any("byte-scan C2PA markers" in finding for finding in report.findings)
+
+    dest = tmp_path / "chance-markers.cleaned.mp4"
+    result = clean_av(src, dest, strip_all_metadata=False)
+    assert dest.read_bytes() == data
+    assert result["still_has_c2pa"] is False
+    assert not any("byte-scan C2PA markers" in finding for finding in result["post_findings"])
+
+
 def test_mp4_c2pa_manifest_uuid_at_offset_4_still_detected(tmp_path):
     # Accept the defensive FullBox layout (version/flags before the user type):
     # the UUID is at payload offset 4 and must still be recognized.
