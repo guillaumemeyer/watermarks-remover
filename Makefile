@@ -38,7 +38,7 @@ smoke-synthid:
 	  echo "smoke-synthid skipped (set REVERSE_SYNTHID_DIR or run make bootstrap-synthid)"; \
 	else \
 	  dir="$${REVERSE_SYNTHID_DIR:-$$HOME/reverse-SynthID}"; \
-	  $(PYTHON) $(SCRIPTS)/score_synthid.py --synthid-dir "$$dir" --help > /dev/null && echo "smoke-synthid: ok"; \
+	  $(PYTHON) -c "import sys; sys.path.insert(0, '$(SCRIPTS)'); from score_synthid import resolve_upstream; u = resolve_upstream('$$dir'); sys.exit(0 if (u and (u / 'src' / 'extraction').is_dir() and (u / 'artifacts' / 'spectral_codebook_v4.npz').is_file()) else 1)" && echo "smoke-synthid: ok"; \
 	fi
 
 bootstrap-synthid:
@@ -55,7 +55,7 @@ smoke-ctrlregen:
 	  echo "smoke-ctrlregen skipped (set NOAI_WATERMARK_DIR or run make bootstrap-ctrlregen)"; \
 	else \
 	  dir="$${NOAI_WATERMARK_DIR:-$$HOME/noai-watermark}"; \
-	  $(PYTHON) $(SCRIPTS)/clean_ctrlregen.py --ctrlregen-dir "$$dir" --help > /dev/null && echo "smoke-ctrlregen: ok"; \
+	  $(PYTHON) -c "import sys; sys.path.insert(0, '$(SCRIPTS)'); from clean_ctrlregen import resolve_upstream; u = resolve_upstream('$$dir'); sys.exit(0 if (u and (u / 'src').is_dir()) else 1)" && echo "smoke-ctrlregen: ok"; \
 	fi
 
 bootstrap-ctrlregen:
@@ -72,7 +72,7 @@ smoke-markllm:
 	  echo "smoke-markllm skipped (set MARKLLM_DIR or run make bootstrap-markllm)"; \
 	else \
 	  dir="$${MARKLLM_DIR:-$$HOME/MarkLLM}"; \
-	  $(PYTHON) $(SCRIPTS)/detect_text_watermark.py --markllm-dir "$$dir" --help > /dev/null && echo "smoke-markllm: ok"; \
+	  $(PYTHON) -c "import sys; sys.path.insert(0, '$(SCRIPTS)'); from detect_text_watermark import resolve_upstream; u = resolve_upstream('$$dir'); sys.exit(0 if (u and (u / 'watermark').is_dir()) else 1)" && echo "smoke-markllm: ok"; \
 	fi
 
 bootstrap-markllm:
@@ -89,7 +89,7 @@ smoke-markdiffusion:
 	  echo "smoke-markdiffusion skipped (set MARKDIFFUSION_DIR or run make bootstrap-markdiffusion)"; \
 	else \
 	  dir="$${MARKDIFFUSION_DIR:-$$HOME/markdiffusion}"; \
-	  $(PYTHON) $(SCRIPTS)/markdiffusion_harness.py --markdiffusion-dir "$$dir" --help > /dev/null && echo "smoke-markdiffusion: ok"; \
+	  $(PYTHON) -c "import sys; sys.path.insert(0, '$(SCRIPTS)'); from markdiffusion_harness import resolve_upstream; u = resolve_upstream('$$dir'); sys.exit(0 if (u and u.is_dir()) else 1)" && echo "smoke-markdiffusion: ok"; \
 	fi
 
 bench-synthid-text:
