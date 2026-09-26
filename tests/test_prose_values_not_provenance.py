@@ -354,6 +354,7 @@ QUOTED_PROSE_VALUES = [
 
 @pytest.mark.parametrize("value", QUOTED_PROSE_VALUES)
 def test_meta_description_prose_with_apostrophe_is_not_flagged(value: str) -> None:
+    """Owner copy naming an AI tool is prose; an apostrophe must not change it."""
     _c2, has_ai, findings, _d = inspect_html(_page("description", value))
     assert not has_ai, findings
 
@@ -413,6 +414,7 @@ def test_marker_in_another_attribute_still_wins_with_an_apostrophe() -> None:
 
 
 def test_unquoted_content_value_keeps_the_whole_tag_scan() -> None:
+    """No delimiters to match means no value to blank, so nothing is narrowed."""
     assert _meta_tag_is_ai("<meta name=description content=Claude>")
 
 

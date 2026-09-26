@@ -1391,9 +1391,17 @@ _GENERATOR_AI_RE = re.compile(
 
 
 def _meta_attrs(tag: str) -> dict[str, str]:
-    # Quote-aware value capture: a `[^"']*` body stops at the *other* quote
-    # character, so content="Bob's C2PA manifest" parsed as the value "Bob" and
-    # the free-prose scan below never saw the marker that was actually there.
+    """Return the ``name``/``property``/``content``/``generator`` values of a tag.
+
+    Attribute names and values are lower-cased in the keys, values are kept as
+    written, and a later attribute wins over an earlier one with the same name.
+
+    The value capture is quote-aware: a `[^"']*` body stops at the *other* quote
+    character, so `content="Bob's C2PA manifest"` parsed as the value "Bob" and
+    the free-prose scan never saw the marker that was actually there. An
+    unquoted value is not read at all, which leaves the whole-tag scan to
+    decide that case.
+    """
     return {m.group(1).lower(): m.group(3) for m in _META_ATTR_RE.finditer(tag)}
 
 
