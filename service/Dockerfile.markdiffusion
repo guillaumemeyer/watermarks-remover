@@ -26,14 +26,17 @@ RUN apt-get update \
 
 COPY scripts/requirements-markdiffusion.txt /app/requirements-markdiffusion.txt
 COPY scripts/markdiffusion_harness.py /app/markdiffusion_harness.py
+COPY scripts/markdiffusion_clean_server.py /app/markdiffusion_clean_server.py
 COPY scripts/common.py /app/common.py
 
 # torch is pinned (with everything else) in requirements-markdiffusion.txt; the
 # CPU index keeps the image small. No GPU wheel index inside the image — CUDA
 # users should run setup_markdiffusion.sh on the host instead.
 RUN python3 -m pip install --no-cache-dir "pip==26.2.1" \
-    && python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<2.11" \
-    && python3 -m pip install --no-cache-dir -r /app/requirements-markdiffusion.txt
+    && python3 -m pip install --no-cache-dir --resume-retries 20 \
+       --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<2.11" \
+    && python3 -m pip install --no-cache-dir --resume-retries 20 \
+       -r /app/requirements-markdiffusion.txt
 
 # Unprivileged runtime user. The harness only reads input files and writes to
 # stdout/tmp, so nothing under /opt, /app, or the mounted data dir needs root.

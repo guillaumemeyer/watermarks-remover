@@ -34,6 +34,12 @@ services:
       WATERMARKS_SYNTHID_TEXT_URL: ${WATERMARKS_SYNTHID_TEXT_URL:-}
       WATERMARKS_SYNTHID_TEXT_API_KEY: ${WATERMARKS_SYNTHID_TEXT_API_KEY:-}
       WATERMARKS_SYNTHID_TEXT_TIMEOUT: ${WATERMARKS_SYNTHID_TEXT_TIMEOUT:-120}
+      # Optional CtrlRegen pixel-removal sidecar (heavy profile).
+      WATERMARKS_CTRLREGEN_CLEAN_URL: ${WATERMARKS_CTRLREGEN_CLEAN_URL:-}
+      WATERMARKS_CTRLREGEN_CLEAN_API_KEY: ${WATERMARKS_CTRLREGEN_CLEAN_API_KEY:-}
+      # Optional MarkDiffusion pixel-removal sidecar (heavy profile).
+      WATERMARKS_MARKDIFFUSION_CLEAN_URL: ${WATERMARKS_MARKDIFFUSION_CLEAN_URL:-}
+      WATERMARKS_MARKDIFFUSION_CLEAN_API_KEY: ${WATERMARKS_MARKDIFFUSION_CLEAN_API_KEY:-}
     read_only: true
     tmpfs:
       - /tmp
@@ -154,6 +160,56 @@ services:
     user: "10001:10001"
     volumes:
       - synthid-cache:/home/scorer/.cache/huggingface
+
+  # HTTP CtrlRegen pixel-removal sidecar: lets wr-core run CtrlRegen without
+  # bundling the all-rights-reserved noai-watermark code in the published core
+  # image. Reach it via WATERMARKS_CTRLREGEN_CLEAN_URL on wr-core (see
+  # .env.example) and require the same bearer key on both sides.
+  wr-ctrlregen-clean:
+    profiles: [heavy]
+    build:
+      context: service
+      dockerfile: Dockerfile.ctrlregen
+    image: watermarks-remover-ctrlregen:local
+    entrypoint: ["python3"]
+    command: ["/app/ctrlregen_clean_server.py", "--host", "0.0.0.0", "--port", "8768"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+    environment:
+      NOAI_WATERMARK_DIR: /opt/noai-watermark
+      WATERMARKS_CTRLREGEN_API_KEY: ${WATERMARKS_CTRLREGEN_CLEAN_API_KEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      WATERMARKS_SERVER_VERSION: ${WATERMARKS_SERVER_VERSION:-}
+    volumes:
+      - ctrlregen-cache:/home/remover/.cache/huggingface
+
+  # HTTP MarkDiffusion pixel-removal sidecar: lets wr-core run
+  # DiffusionPurification without bundling the heavy ML deps in the published
+  # core image. Reach it via WATERMARKS_MARKDIFFUSION_CLEAN_URL on wr-core
+  # (see .env.example) and require the same bearer key on both sides.
+  wr-markdiffusion-clean:
+    profiles: [heavy]
+    build:
+      context: service
+      dockerfile: Dockerfile.markdiffusion
+    image: ghcr.io/guillaumemeyer/watermarks-remover:markdiffusion-latest
+    entrypoint: ["python3"]
+    command: ["/app/markdiffusion_clean_server.py", "--host", "0.0.0.0", "--port", "8769"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+    environment:
+      WATERMARKS_MARKDIFFUSION_API_KEY: ${WATERMARKS_MARKDIFFUSION_CLEAN_API_KEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /home/markdiffusion/.cache/huggingface
+      WATERMARKS_SERVER_VERSION: ${WATERMARKS_SERVER_VERSION:-}
+    volumes:
+      - markdiffusion-cache:/home/markdiffusion/.cache/huggingface
 
   # HTTP SynthID scorer sidecar: lets wr-core score images before/after
   # cleaning without bundling the non-commercial reverse-SynthID code in the

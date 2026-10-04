@@ -1588,6 +1588,84 @@ def _synthid_score_http(
     return payload
 
 
+def _pixel_clean_via_http(
+    url: str,
+    path: Path,
+    output: Path,
+    api_key: str,
+    options: dict[str, Any],
+    timeout: int = 3600,
+) -> dict[str, Any]:
+    """Call a pixel-clean HTTP sidecar (ctrlregen or markdiffusion).
+
+    On success, writes cleaned bytes to *output* and returns a report dict
+    with ``available=True``.  On failure returns ``{"available": False, "error": ...}``.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        return {"available": False, "error": f"cannot read input: {e}"}
+
+    if urlparse(url).scheme not in ("http", "https"):
+        return {"available": False, "error": f"refusing non-http(s) pixel-clean endpoint: {url}"}
+
+    body = json.dumps(
+        {
+            "file": base64.b64encode(data).decode("ascii"),
+            "name": path.name,
+            "options": options,
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(  # noqa: S310
+        url.rstrip("/") + "/clean",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        if urllib.request.urlopen is not _DEFAULT_URLOPEN:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                payload = json.loads(resp.read().decode("utf-8"))
+        else:
+            opener = urllib.request.build_opener(_NoRedirect())
+            with opener.open(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+    ) as e:
+        return {"available": False, "error": f"pixel-clean sidecar unreachable: {e}"}
+
+    if not isinstance(payload, dict):
+        return {"available": False, "error": "bad pixel-clean sidecar response"}
+    if not payload.get("ok"):
+        return {"available": False, "error": payload.get("error", "sidecar error")}
+
+    cleaned_b64 = payload.get("cleaned")
+    if not isinstance(cleaned_b64, str):
+        return {"available": False, "error": "sidecar returned no cleaned bytes"}
+    try:
+        import binascii as _binascii
+
+        cleaned_bytes = base64.b64decode(cleaned_b64)
+        output.write_bytes(cleaned_bytes)
+    except (_binascii.Error, OSError, ValueError) as e:
+        return {"available": False, "error": f"cannot write cleaned output: {e}"}
+
+    report = payload.get("report") or {}
+    if not isinstance(report, dict):
+        report = {}
+    report["available"] = True
+    return report
+
+
 def _synthid_python(upstream: Path) -> str:
     """Prefer the checkout venv so the scorer deps (cv2, sklearn) are importable."""
     if os.name == "nt":
@@ -1696,12 +1774,24 @@ def run_markdiffusion_purify(
     device: str | None = None,
     timeout: int = 3600,
 ) -> dict[str, Any]:
-    """Run the optional MarkDiffusion DiffusionPurification remover in a subprocess.
+    """Run the optional MarkDiffusion DiffusionPurification remover in a subprocess or via HTTP sidecar.
 
+    Uses the HTTP sidecar when WATERMARKS_MARKDIFFUSION_CLEAN_URL is set,
+    otherwise a subprocess against a local checkout.
     Returns ``{"available": False, "error": ...}`` when the backend is not
     configured, its dependencies are missing, or it fails at runtime; a
     successful run is ``{"available": True, ...}``.
     """
+    sidecar_url = os.environ.get("WATERMARKS_MARKDIFFUSION_CLEAN_URL", "").strip()
+    if sidecar_url:
+        sidecar_key = os.environ.get("WATERMARKS_MARKDIFFUSION_CLEAN_API_KEY", "").strip()
+        opts: dict[str, Any] = {"intensity": intensity, "size": size, "steps": steps}
+        if model:
+            opts["model"] = model
+        if device:
+            opts["device"] = device
+        return _pixel_clean_via_http(sidecar_url, path, output, sidecar_key, opts, timeout)
+
     if upstream_dir is None:
         upstream_dir = os.environ.get("MARKDIFFUSION_DIR")
 
@@ -1777,12 +1867,24 @@ def run_ctrlregen_clean(
     seed: int | None = None,
     timeout: int = 3600,
 ) -> dict[str, Any]:
-    """Run the optional CtrlRegen remover in a subprocess.
+    """Run the optional CtrlRegen remover in a subprocess or via HTTP sidecar.
 
+    Uses the HTTP sidecar when WATERMARKS_CTRLREGEN_CLEAN_URL is set,
+    otherwise a subprocess against a local checkout.
     Returns ``{"available": False, "error": ...}`` when the remover is not
     configured, its dependencies are missing, or it fails at runtime; a
     successful run is ``{"available": True, ...}``.
     """
+    sidecar_url = os.environ.get("WATERMARKS_CTRLREGEN_CLEAN_URL", "").strip()
+    if sidecar_url:
+        sidecar_key = os.environ.get("WATERMARKS_CTRLREGEN_CLEAN_API_KEY", "").strip()
+        opts: dict[str, Any] = {"intensity": intensity, "steps": steps}
+        if device:
+            opts["device"] = device
+        if seed is not None:
+            opts["seed"] = seed
+        return _pixel_clean_via_http(sidecar_url, path, output, sidecar_key, opts, timeout)
+
     if upstream_dir is None:
         upstream_dir = os.environ.get("NOAI_WATERMARK_DIR")
     if not upstream_dir:
