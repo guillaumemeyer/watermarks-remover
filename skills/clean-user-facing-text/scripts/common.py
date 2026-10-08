@@ -130,7 +130,7 @@ TEXT_TOOL_ADVICE = (
 # and classify() has already ruled out every known container, so pointing back
 # at them would be circular.
 ROUTER_ADVICE = (
-    "These bytes match no supported text, image or container format.",
+    "These bytes match no supported text, image, audio, video or container format.",
     "Pass --force-text to handle them as text anyway, or --as to force a format.",
 )
 
