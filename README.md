@@ -1011,7 +1011,7 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | TIFF (classic + BigTIFF) | IFD tags: XMP, EXIF, GPS, IPTC, MakerNote | Drop tags, zero payloads, keep strips |
 | SVG | `<metadata>`, XMP | Strip blocks |
 | PDF | Byte/XMP + optional tools | **exiftool** then **qpdf**, then **ghostscript** for metadata inside embedded images; each missing tool degrades a different layer (document strip, structural rewrite, embedded images) |
-| DOCX | docProps / customXml | Scrub props, drop customXml |
+| DOCX / XLSX / PPTX | docProps / customXml / Office web-extension properties and references | Scrub props, drop customXml and webextensions parts, remove their content-type overrides and dangling relationships; refuse cleaning while an Office owner file is present |
 | EPUB | OPF metadata, XHTML meta/JSON-LD, embedded media | Scrub OPF, strip XHTML meta, clean media + Layer A (skips encrypted parts) |
 | ODT | meta.xml | Drop generator / AI-ish meta |
 | HTML | meta, JSON-LD, data-ai*, `<!-- -->` comments naming an AI tool or marked AI-generated / C2PA / content credential | Strip tags/attrs/comments |
@@ -1302,6 +1302,7 @@ v0.7.0 brings the Layer B statistical-mark rewrite into the `/clean` service its
 
 ### Unreleased
 
+- **OOXML add-in metadata**: inspect Office web-extension vendor properties and references in DOCX, XLSX, and PPTX, then remove their package parts and dangling relationships; refuse cleaning while a matching Office owner file exists.
 - Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
 - **OOXML container preservation**: keep `<AppVersion>` intact in `docProps/app.xml` during DOCX, XLSX, and PPTX metadata cleaning to satisfy ECMA-376 schema constraints and avoid Microsoft Word/Office "unreadable content" errors (#283)
 

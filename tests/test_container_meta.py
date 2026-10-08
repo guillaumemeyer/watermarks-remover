@@ -1177,3 +1177,38 @@ def test_markdown_frontmatter_and_comment_both_cleaned():
     assert "Gemini" not in cleaned
     assert "title: Post" in cleaned
     assert "Body" in cleaned
+
+
+@pytest.mark.parametrize(
+    ("filename", "owner_filename"),
+    [
+        ("report.docx", "~$report.docx"),
+        ("quarterly-report.docx", "~$arterly-report.docx"),
+    ],
+)
+def test_clean_file_refuses_open_office_document_before_backup(
+    tmp_path: Path, filename: str, owner_filename: str
+):
+    path = tmp_path / filename
+    original = _make_docx_with_app()
+    path.write_bytes(original)
+    (tmp_path / owner_filename).write_text("office owner", encoding="utf-8")
+
+    result = _run("clean_file.py", str(path), "--in-place", "--json")
+
+    assert result.returncode == 2
+    assert "Office owner file exists" in result.stderr
+    assert path.read_bytes() == original
+    assert not path.with_suffix(path.suffix + ".bak").exists()
+
+
+def test_clean_container_refuses_open_office_document(tmp_path: Path):
+    path = tmp_path / "open.docx"
+    dest = tmp_path / "cleaned.docx"
+    path.write_bytes(_make_docx_with_app())
+    (tmp_path / "~$open.docx").write_text("office owner", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="owner file exists"):
+        clean_container(path, dest)
+
+    assert not dest.exists()

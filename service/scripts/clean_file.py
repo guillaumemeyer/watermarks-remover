@@ -21,7 +21,7 @@ from common import (
     result_has_changes,
     safe_write_text,
 )
-from container_meta import clean_container, detect_container_format
+from container_meta import clean_container, detect_container_format, office_owner_file
 from format_dispatch import classify
 from image_meta import clean_image
 from text_unicode import clean_text
@@ -113,6 +113,14 @@ def main() -> int:
     container_fmt = None
     if kind == "container":
         container_fmt = detect_container_format(args.path, args.path.read_bytes())
+        if container_fmt in {"docx", "xlsx", "pptx"}:
+            owner_file = office_owner_file(args.path)
+            if owner_file is not None:
+                eprint(
+                    f"refusing to clean {args.path}: Office owner file exists ({owner_file.name}); "
+                    "close the document in Office and try again"
+                )
+                return 2
 
     # classify() falls back to "text" for unrecognised bytes, so an unknown
     # binary would otherwise be decoded, scrubbed and written back mangled.

@@ -465,6 +465,7 @@ def classify_finding_confidence(finding: str) -> str:
             "trainedalgorithmicmedia",
             "compositewithtrainedalgorithmicmedia",
             "softwareagent",
+            "web-extension vendor property",
         )
     ):
         return "confirmed"
@@ -506,6 +507,8 @@ def classify_finding_confidence(finding: str) -> str:
             "interesting",
             "pdf-structured",
             "layer-a",
+            "web-extension property",
+            "web-extension reference",
         )
     ):
         return "probable"

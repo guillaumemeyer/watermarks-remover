@@ -12,7 +12,9 @@ SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
+from common import classify_finding_confidence
 from container_meta import (
+    _webextension_findings,
     clean_container,
     clean_docx,
     clean_pptx,
@@ -339,3 +341,153 @@ def test_clean_container_and_inspect_container_xlsx_pptx(tmp_path):
     assert res["still_has_c2pa"] is False
     assert res["still_has_ai_metadata"] is False
     assert out_path.exists()
+
+
+def _create_ooxml_with_webextensions(fmt: str, webextension_xml: str | None = None) -> bytes:
+    """Build a small Office package with add-in metadata and visible content."""
+    prefix, main_part, content_type, main_xml = {
+        "docx": (
+            "word",
+            "document.xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:ins><w:r><w:t>tracked body</w:t></w:r></w:ins></w:p></w:body></w:document>',
+        ),
+        "xlsx": (
+            "xl",
+            "workbook.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets/><definedNames><definedName name="visible">kept body</definedName></definedNames></workbook>',
+        ),
+        "pptx": (
+            "ppt",
+            "presentation.xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:notes>kept body</p:notes></p:presentation>',
+        ),
+    }[fmt]
+    main_path = f"{prefix}/{main_part}"
+    ext_path = f"{prefix}/webextensions/webextension1.xml"
+    taskpanes_path = f"{prefix}/webextensions/taskpanes.xml"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            f'<Override PartName="/{main_path}" ContentType="{content_type}"/>'
+            f'<Override PartName="/{ext_path}" ContentType="application/xml"/>'
+            f'<Override PartName="/{taskpanes_path}" ContentType="application/xml"/>'
+            "</Types>",
+        )
+        zf.writestr(main_path, main_xml)
+        zf.writestr(
+            f"{prefix}/_rels/{main_part}.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rIdWebExtension" '
+            'Type="http://schemas.microsoft.com/office/2006/relationships/webextension" '
+            'Target="webextensions/webextension1.xml"/>'
+            '<Relationship Id="rIdTaskpanes" '
+            'Type="http://schemas.microsoft.com/office/2006/relationships/webextensiontaskpanes" '
+            'Target="webextensions/taskpanes.xml"/>'
+            "</Relationships>",
+        )
+        zf.writestr(
+            ext_path,
+            (
+                webextension_xml
+                if webextension_xml is not None
+                else (
+                    '<we:properties xmlns:we="http://schemas.microsoft.com/office/webextensions/webextension/2010/11">'
+                    '<we:property name="claude.fileId" value="&quot;file-123&quot;"/>'
+                    '<we:property name="otherAddin.setting" value="enabled"/>'
+                    '<we:reference id="wa200010453"/>'
+                    "</we:properties>"
+                )
+            ),
+        )
+        zf.writestr(taskpanes_path, "<we:taskpanes/>")
+    return buf.getvalue()
+
+
+def test_webextension_parser_handles_quoted_gt_and_ignores_comments():
+    raw = (
+        b'<we:properties xmlns:we="urn:office:webextension">'
+        b'<!-- <we:property name="openai.comment-only"/> -->'
+        b'<we:property value="a>b" name="other.setting"/>'
+        b'<we:reference id="reference>id"/>'
+        b"</we:properties>"
+    )
+
+    findings = _webextension_findings("word/webextensions/webextension1.xml", raw)
+
+    assert findings == [
+        "word/webextensions/webextension1.xml: meta: web-extension property other.setting",
+        "word/webextensions/webextension1.xml: meta: web-extension reference id=reference>id",
+    ]
+
+
+def test_webextension_parser_stops_at_finding_limit():
+    properties = "".join(f'<property name="other.setting{i}"/>' for i in range(35))
+    raw = f"<properties>{properties}</properties>".encode()
+
+    findings = _webextension_findings("word/webextensions/webextension1.xml", raw)
+
+    assert len(findings) == 30
+    assert findings[-1].endswith("other.setting29")
+
+
+def test_ooxml_inspector_flags_quoted_gt_property_without_raw_markers():
+    webextension_xml = (
+        '<we:properties xmlns:we="http://schemas.microsoft.com/office/webextensions/webextension/2010/11">'
+        '<we:property value="a>b" name="other.setting"/>'
+        "</we:properties>"
+    )
+
+    has_c2pa, has_ai, findings, _ = inspect_docx(
+        _create_ooxml_with_webextensions("docx", webextension_xml)
+    )
+
+    assert not has_c2pa
+    assert has_ai
+    assert any("web-extension property other.setting" in finding for finding in findings)
+
+
+def test_ooxml_webextension_metadata_inspect_and_clean():
+    inspectors = {"docx": inspect_docx, "xlsx": inspect_xlsx, "pptx": inspect_pptx}
+    cleaners = {"docx": clean_docx, "xlsx": clean_xlsx, "pptx": clean_pptx}
+    body_parts = {
+        "docx": ("word/document.xml", "tracked body"),
+        "xlsx": ("xl/workbook.xml", "kept body"),
+        "pptx": ("ppt/presentation.xml", "kept body"),
+    }
+
+    for fmt, inspect in inspectors.items():
+        data = _create_ooxml_with_webextensions(fmt)
+        has_c2pa, has_ai, findings, _ = inspect(data)
+        assert not has_c2pa
+        assert has_ai
+        vendor = next(f for f in findings if "web-extension vendor property" in f)
+        generic = next(f for f in findings if "web-extension property" in f)
+        reference = next(f for f in findings if "web-extension reference" in f)
+        assert classify_finding_confidence(vendor) == "confirmed"
+        assert classify_finding_confidence(generic) == "probable"
+        assert classify_finding_confidence(reference) == "probable"
+        assert not any(f.endswith("ai:claude") for f in findings)
+
+        cleaned, actions = cleaners[fmt](data)
+        assert any("drop Office web-extension part" in action for action in actions)
+        has_c2pa_after, has_ai_after, findings_after, _ = inspect(cleaned)
+        assert not has_c2pa_after
+        assert not has_ai_after
+        assert not any("web-extension" in finding for finding in findings_after)
+
+        prefix = {"docx": "word", "xlsx": "xl", "pptx": "ppt"}[fmt]
+        relationship_name = body_parts[fmt][0].split("/", 1)[1]
+        with zipfile.ZipFile(io.BytesIO(cleaned)) as zf:
+            names = zf.namelist()
+            assert not any(name.startswith(f"{prefix}/webextensions/") for name in names)
+            content_types = zf.read("[Content_Types].xml").decode("utf-8")
+            assert "/webextensions/" not in content_types
+            rels = zf.read(f"{prefix}/_rels/{relationship_name}.rels").decode("utf-8")
+            assert "webextensions/" not in rels
+            main_xml = zf.read(body_parts[fmt][0]).decode("utf-8")
+            assert body_parts[fmt][1] in main_xml
