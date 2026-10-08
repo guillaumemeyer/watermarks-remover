@@ -207,8 +207,10 @@ def capabilities() -> dict[str, Any]:
             "ffmpeg": _tool_usable("ffmpeg"),
         },
         "pixel_backends": {
-            "ctrlregen": bool(os.environ.get("NOAI_WATERMARK_DIR")),
-            "diffusion": bool(os.environ.get("MARKDIFFUSION_DIR")),
+            "ctrlregen": bool(os.environ.get("NOAI_WATERMARK_DIR"))
+            or bool(os.environ.get("WATERMARKS_CTRLREGEN_CLEAN_URL")),
+            "diffusion": bool(os.environ.get("MARKDIFFUSION_DIR"))
+            or bool(os.environ.get("WATERMARKS_MARKDIFFUSION_CLEAN_URL")),
         },
         "scorers": {
             "synthid": bool(os.environ.get("REVERSE_SYNTHID_DIR")),

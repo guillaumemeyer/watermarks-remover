@@ -43,13 +43,16 @@ RUN git clone --depth 1 --filter=blob:none --sparse \
 
 COPY scripts/requirements-ctrlregen.txt /app/requirements-ctrlregen.txt
 COPY scripts/clean_ctrlregen.py /app/clean_ctrlregen.py
+COPY scripts/ctrlregen_clean_server.py /app/ctrlregen_clean_server.py
 COPY scripts/common.py /app/common.py
 
-# torch is installed first (CPU wheels on linux) so the pinned ML deps can
+# torch is installed first (CPU-only wheels) so the pinned ML deps can
 # resolve against it. Model weights are downloaded at runtime, not build time.
 RUN python3 -m pip install --no-cache-dir "pip==26.2.1" \
-    && python3 -m pip install --no-cache-dir torch \
-    && python3 -m pip install --no-cache-dir -r /app/requirements-ctrlregen.txt
+    && python3 -m pip install --no-cache-dir --resume-retries 20 \
+       --index-url https://download.pytorch.org/whl/cpu torch \
+    && python3 -m pip install --no-cache-dir --resume-retries 20 \
+       -r /app/requirements-ctrlregen.txt
 
 # Unprivileged runtime user. The remover reads input files from a mounted
 # volume and writes the output next to them, so nothing under /opt or /app
