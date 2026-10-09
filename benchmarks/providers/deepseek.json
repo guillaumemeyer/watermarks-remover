@@ -1,0 +1,21 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "watermark_options": {
+    "scheme": "synthid",
+    "model": "facebook/opt-1.3b",
+    "seed": 42,
+    "max_new_tokens": 120,
+    "min_length": 80
+  },
+  "samples": [
+    {
+      "id": "library",
+      "prompt": "A public library opens at nine in the morning and closes at six in the evening. Visitors can borrow books for three weeks. Describe how a visitor can plan a trip to the library and return borrowed books on time."
+    },
+    {
+      "id": "garden",
+      "prompt": "A community garden collects rainwater in covered tanks. Volunteers check the soil before watering plants and record their observations every Saturday. Explain how this routine helps the group organize its work and avoid wasting water."
+    }
+  ]
+}

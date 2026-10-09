@@ -5,6 +5,10 @@ bench_synthid_text.py measures how well the Layer B rewrite
 cost. It generates a controlled corpus with the MarkLLM SynthID scheme, runs
 removal variants, and emits a shareable report.
 
+For a small HTTP interoperability check using the existing text-generation
+sidecar and DeepSeek, see the [DeepSeek smoke fixture](deepseek-benchmark.md).
+That fixture does not run detection or measure removal effectiveness.
+
 ## What it measures
 
 | Metric | Meaning |
