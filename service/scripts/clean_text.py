@@ -55,9 +55,18 @@ def main() -> int:
     p.add_argument(
         "--in-place",
         action="store_true",
-        help="Overwrite input file (creates .bak backup)",
+        help="Overwrite input file (creates .bak backup unless --no-backup is set)",
+    )
+    p.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="In-place: do not write a .bak copy before modifying the file",
     )
     args = p.parse_args()
+
+    if args.no_backup and not args.in_place:
+        eprint("refusing --no-backup without --in-place")
+        return 2
 
     text = read_text_input(args.path, allow_binary=args.force_text)
     cleaned, stats = clean_text(
@@ -75,9 +84,10 @@ def main() -> int:
             eprint("--in-place requires a file path")
             return 2
         src = Path(args.path)
-        bak, created = backup_path(src)
-        if not created:
-            eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
+        if not args.no_backup:
+            bak, created = backup_path(src)
+            if not created:
+                eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
         out = str(src)
     elif out is None and args.path not in (None, "-"):
         out = str(cleaned_path(Path(args.path)))

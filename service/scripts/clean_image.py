@@ -21,7 +21,12 @@ def main() -> int:
     p.add_argument(
         "--in-place",
         action="store_true",
-        help="Overwrite input (writes .bak backup first)",
+        help="Overwrite input (writes .bak backup first unless --no-backup is set)",
+    )
+    p.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="In-place: do not write a .bak copy before modifying the file",
     )
     p.add_argument(
         "--keep-non-ai-metadata",
@@ -123,17 +128,24 @@ def main() -> int:
     )
     args = p.parse_args()
 
+    if args.no_backup and not args.in_place:
+        eprint("refusing --no-backup without --in-place")
+        return 2
+
     if not args.path.is_file():
         eprint(f"not a file: {args.path}")
         return 2
 
     if args.in_place:
-        bak, created = backup_path(args.path)
-        if not created:
-            eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
+        if args.no_backup:
             src = args.path
         else:
-            src = bak
+            bak, created = backup_path(args.path)
+            if not created:
+                eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
+                src = args.path
+            else:
+                src = bak
         dest = args.path
     else:
         src = args.path
