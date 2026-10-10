@@ -718,12 +718,16 @@ def inspect_isobmff(data: bytes, fmt: str = "avif") -> tuple[bool, bool, list[st
     # A raw hit in a fully parsed media payload is not manifest evidence: any
     # compressed stream can coincidentally contain these short ASCII markers.
     # Keep the whole-file scan as a recovery path only when box walking stopped
-    # early, which covers truncated containers such as #167/#176.
+    # early, which covers truncated containers such as #167/#176. A gap of 1-7
+    # bytes is not an early stop: _parse_isobmff_boxes walks `while pos + 8 <=
+    # end`, so a fully parsed container with trailing padding leaves that much
+    # behind. Only >= 8 bytes can hold a box header, i.e. a real truncation
+    # (the same threshold strip_isobmff and av_meta already use, #170).
     whole = _contains_any(data, C2PA_MARKERS)
-    if whole and not has_c2pa and scanned_end < len(data):
+    if whole and not has_c2pa and len(data) - scanned_end >= 8:
         has_c2pa = True
         findings.append(f"byte-scan C2PA markers: {', '.join(whole[:6])}")
-    elif scanned_end < len(data) and _contains_c2pa_prov_box(data) and not has_c2pa:
+    elif len(data) - scanned_end >= 8 and _contains_c2pa_prov_box(data) and not has_c2pa:
         # A C2PA content-provenance uuid box whose manifest bytes carry no
         # ASCII 'c2pa'/'jumb' marker (e.g. an auxiliary "merkle" box, or a
         # truncated manifest) is still a manifest box; catch it by user type.

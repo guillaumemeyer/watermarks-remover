@@ -46,6 +46,8 @@ python3 install_skill.py --skill remove-ai-marks --target claude-code
 | --- | --- | --- |
 | Claude Code (personal) | `--target claude-code` | `~/.claude/skills/<skill>` (honors `CLAUDE_CONFIG_DIR`) |
 | Claude Code (project) | `--target claude-project --project-dir PATH` | `PATH/.claude/skills/<skill>` |
+| Codex (personal) | `--target codex` | `~/.agents/skills/<skill>` |
+| Codex (project) | `--target codex-project --project-dir PATH` | `PATH/.agents/skills/<skill>` |
 | Cowork, claude.ai, cloud sessions, routines | `--target cowork` | `dist/<skill>.zip` to upload under **Customize → Skills** |
 | Cursor | `--target cursor` (default) | `~/.cursor/skills/<skill>` |
 
@@ -64,6 +66,31 @@ and the Skills API enforce: spec-only frontmatter (`name`, `description`,
 `name` of at most 64 characters matching the directory, a non-empty
 `description` of at most 1024 characters. The Cowork bundle additionally has
 to fit the 30 MB upload limit, which the packager enforces.
+
+### Codex terminal and desktop
+
+Install either shipped skill for your user, or install one into a particular
+project:
+
+```bash
+python3 install_skill.py --skill remove-ai-marks --target codex
+python3 install_skill.py --skill clean-user-facing-text --target codex
+python3 install_skill.py --skill remove-ai-marks --target codex-project --project-dir /path/to/project
+```
+
+On Windows, use `py` in place of `python3`. Open the project in Codex. In the
+terminal, use `/skills` or type `$` to select a skill; in the desktop app,
+select or mention the skill in your prompt. Restart Codex if the new skill does
+not appear. The project install is available when Codex runs in that project.
+
+For `remove-ai-marks`, start the existing HTTP service from this repository
+with `make serve` before using the skill (or on Windows without `make`, run
+`py service/scripts/server.py --host 127.0.0.1 --port 8765`). It uses
+`WATERMARKS_SERVICE_URL` (default `http://127.0.0.1:8765`), checks `/health`,
+and calls the existing `/inspect` and `/clean` endpoints. If the service
+requires an API key, set `WATERMARKS_SERVER_API_KEY` for the client.
+`clean-user-facing-text` is
+self-contained and does not need the service.
 
 ### Automatic cleaning via hook (deterministic)
 

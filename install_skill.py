@@ -5,6 +5,8 @@ Targets:
 
   claude-code     ~/.claude/skills/<skill>            (personal, all projects)
   claude-project  <project>/.claude/skills/<skill>    (one repository)
+  codex           ~/.agents/skills/<skill>            (personal, all projects)
+  codex-project   <project>/.agents/skills/<skill>    (one repository)
   cowork          <skill>.zip to upload in Customize > Skills
   cursor          ~/.cursor/skills/<skill>            (default, historical)
 
@@ -188,7 +190,7 @@ def skill_files(source: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------
-# directory installs (Claude Code, Cursor)
+# directory installs (Claude Code, Codex, Cursor)
 # --------------------------------------------------------------------------
 
 
@@ -319,6 +321,11 @@ def destination_for(args: argparse.Namespace, skill: str) -> Path:
     if args.target == "claude-project":
         project = Path(args.project_dir or Path.cwd()).expanduser().resolve()
         return project / ".claude" / "skills" / skill
+    if args.target == "codex":
+        return home / ".agents" / "skills" / skill
+    if args.target == "codex-project":
+        project = Path(args.project_dir or Path.cwd()).expanduser().resolve()
+        return project / ".agents" / "skills" / skill
     raise SkillError(f"target {args.target} does not install into a directory")
 
 
@@ -330,6 +337,10 @@ HOST_HINTS = {
     "claude-project": (
         "Claude Code loads project skills from .claude/skills in the working directory "
         "and its parents. Commit the directory to share it (cloud sessions read it too)."
+    ),
+    "codex": "Select the skill in Codex; restart Codex if it does not appear.",
+    "codex-project": (
+        "Open the project in Codex and select the skill; restart Codex if it does not appear."
     ),
 }
 
@@ -347,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         default=DEFAULT_TARGET,
-        choices=("cursor", "claude-code", "claude-project", "cowork"),
+        choices=("cursor", "claude-code", "claude-project", "codex", "codex-project", "cowork"),
         help=f"Where to install (default: {DEFAULT_TARGET})",
     )
     parser.add_argument("--list", action="store_true", help="List available skills and exit")
@@ -365,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claude-home", help="Override Claude Code home (default: ~/.claude)")
     parser.add_argument(
         "--project-dir",
-        help="Project root for --target claude-project (default: current directory)",
+        help="Project root for --target claude-project or codex-project (default: current directory)",
     )
     parser.add_argument(
         "-o",
@@ -424,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
         "cursor": "Cursor",
         "claude-code": "Claude Code",
         "claude-project": "Claude Code (project)",
+        "codex": "Codex",
+        "codex-project": "Codex (project)",
     }[args.target]
     if backup is not None:
         print(f"{label}: backed up existing skill to {backup}")

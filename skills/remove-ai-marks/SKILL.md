@@ -42,17 +42,24 @@ stop with a clear message if it is unreachable — never fall back to local
 cleaning:
 
 ```bash
-curl -sf "$WM/health"
+AUTH_HEADER=()
+if [ -n "$WATERMARKS_SERVER_API_KEY" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer $WATERMARKS_SERVER_API_KEY")
+fi
+curl -sf "${AUTH_HEADER[@]}" "$WM/health"
 # {"ok": true, "version": "..."}
 ```
 
-If `WATERMARKS_SERVER_API_KEY` is set on the service, every request needs
-`-H "Authorization: Bearer $WATERMARKS_SERVICE_API_KEY"`.
+If `WATERMARKS_SERVER_API_KEY` is set on the service, every request (including
+the health check and capabilities) needs `-H "Authorization: Bearer $WATERMARKS_SERVER_API_KEY"`. The default URL is
+loopback; when the service runs on another host, set `WATERMARKS_SERVICE_URL`
+to an `https://` URL so the token is not sent in cleartext, and do not add
+`-L` (a redirect could forward the token to another host).
 
 ### Capabilities
 
 ```bash
-curl -s "$WM/capabilities"
+curl -s "${AUTH_HEADER[@]}" "$WM/capabilities"
 ```
 
 Reports which optional tools are available server-side (`c2patool`, `exiftool`,
@@ -107,14 +114,14 @@ and `/clean` returns 400 if a step's backend/model isn't configured).
 **Inspect first** (decide, don't guess):
 
 ```bash
-curl -s -X POST "$WM/inspect" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/inspect" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
 **Clean** (text / image / container are auto-detected by name + bytes):
 
 ```bash
-curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < notes.md | tr -d '\n')\", \"name\": \"notes.md\"}"
 ```
 
@@ -147,7 +154,7 @@ mostly just send the file.
 ### 2. Inspect first
 
 ```bash
-curl -s -X POST "$WM/inspect" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/inspect" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < path | tr -d '\n')\", \"name\": \"$(basename path)\"}"
 ```
 
@@ -167,7 +174,7 @@ scorer (`scorers.synthid_http` / `scorers.synthid`), measure the result by
 detecting before and after cleaning:
 
 ```bash
-curl -s -X POST "$WM/detect" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/detect" -H 'Content-Type: application/json' \
   -d '{"file": "'"$(base64 < notes.txt | tr -d '\n')"'", "name": "notes.txt"}'
 ```
 
@@ -183,7 +190,7 @@ the API in Aug 2026 — see `references/vendor-notes.md`.)
 **Any supported file (unified):**
 
 ```bash
-curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < INPUT | tr -d '\n')\", \"name\": \"$(basename INPUT)\"}"
 ```
 
@@ -197,7 +204,7 @@ degraded (best-effort) result when either is missing — check `/capabilities`.
 says the backend is present:
 
 ```bash
-curl -s -X POST "$WM/clean" -H 'Content-Type: application/json' \
+curl -s -X POST "${AUTH_HEADER[@]}" "$WM/clean" -H 'Content-Type: application/json' \
   -d "{\"file\": \"$(base64 < shot.png | tr -d '\n')\", \"name\": \"shot.png\", \
        \"options\": {\"remove_pixel\": \"ctrlregen\"}}"
 ```

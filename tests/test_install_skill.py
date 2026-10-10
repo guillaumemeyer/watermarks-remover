@@ -1,4 +1,4 @@
-"""Installer coverage for the Claude Code, Cowork, and Cursor targets."""
+"""Installer coverage for the Claude Code, Codex, Cowork, and Cursor targets."""
 
 from __future__ import annotations
 
@@ -192,6 +192,67 @@ def test_link_installs_a_symlink_to_the_repository_skill(tmp_path):
     destination = tmp_path / ".claude" / "skills" / "remove-ai-marks"
     assert destination.is_symlink()
     assert destination.resolve() == (ROOT / "skills" / "remove-ai-marks").resolve()
+
+
+# --------------------------------------------------------------------------
+# Codex
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+@pytest.mark.parametrize("target", ("codex", "codex-project"))
+def test_codex_targets_install_both_skills(tmp_path, target, skill):
+    project = tmp_path / "repo"
+    args = ("--project-dir", str(project)) if target == "codex-project" else ()
+
+    _run(tmp_path, "--skill", skill, "--target", target, *args)
+
+    root = project if target == "codex-project" else tmp_path
+    assert (root / ".agents" / "skills" / skill / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+@pytest.mark.parametrize("target", ("codex", "codex-project"))
+def test_codex_force_backs_up_existing_skill(tmp_path, target, skill):
+    project = tmp_path / "repo"
+    root = project if target == "codex-project" else tmp_path
+    destination = root / ".agents" / "skills" / skill
+    destination.mkdir(parents=True)
+    (destination / "old").write_text("old", encoding="utf-8")
+    args = ("--project-dir", str(project)) if target == "codex-project" else ()
+
+    unchanged = _run(tmp_path, "--skill", skill, "--target", target, *args, check=False)
+    assert unchanged.returncode == 1
+    assert (destination / "old").read_text(encoding="utf-8") == "old"
+
+    _run(tmp_path, "--skill", skill, "--target", target, *args, "--force")
+
+    backups = list(destination.parent.glob(f"{skill}.backup.*"))
+    assert len(backups) == 1
+    assert (backups[0] / "old").read_text(encoding="utf-8") == "old"
+    assert (destination / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("skill", SKILLS)
+@pytest.mark.parametrize("target", ("codex", "codex-project"))
+def test_codex_targets_link_repository_skill(tmp_path, target, skill):
+    try:
+        (tmp_path / "probe").symlink_to(ROOT, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available for this user")
+
+    project = tmp_path / "repo"
+    args = ("--project-dir", str(project)) if target == "codex-project" else ()
+    _run(tmp_path, "--skill", skill, "--target", target, *args)
+    _run(tmp_path, "--skill", skill, "--target", target, *args, "--link", "--force")
+
+    root = project if target == "codex-project" else tmp_path
+    destination = root / ".agents" / "skills" / skill
+    backups = list(destination.parent.glob(f"{skill}.backup.*"))
+    assert len(backups) == 1
+    assert (backups[0] / "SKILL.md").is_file()
+    assert destination.is_symlink()
+    assert destination.resolve() == (ROOT / "skills" / skill).resolve()
 
 
 # --------------------------------------------------------------------------
