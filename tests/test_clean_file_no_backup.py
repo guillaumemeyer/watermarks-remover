@@ -103,7 +103,11 @@ def test_clean_image_in_place_no_backup(tmp_path: Path):
 def test_clean_file_container_in_place_no_backup(tmp_path: Path):
     clean_file_py = SCRIPTS / "clean_file.py"
     target = tmp_path / "page.html"
-    content = '<!DOCTYPE html><html><head><meta name="generator" content="ChatGPT"></head><body>' + chr(0x200B) + 'test</body></html>'
+    content = (
+        '<!DOCTYPE html><html><head><meta name="generator" content="ChatGPT"></head><body>'
+        + chr(0x200B)
+        + "test</body></html>"
+    )
     target.write_text(content, encoding="utf-8")
 
     res = subprocess.run(

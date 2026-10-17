@@ -151,7 +151,9 @@ def main() -> int:
         else:
             bak, created = backup_path(args.path)
             if not created and not args.quiet:
-                eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
+                eprint(
+                    f"backup {bak} already exists from an earlier run; keeping the original backup"
+                )
             # On a repeated in-place run the backup already holds the original
             # (pre-clean) bytes; process the current file so an already-clean
             # destination is not reported as modified against a stale .bak.
