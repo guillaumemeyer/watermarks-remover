@@ -256,3 +256,30 @@ def test_clean_latex_linebreak_percent_is_comment():
     # The comment line does not start with '%', so it survives; the \hypersetup
     # inside the comment is skipped rather than cleaned.
     assert r"\hypersetup{pdfcreator={Claude}}" in out
+
+
+def test_clean_latex_pdftitle_prose_survives():
+    """pdftitle and /Title values containing vendor words in prose are preserved."""
+    doc = (
+        r"\hypersetup{pdftitle={Comparing OpenAI and Gemini pricing for the procurement review}}"
+        + "\n"
+        + r"\pdfinfo{/Title (Notes on Claude Monet, water lilies, 1906) /Author (Jane)}"
+    )
+    out, actions = clean_latex(doc)
+    assert "pdftitle={Comparing OpenAI and Gemini pricing for the procurement review}" in out
+    assert "/Title (Notes on Claude Monet, water lilies, 1906)" in out
+    assert "/Author" not in out
+    assert "drop hypersetup block" not in actions
+
+
+def test_inspect_latex_comment_ai_generator_products():
+    """Comments naming AI generator products are flagged and dropped."""
+    doc = "% This document was written by ChatGPT and the figures made with Midjourney.\n\\begin{document}x\\end{document}"
+    c2pa, ai, findings, _details = inspect_latex(doc)
+    assert ai is True
+    assert c2pa is False
+    assert any("AI markers" in f for f in findings)
+    out, actions = clean_latex(doc)
+    assert "ChatGPT" not in out
+    assert "Midjourney" not in out
+    assert any("drop comment" in a for a in actions)
