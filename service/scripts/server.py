@@ -109,6 +109,8 @@ ALLOWED_CLEAN_OPTIONS = {
     "keep_non_ai_metadata": bool,
     "also_layer_a_text": bool,
     "remove_pixel": str,
+    "ctrlregen_intensity": float,
+    "protect_faces": bool,
     "remove_audio_watermark": bool,
     "strip_all_metadata": bool,
     "detect_before": bool,
@@ -349,10 +351,15 @@ def _file_request(extra: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _clean_request_schema() -> dict[str, Any]:
+    """Describe accepted cleaning options and their types for the OpenAPI request schema."""
     options: dict[str, Any] = {}
     for key, kind in ALLOWED_CLEAN_OPTIONS.items():
         if kind is bool:
             options[key] = _schema(type="boolean")
+        elif kind is float:
+            options[key] = _schema(
+                type="number", minimum=0, exclusiveMinimum=True, maximum=1, default=0.25
+            )
         else:
             options[key] = _schema(type="string")
     return _file_request(
@@ -907,6 +914,7 @@ def _decode_input(body: dict[str, Any]) -> tuple[bytes, str]:
 
 
 def _parse_clean_options(options: Any) -> dict[str, Any]:
+    """Validate option types and compatible combinations before dispatching a clean request."""
     if options is None:
         return {}
     if not isinstance(options, dict):
@@ -914,10 +922,18 @@ def _parse_clean_options(options: Any) -> dict[str, Any]:
     for key, value in options.items():
         if key not in ALLOWED_CLEAN_OPTIONS:
             raise ValueError(f"unknown option: {key}")
+        if key == "ctrlregen_intensity":
+            if type(value) not in (int, float) or not 0 < value <= 1:
+                raise ValueError(
+                    "ctrlregen_intensity must be a number greater than 0 and at most 1"
+                )
+            continue
         expected_type = ALLOWED_CLEAN_OPTIONS[key]
         if not isinstance(value, expected_type):
             type_name = "boolean" if expected_type is bool else "string"
             raise ValueError(f"option {key!r} must be a {type_name}")
+    if options.get("protect_faces") and options.get("remove_pixel") != "ctrlregen":
+        raise ValueError("protect_faces requires remove_pixel=ctrlregen")
     # An unrecognised deep_images value used to fall back to "auto", which turns
     # a request for lossless cleaning into one that may recompress. Reject it
     # here, where every caller -- single file and batch alike -- passes through.
@@ -1224,7 +1240,10 @@ def _detect_payload(data: bytes, name: str) -> dict[str, Any]:
 
 
 def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Classify and clean uploaded bytes, rejecting face protection for non-image formats."""
     kind = classify_bytes(data, Path(name).suffix)
+    if options.get("protect_faces") and kind != "image":
+        raise ValueError("protect_faces requires an image payload")
     if kind == "unknown":
         raise ValueError(
             "unrecognized file format; use a filename with a known extension "
@@ -1289,6 +1308,8 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 dest,
                 strip_all_metadata=strip_all,
                 remove_pixel=remove_pixel,
+                ctrlregen_intensity=float(options.get("ctrlregen_intensity", 0.25)),
+                protect_faces=bool(options.get("protect_faces")),
             )
             if bool(options.get("detect_before")) and result.get("synthid_before") is None:
                 result["synthid_before"] = run_synthid_score(src)

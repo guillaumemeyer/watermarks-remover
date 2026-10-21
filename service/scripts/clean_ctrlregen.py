@@ -74,6 +74,7 @@ def _progress(message: str) -> None:
 
 
 def main() -> int:
+    """Run optional CtrlRegen cleaning and report face protection and output details."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", type=Path, help="Input image (PNG/JPEG/etc.)")
     p.add_argument("-o", "--output", type=Path, help="Output path (default: *.ctrlregen.*)")
@@ -103,6 +104,11 @@ def main() -> int:
     )
     p.add_argument("--seed", type=int, default=None, help="Optional RNG seed")
     p.add_argument("--json", action="store_true", help="Emit JSON on stdout")
+    p.add_argument(
+        "--protect-faces",
+        action="store_true",
+        help="Preserve original face structure with gradient blending; may retain watermarks",
+    )
     args = p.parse_args()
 
     if not args.path.is_file():
@@ -155,6 +161,15 @@ def main() -> int:
     device = resolve_device(args.device)
     output = args.output or cleaned_path(args.path, ".ctrlregen")
 
+    if args.protect_faces:
+        face_model = Path(os.environ.get("WATERMARKS_FACE_MODEL", ""))
+        if not face_model.is_file():
+            print(
+                "Face protection model missing: run setup_face_protection.py and set WATERMARKS_FACE_MODEL",
+                file=sys.stderr,
+            )
+            return 3
+
     engine = CtrlRegenEngine(
         base_model_id=None,
         device=device,
@@ -174,6 +189,16 @@ def main() -> int:
     except Exception as e:
         print(f"CtrlRegen error: {e}", file=sys.stderr)
         return 1
+
+    face_report = None
+    if args.protect_faces:
+        try:
+            from face_protection import protect_faces
+
+            result, face_report, _ = protect_faces(image, result)
+        except Exception as e:
+            print(f"Face protection failed: {e}", file=sys.stderr)
+            return 1
 
     try:
         data = save_image_bytes(result, output)
@@ -195,6 +220,8 @@ def main() -> int:
         "bytes_out": len(data),
     }
 
+    if face_report is not None:
+        payload["face_protection"] = face_report
     if args.json:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
