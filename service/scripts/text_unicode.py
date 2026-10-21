@@ -374,6 +374,41 @@ def _is_cjk_ideograph(cp: int) -> bool:
     )
 
 
+# U+200B is the standard word separator in scripts written without spaces
+# (Thai, Lao, Khmer, Myanmar, Tibetan) and the line-break hint in Japanese and
+# Chinese. Between two letters of the same such script it is orthography, not a
+# carrier. In space-delimited scripts it is zero width and, under UAX #29, not a
+# word boundary either, so removing it there leaves the rendered text unchanged.
+_ZWSP = 0x200B
+
+
+def _spaceless_script(cp: int) -> str | None:
+    """Return the script group for letters of scripts that use ZWSP as a word break."""
+    # Letters and marks only: the kana block also holds punctuation such as
+    # U+30FB KATAKANA MIDDLE DOT, next to which a ZWSP is not a word break.
+    if unicodedata.category(chr(cp))[0] not in ("L", "M"):
+        return None
+    # Han, CJK iteration/closing marks (U+3005, U+3006, U+303B), kana repeat
+    # marks, hiragana and katakana; the gate above drops the brackets, numerals
+    # and symbols that share U+3005..U+30FF.
+    if _is_cjk_ideograph(cp) or 0x3005 <= cp <= 0x30FF:
+        return "cjk"
+    for start, end, name in (
+        (0x0E00, 0x0E7F, "thai"),
+        (0x0E80, 0x0EFF, "lao"),
+        (0x0F00, 0x0FFF, "tibetan"),
+        (0x1000, 0x109F, "myanmar"),
+        (0x1780, 0x17FF, "khmer"),
+    ):
+        if start <= cp <= end:
+            return name
+    return None
+
+
+def _is_word_char(ch: str | None) -> bool:
+    return ch is not None and unicodedata.category(ch)[0] in ("L", "M", "N")
+
+
 def _is_mongolian_base(cp: int) -> bool:
     return 0x1800 <= cp <= 0x18AF
 
@@ -502,6 +537,10 @@ def _decide(
                 return ("keep", ch, None)
         if cp in _TAG_RANGE and valid_flag_tag:
             return ("keep", ch, None)
+        if cp == _ZWSP and prev_input is not None and next_input is not None:
+            prev_script = _spaceless_script(ord(prev_input))
+            if prev_script is not None and prev_script == _spaceless_script(ord(next_input)):
+                return ("keep", ch, None)
         if cp in _MONGOLIAN_FVS and prev_kept is not None and _is_mongolian_letter(ord(prev_kept)):
             return ("keep", ch, None)
         if cp in _KHMER_VOWELS and prev_kept is not None and _is_khmer_letter(ord(prev_kept)):
@@ -630,7 +669,7 @@ def inspect_text(
         "Layer A only: invisible/format Unicode and space homoglyphs (edit-based carriers).",
         "Statistical (token-sampling) watermarks are not detectable here; use Layer B rewrite.",
         "Inspect kinds: strip, bidi, tag_chars, variation_selector, zwj_family, private_use, space, confusable, other_cf.",
-        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), RTL directional marks/paired embeddings, orthographic Arabic/Syriac Cf marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat, Duployan shorthand, musical beaming). Inspection still reports bidi controls. Use explicit strip flags only after review.",
+        "Load-bearing invisibles are preserved by default during cleaning: emoji glue, CJK/Mongolian variation selectors, script joiners, complete flag tag sequences, same-script fillers/selectors (Mongolian FVS, Khmer inherent vowels, Hangul jamo fillers), zero-width spaces between letters of scripts written without spaces (Thai, Lao, Khmer, Myanmar, Tibetan, CJK), RTL directional marks/paired embeddings, orthographic Arabic/Syriac Cf marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat, Duployan shorthand, musical beaming). Inspection still reports bidi controls. Use explicit strip flags only after review.",
     ]
     if not hits:
         notes.append(
@@ -652,6 +691,7 @@ def clean_text(
     """Return cleaned text and a stats dict."""
     removed: Counter[str] = Counter()
     replaced: Counter[str] = Counter()
+    joined_words: list[int] = []
     out_chars: list[str] = []
     prev_kept: str | None = None
     valid_flag_tags = _valid_flag_tag_indices(text)
@@ -682,6 +722,15 @@ def clean_text(
             prev_kept = out_char
         else:  # strip
             removed[_char_label(ch)] += 1
+            # A ZWSP that was the only separator between two word characters
+            # is reported (never replaced): no rule can tell "Hello<ZWSP>world"
+            # from a break hint inside a compound, so a human decides.
+            if (
+                ord(ch) == _ZWSP
+                and _is_word_char(text[i - 1] if i > 0 else None)
+                and _is_word_char(text[i + 1] if i + 1 < len(text) else None)
+            ):
+                joined_words.append(i)
             # prev_kept unchanged
 
     result = "".join(out_chars)
@@ -710,8 +759,35 @@ def clean_text(
         "removed_count": sum(removed.values()),
         "replaced_count": sum(replaced.values()),
         "nfkc_changed": nfkc_changed,
+        "zwsp_word_joins": _join_positions(text, joined_words),
     }
     return result, stats
+
+
+def _join_positions(text: str, offsets: list[int]) -> list[dict]:
+    """Offset and 1-based line for each ascending offset, counting newlines once."""
+    positions: list[dict] = []
+    line, scanned = 1, 0
+    for offset in offsets:
+        line += text.count("\n", scanned, offset)
+        scanned = offset
+        positions.append({"offset": offset, "line": line})
+    return positions
+
+
+def describe_zwsp_joins(stats: dict) -> str | None:
+    """One-line review prompt for ZWSPs removed from between two letters or digits, or None."""
+    joins = stats.get("zwsp_word_joins") or []
+    if not joins:
+        return None
+    # Several joins can share a line; name each line once, in file order.
+    line_numbers = sorted({join["line"] for join in joins})
+    shown = ", ".join(str(line) for line in line_numbers[:5])
+    more = "" if len(line_numbers) <= 5 else f" (+{len(line_numbers) - 5} more)"
+    return (
+        f"{len(joins)} zero-width space(s) between letters or digits removed; "
+        f"check for joined words or numbers on line(s) {shown}{more}"
+    )
 
 
 def human_report(report: TextInspectReport) -> str:

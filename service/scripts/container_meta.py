@@ -812,6 +812,15 @@ def inspect_markdown(text: str) -> tuple[bool, bool, list[str], dict]:
     return c2pa, has_ai, findings, {"has_frontmatter": has_fm, "keys": keys}
 
 
+def _layer_a_text_action(stats: dict) -> str:
+    """Action line for a Layer A pass over a whole text document."""
+    from text_unicode import describe_zwsp_joins  # local import to avoid cycles
+
+    action = f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
+    joins = describe_zwsp_joins(stats)
+    return f"{action}; {joins}" if joins else action
+
+
 def clean_markdown(text: str) -> tuple[str, list[str]]:
     actions: list[str] = []
     m = _FM_RE.match(text)
@@ -4736,9 +4745,7 @@ def clean_container(
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
             if stats["removed_count"] or stats["replaced_count"]:
-                actions.append(
-                    f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
-                )
+                actions.append(_layer_a_text_action(stats))
                 text = text2
         safe_write_text(dest, text)
     elif fmt == "markdown":
@@ -4747,9 +4754,7 @@ def clean_container(
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
             if stats["removed_count"] or stats["replaced_count"]:
-                actions.append(
-                    f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
-                )
+                actions.append(_layer_a_text_action(stats))
                 text = text2
         safe_write_text(dest, text)
     elif fmt == "latex":
@@ -4758,9 +4763,7 @@ def clean_container(
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
             if stats["removed_count"] or stats["replaced_count"]:
-                actions.append(
-                    f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
-                )
+                actions.append(_layer_a_text_action(stats))
                 text = text2
         safe_write_text(dest, text)
     else:
