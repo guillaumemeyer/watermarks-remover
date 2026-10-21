@@ -308,8 +308,12 @@ def detect_container_format(path: Path, data: bytes | None = None) -> str:
     if data is not None:
         if data[:4] == b"%PDF":
             return "pdf"
-        if data[:100].lstrip().startswith(b"<") and b"svg" in data[:500].lower():
-            return "svg"
+        if data[:100].lstrip().startswith(b"<"):
+            prefix_lower = data[:500].lower()
+            if b"<!doctype html" in prefix_lower or b"<html" in prefix_lower:
+                return "html"
+            if re.search(rb"<svg[\s>]", prefix_lower):
+                return "svg"
         if data[:2] == b"PK":
             # zip-based; sniff
             try:
@@ -1198,7 +1202,9 @@ def _latex_pdfinfo_items(arg: str) -> list[tuple[str, str, int, int]]:
 def _latex_entry_class(key: str, value: str | None) -> tuple[bool, bool, bool]:
     r"""Return (ai, c2pa, clear) for one \hypersetup/\pdfinfo entry."""
     lkey = key.lower().lstrip("/")
-    ai = bool(AI_META_NAME_RE.search(key) or (value and AI_META_NAME_RE.search(value)))
+    norm_key = lkey[3:] if lkey.startswith("pdf") else lkey
+    raw_val = value.strip("{}()").strip() if value else ""
+    ai = bool(AI_META_NAME_RE.search(key) or (value and named_value_is_ai(norm_key, raw_val)))
     c2pa = bool(_C2PA_RE.search(key) or (value and _C2PA_RE.search(value)))
     clear = lkey in _CLEAR_HYPER_KEYS or lkey in _CLEAR_PDFINFO_KEYS
     return ai, c2pa, clear
@@ -1262,7 +1268,7 @@ def _latex_comment_class(line: str) -> tuple[bool, str, bool]:
     Aggressive: drop AI-provenance comment lines, % !TEX tooling comments, and
     Emacs/Vim modelines. Ordinary documentation comments survive.
     """
-    if AI_META_NAME_RE.search(line):
+    if _comment_is_provenance(line) or AI_META_NAME_RE.search(line):
         return True, "AI markers", True
     if _LATEX_MAGIC_COMMENT_RE.search(line):
         return True, "magic comment", False

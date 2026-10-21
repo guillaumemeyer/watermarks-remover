@@ -1286,3 +1286,19 @@ def test_clean_container_refuses_open_office_document(tmp_path: Path):
         clean_container(path, dest)
 
     assert not dest.exists()
+
+
+def test_unknown_extension_html_with_svg_sniffs_as_html():
+    """An unknown-extension HTML document containing inline SVG sniffs as HTML, not SVG."""
+    data = (
+        b"<!DOCTYPE html>\n"
+        b'<html><head><meta name="generator" content="Claude"></head>\n'
+        b'<body><svg width="10" height="10"><circle r="4"/></svg>\n'
+        b"<p>hello</p></body></html>"
+    )
+    assert detect_container_format(Path("page.hbs"), data) == "html"
+    assert detect_container_format(Path("page"), data) == "html"
+
+    # And an actual SVG still sniffs as SVG
+    svg_data = b'<svg width="10" height="10"><circle r="4"/></svg>'
+    assert detect_container_format(Path("icon"), svg_data) == "svg"
