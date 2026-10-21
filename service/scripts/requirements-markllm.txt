@@ -19,7 +19,7 @@ torch==2.14.0.*
 transformers==5.15.0
 # transformers 5.15.0 caps tokenizers at <=0.23.0; there is no 0.23.0
 # release (0.22.2 -> 0.23.1), so the highest compatible pin is 0.22.2.
-tokenizers==0.22.2
+tokenizers==0.23.3
 datasets==5.0.1
 accelerate==1.15.0
 SentencePiece==0.2.2
