@@ -294,3 +294,472 @@ def test_webp_size_mismatch_is_not_rewritten():
         assert "size mismatch" in str(error)
     else:
         raise AssertionError("WebP with a size mismatch should not be rewritten")
+
+
+def _isolate_flux3_env(monkeypatch) -> None:
+    """Keep a real API key, mock switch or SynthID scorer in the shell out of these runs."""
+    for name in (
+        "OPENROUTER_API_KEY",
+        "FLUX3_TEST_MOCK",
+        "FLUX3_TEST_MOCK_BYTES",
+        "REVERSE_SYNTHID_DIR",
+        "WATERMARKS_SYNTHID_SCORER_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_remove_pixel_marknull_option(tmp_path: Path):
+    img = tmp_path / "test.png"
+    img.write_bytes(JPEG_1X1)
+    result = _run(
+        "clean_image.py",
+        str(img),
+        "--remove-pixel",
+        "marknull",
+        "--marknull-mode",
+        "fast",
+        "--marknull-iterations",
+        "1",
+        "--marknull-device",
+        "cpu",
+        "--json",
+    )
+    assert result.returncode in (0, 1)  # 0 if torch available, 1 if not
+    report = json.loads(result.stdout)
+    assert "pixel_removal" in report
+    pr = report["pixel_removal"]
+    assert pr["available"] is (result.returncode == 0)
+    # The engine CLI accepted the forwarded flags; any failure is the backend itself.
+    assert "usage:" not in pr.get("error", "")
+
+
+def test_remove_pixel_nfpa_option(tmp_path: Path):
+    img = tmp_path / "test.png"
+    img.write_bytes(JPEG_1X1)
+    result = _run(
+        "clean_image.py",
+        str(img),
+        "--remove-pixel",
+        "nfpa",
+        "--nfpa-flow-strength",
+        "0.1",
+        "--nfpa-steps",
+        "1",
+        "--nfpa-device",
+        "cpu",
+        "--json",
+    )
+    assert result.returncode in (0, 1)
+    report = json.loads(result.stdout)
+    assert "pixel_removal" in report
+    pr = report["pixel_removal"]
+    assert pr["available"] is (result.returncode == 0)
+    assert "usage:" not in pr.get("error", "")
+
+
+def test_remove_pixel_flux3_option(tmp_path: Path, monkeypatch):
+    _isolate_flux3_env(monkeypatch)
+    img = tmp_path / "test.png"
+    img.write_bytes(JPEG_1X1)
+    result = _run("clean_image.py", str(img), "--remove-pixel", "flux3", "--json")
+    assert result.returncode == 1  # no API key
+    report = json.loads(result.stdout)
+    assert "pixel_removal" in report
+    assert report["pixel_removal"]["available"] is False
+    assert "OPENROUTER_API_KEY" in report["pixel_removal"]["error"]
+
+
+def test_remove_pixel_flux3_passes_settings_through(tmp_path: Path, monkeypatch):
+    _isolate_flux3_env(monkeypatch)
+    monkeypatch.setenv("FLUX3_TEST_MOCK", "1")
+    img = tmp_path / "test.png"
+    img.write_bytes(JPEG_1X1)
+    result = _run(
+        "clean_image.py",
+        str(img),
+        "--remove-pixel",
+        "flux3",
+        "--flux3-api-key",
+        "test-key",
+        "--flux3-resolution",
+        "768",
+        "--flux3-strength",
+        "minimal",
+        "--flux3-max-cost",
+        "0.1",
+        "--flux3-provider",
+        "openrouter",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    pr = json.loads(result.stdout)["pixel_removal"]
+    assert pr["available"] is True
+    assert pr["mock"] is True
+    assert pr["resolution"] == "768"
+    assert pr["strength"] == "minimal"
+    assert pr["max_cost_usd"] == 0.1
+    assert pr["provider"] == "openrouter"
+
+
+def _write_real_png(path: Path, noise: bool = False) -> None:
+    """Write a small but valid PNG that PIL can fully decode."""
+    import io
+
+    from PIL import Image
+
+    if noise:
+        import numpy as np
+
+        arr = np.random.RandomState(42).randint(0, 255, (64, 64, 3), dtype=np.uint8)
+        img = Image.fromarray(arr)
+    else:
+        img = Image.new("RGB", (32, 32), (128, 128, 128))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    path.write_bytes(buf.getvalue())
+
+
+_VALID_SCHEMES = frozenset(
+    {
+        "none",
+        "unknown",
+        "tree_ring",
+        "gaussian_shading",
+        "stegastamp",
+        "stable_signature",
+        "synthid",
+        "hidden",
+        "trustmark",
+    }
+)
+
+
+def test_remove_pixel_auto_classifies_and_reports(tmp_path: Path):
+    """--remove-pixel auto runs classifier and reports a valid scheme with confidence."""
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    result = _run(
+        "clean_image.py",
+        str(src),
+        "-o",
+        str(tmp_path / "out.png"),
+        "--remove-pixel",
+        "auto",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert "classifier" in data
+    assert data["classifier"]["scheme"] in _VALID_SCHEMES
+    assert 0.0 <= data["classifier"]["confidence"] <= 1.0
+
+
+def test_classify_flag_adds_classifier_key(tmp_path: Path):
+    """--classify alone adds classifier output to JSON."""
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    result = _run(
+        "clean_image.py",
+        str(src),
+        "-o",
+        str(tmp_path / "out.png"),
+        "--classify",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert "classifier" in data
+    assert data["classifier"]["scheme"] in _VALID_SCHEMES
+
+
+def test_classify_standalone_uses_original_image(tmp_path: Path, monkeypatch):
+    """--classify without auto/chain classifies the original input, not the output."""
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    out = tmp_path / "out.png"
+
+    classified_paths: list[str] = []
+
+    import classify_watermark as cw
+
+    _real = cw.WatermarkClassifier.classify
+
+    def spy(self, path):
+        classified_paths.append(path)
+        return _real(self, path)
+
+    monkeypatch.setattr(cw.WatermarkClassifier, "classify", spy)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "clean_image.py",
+            str(src),
+            "-o",
+            str(out),
+            "--classify",
+            "--json",
+        ],
+    )
+
+    from io import StringIO
+
+    import clean_image as ci
+
+    monkeypatch.setattr("sys.stdout", StringIO())
+    ci.main()
+
+    assert len(classified_paths) == 1
+    assert Path(classified_paths[0]) == src
+
+
+def test_chain_classify_runs_chain_on_unknown(tmp_path: Path):
+    """--remove-pixel chain --classify runs chain even for unknown scheme."""
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    import os
+
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    env.pop("OPENROUTER_API_KEY", None)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "clean_image.py"),
+         str(src), "-o", str(tmp_path / "out.png"),
+         "--remove-pixel", "chain", "--classify", "--json"],
+        text=True, capture_output=True, check=False, env=env,
+    )
+    assert result.returncode in (0, 1), f"unexpected exit {result.returncode}: {result.stderr[:300]}"
+    data = json.loads(result.stdout)
+    assert "classifier" in data
+    assert data["classifier"]["scheme"] in _VALID_SCHEMES
+    assert "pixel_removal" in data
+    assert data["pixel_removal"]["engine"] == "chain"
+    if result.returncode == 1:
+        assert not data["pixel_removal"].get("complete", True), \
+            "exit 1 should only happen when chain is incomplete"
+
+
+def test_stealth_check_flag(tmp_path: Path):
+    """--stealth-check runs forensic_check.py and adds 'forensic' key."""
+    src = tmp_path / "img.png"
+    _write_real_png(src)
+    result = _run(
+        "clean_image.py",
+        str(src),
+        "-o",
+        str(tmp_path / "out.png"),
+        "--stealth-check",
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert "forensic" in data
+
+
+def test_incomplete_chain_exits_1(tmp_path: Path, monkeypatch):
+    """An incomplete chain result must produce exit code 1."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import attack_chain as ac_mod
+    import classify_watermark as cw_mod
+    import clean_image as ci_mod
+
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    dest = tmp_path / "out.png"
+
+    incomplete = ac_mod.ChainResult(
+        scheme="unknown", steps_run=1, steps_total=2,
+        stealth_score=0.8, elapsed_s=1.0, output_path=str(dest),
+        complete=False,
+    )
+
+    def mock_run_chain(*args, **kwargs):
+        import shutil
+        shutil.copy2(str(src), str(dest))
+        return incomplete
+
+    monkeypatch.setattr(sys, "argv", [
+        "clean_image.py", str(src), "-o", str(dest),
+        "--remove-pixel", "chain", "--classify", "--json",
+    ])
+    with patch.object(ac_mod, "run_chain", mock_run_chain), \
+         patch.object(cw_mod, "WatermarkClassifier") as mock_cls:
+        mock_cls.return_value.classify.return_value = SimpleNamespace(
+            scheme="unknown", confidence=0.5)
+        rc = ci_mod.main()
+
+    assert rc == 1, f"expected exit 1 for incomplete chain, got {rc}"
+
+
+def test_inprocess_chain_forwards_flux3_settings(tmp_path: Path, monkeypatch):
+    """In-process chain path must forward flux3_timeout and flux3_provider."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import attack_chain as ac_mod
+    import classify_watermark as cw_mod
+    import clean_image as ci_mod
+
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    dest = tmp_path / "out.png"
+
+    captured_kwargs: dict = {}
+
+    def mock_run_chain(*args, **kwargs):
+        import shutil
+        captured_kwargs.update(kwargs)
+        shutil.copy2(str(src), str(dest))
+        return ac_mod.ChainResult(
+            scheme="unknown", steps_run=2, steps_total=2,
+            stealth_score=0.05, elapsed_s=1.0, output_path=str(dest),
+            complete=True,
+        )
+
+    monkeypatch.setattr(sys, "argv", [
+        "clean_image.py", str(src), "-o", str(dest),
+        "--remove-pixel", "chain", "--classify", "--json",
+        "--flux3-provider", "bfl", "--flux3-timeout", "120",
+    ])
+    with patch.object(ac_mod, "run_chain", mock_run_chain), \
+         patch.object(cw_mod, "WatermarkClassifier") as mock_cls:
+        mock_cls.return_value.classify.return_value = SimpleNamespace(
+            scheme="unknown", confidence=0.9)
+        rc = ci_mod.main()
+
+    assert rc == 0, f"expected exit 0, got {rc}"
+    assert captured_kwargs.get("flux3_provider") == "bfl", \
+        f"flux3_provider not forwarded: {captured_kwargs}"
+    assert captured_kwargs.get("flux3_timeout") == 120, \
+        f"flux3_timeout not forwarded: {captured_kwargs}"
+
+
+def test_none_defaults_preserve_chain_autoselect(tmp_path: Path, monkeypatch):
+    """Omitting --flux3-resolution/--flux3-strength must not override chain auto-selection."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import attack_chain as ac_mod
+    import classify_watermark as cw_mod
+    import clean_image as ci_mod
+
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    dest = tmp_path / "out.png"
+
+    captured_kwargs: dict = {}
+
+    def mock_run_chain(*args, **kwargs):
+        import shutil
+        captured_kwargs.update(kwargs)
+        shutil.copy2(str(src), str(dest))
+        return ac_mod.ChainResult(
+            scheme="unknown", steps_run=2, steps_total=2,
+            stealth_score=0.05, elapsed_s=1.0, output_path=str(dest),
+            complete=True,
+        )
+
+    monkeypatch.setattr(sys, "argv", [
+        "clean_image.py", str(src), "-o", str(dest),
+        "--remove-pixel", "chain", "--classify", "--json",
+    ])
+    with patch.object(ac_mod, "run_chain", mock_run_chain), \
+         patch.object(cw_mod, "WatermarkClassifier") as mock_cls:
+        mock_cls.return_value.classify.return_value = SimpleNamespace(
+            scheme="unknown", confidence=0.9)
+        rc = ci_mod.main()
+
+    assert rc == 0, f"expected exit 0, got {rc}"
+    assert captured_kwargs.get("flux3_resolution") is None, \
+        f"flux3_resolution should be None, got {captured_kwargs.get('flux3_resolution')}"
+    assert captured_kwargs.get("flux3_strength") is None, \
+        f"flux3_strength should be None, got {captured_kwargs.get('flux3_strength')}"
+
+
+def test_subprocess_chain_forwards_provider_and_timeout(tmp_path: Path, monkeypatch):
+    """Subprocess chain path (no --classify) must forward provider/timeout to coordinator."""
+    import image_meta as im_mod
+
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    dest = tmp_path / "out.png"
+
+    captured_cmd: list[str] = []
+
+    original_run = im_mod.subprocess.run
+
+    def mock_subprocess_run(cmd, **kwargs):
+        script_name = Path(cmd[1]).name if len(cmd) > 1 else ""
+        if script_name == "attack_chain.py":
+            captured_cmd.extend(cmd)
+            import shutil
+            shutil.copy2(str(src), str(dest))
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout='{"scheme":"unknown","steps_run":2,"steps_total":2,'
+                       '"stealth_score":0.05,"elapsed_s":1.0,"output":"' +
+                       str(dest).replace("\\", "\\\\") + '","complete":true}',
+                stderr="",
+            )
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(im_mod.subprocess, "run", mock_subprocess_run)
+    im_mod.clean_image(
+        src, dest, remove_pixel="chain",
+        flux3_provider="bfl", flux3_timeout=120,
+    )
+
+    assert captured_cmd, "attack_chain.py was never called via subprocess"
+    assert "--flux3-provider" in captured_cmd, \
+        f"--flux3-provider not in coordinator args: {captured_cmd}"
+    provider_idx = captured_cmd.index("--flux3-provider")
+    assert captured_cmd[provider_idx + 1] == "bfl"
+    assert "--flux3-timeout" in captured_cmd, \
+        f"--flux3-timeout not in coordinator args: {captured_cmd}"
+    timeout_idx = captured_cmd.index("--flux3-timeout")
+    assert captured_cmd[timeout_idx + 1] == "120"
+
+
+def test_subprocess_chain_outer_timeout_covers_worst_case(tmp_path: Path, monkeypatch):
+    """Subprocess coordinator deadline must exceed internal worst-case stage budget."""
+    import image_meta as im_mod
+
+    src = tmp_path / "img.png"
+    _write_real_png(src, noise=True)
+    dest = tmp_path / "out.png"
+
+    captured_timeout: list[int] = []
+
+    original_run = im_mod.subprocess.run
+
+    def mock_subprocess_run(cmd, **kwargs):
+        script_name = Path(cmd[1]).name if len(cmd) > 1 else ""
+        if script_name == "attack_chain.py":
+            captured_timeout.append(kwargs.get("timeout", 0))
+            import shutil
+            shutil.copy2(str(src), str(dest))
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout='{"scheme":"unknown","steps_run":2,"steps_total":2,'
+                       '"stealth_score":0.05,"elapsed_s":1.0,"output":"' +
+                       str(dest).replace("\\", "\\\\") + '","complete":true}',
+                stderr="",
+            )
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(im_mod.subprocess, "run", mock_subprocess_run)
+
+    for flux3_timeout in (60, 600):
+        captured_timeout.clear()
+        im_mod.clean_image(
+            src, dest, remove_pixel="chain",
+            flux3_timeout=flux3_timeout,
+        )
+        assert captured_timeout, "attack_chain.py was never called"
+        outer = captured_timeout[0]
+        local_step_timeout = 600
+        internal_worst = 120 + 2 * local_step_timeout + flux3_timeout + 2 * 120
+        assert outer > internal_worst, (
+            f"outer timeout {outer} must exceed internal worst case "
+            f"{internal_worst} for flux3_timeout={flux3_timeout}"
+        )

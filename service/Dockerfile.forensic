@@ -1,0 +1,27 @@
+# Optional local Docker image for the forensic stealth detector.
+#
+# Build from the repository root (build context = service/):
+#   docker build -f service/Dockerfile.forensic -t watermarks-remover-forensic service/
+#
+# The detector measures spectral deviation and JPEG double-compression traces
+# to evaluate whether a watermark-removal operation left detectable artifacts.
+
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/common.py /app/common.py
+COPY scripts/forensic_check.py /app/forensic_check.py
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir Pillow numpy scipy
+
+RUN useradd --system --no-create-home appuser
+USER appuser
+
+ENTRYPOINT ["python", "forensic_check.py"]

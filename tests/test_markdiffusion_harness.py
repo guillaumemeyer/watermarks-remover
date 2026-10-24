@@ -126,6 +126,23 @@ def _import_harness():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _evict_real_pil():
+    """Remove real Pillow from sys.modules so fake upstream PIL takes precedence."""
+    saved = {
+        name: sys.modules.pop(name)
+        for name in list(sys.modules)
+        if name == "PIL" or name.startswith("PIL.")
+    }
+    sys.modules.pop("mdh", None)
+    yield
+    for name in list(sys.modules):
+        if name == "PIL" or name.startswith("PIL."):
+            del sys.modules[name]
+    sys.modules.pop("mdh", None)
+    sys.modules.update(saved)
+
+
 # ---- CLI exit-code paths that need no torch/diffusers -----------------------
 
 

@@ -1844,6 +1844,143 @@ def run_ctrlregen_clean(
     return payload
 
 
+def _run_json_engine(
+    cmd: list[str], name: str, timeout: int, env: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Run a removal-engine CLI that prints a JSON report on stdout and exits 0 on success."""
+    try:
+        run_env = None
+        if env:
+            run_env = {**os.environ, **env}
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=subprocess_creationflags,
+            env=run_env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"available": False, "error": f"{name} timed out after {timeout}s"}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+    if r.returncode != 0:
+        return {"available": False, "error": (r.stderr or "").strip()[:2000]}
+    try:
+        payload = json.loads(r.stdout or "{}")
+    except json.JSONDecodeError as e:
+        return {"available": False, "error": f"bad {name} adapter JSON: {e}"}
+    payload["available"] = True
+    return payload
+
+
+def run_marknull_clean(
+    path: Path,
+    output: Path,
+    *,
+    mode: str = "optimize",
+    iterations: int = 100,
+    device: str | None = None,
+    timeout: int = 3600,
+) -> dict[str, Any]:
+    """Run the optional MarkNull remover in a subprocess.
+
+    Returns ``{"available": False, "error": ...}`` when torch/diffusers are
+    missing or the remover fails at runtime; a successful run is
+    ``{"available": True, ...}``.
+    """
+    cmd = [
+        sys.executable,
+        str(SCRIPTS_DIR / "clean_marknull.py"),
+        str(path),
+        "-o",
+        str(output),
+        "--mode",
+        mode,
+        "--iterations",
+        str(iterations),
+        "--json",
+    ]
+    if device:
+        cmd += ["--device", str(device)]
+    return _run_json_engine(cmd, "MarkNull", timeout)
+
+
+def run_nfpa_clean(
+    path: Path,
+    output: Path,
+    *,
+    flow_strength: float = 0.05,
+    steps: int = 50,
+    device: str | None = None,
+    timeout: int = 3600,
+) -> dict[str, Any]:
+    """Run the optional NFPA remover in a subprocess.
+
+    Returns ``{"available": False, "error": ...}`` when torch/diffusers are
+    missing or the remover fails at runtime; a successful run is
+    ``{"available": True, ...}``.
+    """
+    cmd = [
+        sys.executable,
+        str(SCRIPTS_DIR / "clean_nfpa.py"),
+        str(path),
+        "-o",
+        str(output),
+        "--flow-strength",
+        str(flow_strength),
+        "--steps",
+        str(steps),
+        "--json",
+    ]
+    if device:
+        cmd += ["--device", str(device)]
+    return _run_json_engine(cmd, "NFPA", timeout)
+
+
+def run_flux3_clean(
+    path: Path,
+    output: Path,
+    *,
+    api_key: str | None = None,
+    resolution: str = "1k",
+    strength: str = "normal",
+    max_cost: float = 0.50,
+    provider: str = "openrouter",
+    timeout: int = 600,
+) -> dict[str, Any]:
+    """Regenerate the image through the FLUX 3 API in a subprocess.
+
+    FLUX 3 has no local model, so it is unavailable only when no API key is
+    given and ``$OPENROUTER_API_KEY`` is unset; then no request is made.
+    """
+    key = (api_key or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+    if not key:
+        return {
+            "available": False,
+            "error": "FLUX 3 not configured (set OPENROUTER_API_KEY or pass --flux3-api-key)",
+        }
+    cmd = [
+        sys.executable,
+        str(SCRIPTS_DIR / "clean_flux3.py"),
+        str(path),
+        "-o",
+        str(output),
+        "--resolution",
+        resolution,
+        "--strength",
+        strength,
+        "--max-cost",
+        str(max_cost),
+        "--provider",
+        provider,
+        "--json",
+    ]
+    return _run_json_engine(cmd, "FLUX 3", timeout, env={"OPENROUTER_API_KEY": key})
+
+
 def synthid_is_watermarked(entry: dict[str, Any] | None) -> bool:
     """True if *entry* indicates an affirmative SynthID watermark detection."""
     if not entry or not entry.get("available"):
@@ -2216,6 +2353,24 @@ def strip_isobmff(
     return bytes(out), actions
 
 
+def _run_engine_script(
+    script_name: str,
+    path: Path,
+    output: Path,
+    extra_args: list[str] | None = None,
+    timeout: int = 600,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run one of the new removal engine scripts as a subprocess."""
+    script = SCRIPTS_DIR / script_name
+    if not script.is_file():
+        return {"available": False, "error": f"{script_name} not found"}
+    cmd = [sys.executable, str(script), str(path), "-o", str(output), "--json"]
+    if extra_args:
+        cmd.extend(extra_args)
+    return _run_json_engine(cmd, script_name, timeout, env=env)
+
+
 def clean_image(
     path: Path,
     dest: Path,
@@ -2236,6 +2391,20 @@ def clean_image(
     markdiffusion_steps: int = 50,
     markdiffusion_device: str | None = None,
     markdiffusion_timeout: int = 3600,
+    marknull_mode: str = "optimize",
+    marknull_iterations: int = 100,
+    marknull_device: str | None = None,
+    marknull_timeout: int = 3600,
+    nfpa_flow_strength: float = 0.05,
+    nfpa_steps: int = 50,
+    nfpa_device: str | None = None,
+    nfpa_timeout: int = 3600,
+    flux3_api_key: str | None = None,
+    flux3_resolution: str | None = None,
+    flux3_strength: str | None = None,
+    flux3_max_cost: float = 0.50,
+    flux3_provider: str = "openrouter",
+    flux3_timeout: int = 600,
 ) -> dict[str, Any]:
     synthid_before = run_synthid_score(path, synthid_dir)
     data = path.read_bytes()
@@ -2321,6 +2490,93 @@ def clean_image(
                     "DiffusionPurification pixel removal skipped: "
                     f"{pixel_removal.get('error', 'unknown error')}"
                 )
+        elif remove_pixel == "marknull":
+            pixel_removal = run_marknull_clean(
+                dest,
+                dest,
+                mode=marknull_mode,
+                iterations=marknull_iterations,
+                device=marknull_device,
+                timeout=marknull_timeout,
+            )
+            if pixel_removal.get("available"):
+                actions.append(f"MarkNull pixel removal (mode {marknull_mode})")
+            else:
+                actions.append(
+                    f"MarkNull pixel removal skipped: {pixel_removal.get('error', 'unknown error')}"
+                )
+        elif remove_pixel == "nfpa":
+            pixel_removal = run_nfpa_clean(
+                dest,
+                dest,
+                flow_strength=nfpa_flow_strength,
+                steps=nfpa_steps,
+                device=nfpa_device,
+                timeout=nfpa_timeout,
+            )
+            if pixel_removal.get("available"):
+                actions.append(f"NFPA pixel removal (flow strength {nfpa_flow_strength})")
+            else:
+                actions.append(
+                    f"NFPA pixel removal skipped: {pixel_removal.get('error', 'unknown error')}"
+                )
+        elif remove_pixel == "flux3":
+            eff_resolution = flux3_resolution or "1k"
+            eff_strength = flux3_strength or "normal"
+            pixel_removal = run_flux3_clean(
+                dest,
+                dest,
+                api_key=flux3_api_key,
+                resolution=eff_resolution,
+                strength=eff_strength,
+                max_cost=flux3_max_cost,
+                provider=flux3_provider,
+                timeout=flux3_timeout,
+            )
+            if pixel_removal.get("available"):
+                actions.append(
+                    f"FLUX 3 regeneration (strength {eff_strength}, resolution {eff_resolution})"
+                )
+            else:
+                actions.append(
+                    f"FLUX 3 regeneration skipped: {pixel_removal.get('error', 'unknown error')}"
+                )
+        elif remove_pixel == "fmdiffwa":
+            pixel_removal = _run_engine_script("clean_fmdiffwa.py", dest, dest)
+            label = "FMDiffWA" if pixel_removal.get("available") else "FMDiffWA skipped"
+            actions.append(f"{label}: {pixel_removal.get('error', 'ok')}")
+        elif remove_pixel == "synthid_bypass":
+            pixel_removal = _run_engine_script("clean_synthid_bypass.py", dest, dest)
+            label = "SynthID bypass" if pixel_removal.get("available") else "SynthID bypass skipped"
+            actions.append(f"{label}: {pixel_removal.get('error', 'ok')}")
+        elif remove_pixel == "treering":
+            pixel_removal = _run_engine_script("clean_treering.py", dest, dest)
+            label = "TreeRing" if pixel_removal.get("available") else "TreeRing skipped"
+            actions.append(f"{label}: {pixel_removal.get('error', 'ok')}")
+        elif remove_pixel == "chain":
+            chain_args = []
+            if flux3_max_cost is not None:
+                chain_args.extend(["--flux3-max-cost", str(flux3_max_cost)])
+            if flux3_resolution is not None:
+                chain_args.extend(["--flux3-resolution", flux3_resolution])
+            if flux3_strength is not None:
+                chain_args.extend(["--flux3-strength", flux3_strength])
+            if flux3_provider != "openrouter":
+                chain_args.extend(["--flux3-provider", flux3_provider])
+            if flux3_timeout != 600:
+                chain_args.extend(["--flux3-timeout", str(flux3_timeout)])
+            chain_env = {}
+            if flux3_api_key:
+                chain_env["OPENROUTER_API_KEY"] = flux3_api_key
+            # Budget: classify(120) + up to 2 local steps(600 each) +
+            # Flux3(flux3_timeout) + up to 3 forensic checks(120 each) + buffer(60)
+            chain_timeout = 120 + 2 * 600 + flux3_timeout + 3 * 120 + 60
+            pixel_removal = _run_engine_script(
+                "attack_chain.py", dest, dest, extra_args=chain_args or None,
+                timeout=chain_timeout, env=chain_env or None,
+            )
+            label = "AttackChain" if pixel_removal.get("available") else "AttackChain skipped"
+            actions.append(f"{label}: {pixel_removal.get('error', 'ok')}")
         else:
             raise ValueError(f"unknown pixel remover: {remove_pixel}")
 

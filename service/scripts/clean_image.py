@@ -13,6 +13,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import backup_path, cleaned_path, eprint
 from image_meta import clean_image
 
+ENGINE_AUTO = "auto"
+
+ENGINE_NAMES = {
+    "auto": "AutoChain",
+    "ctrlregen": "CtrlRegen",
+    "diffusion": "DiffusionPurification",
+    "marknull": "MarkNull",
+    "nfpa": "NFPA",
+    "fmdiffwa": "FMDiffWA",
+    "synthid_bypass": "SynthID Bypass",
+    "treering": "TreeRing",
+    "flux3": "FLUX 3",
+    "chain": "AttackChain",
+}
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
@@ -37,11 +52,37 @@ def main() -> int:
     )
     p.add_argument(
         "--remove-pixel",
-        choices=["ctrlregen", "diffusion"],
+        choices=[
+            "auto",
+            "ctrlregen",
+            "diffusion",
+            "marknull",
+            "nfpa",
+            "fmdiffwa",
+            "synthid_bypass",
+            "treering",
+            "chain",
+            "flux3",
+        ],
         default=None,
         help="Run optional pixel-watermark removal after metadata cleaning "
-        "(ctrlregen = CtrlRegen regeneration; diffusion = MarkDiffusion "
-        "DiffusionPurification regeneration)",
+        "(auto = classify then chain; ctrlregen = CtrlRegen regeneration; "
+        "diffusion = MarkDiffusion; marknull = MarkNull NLAS; nfpa = NFPA next-frame; "
+        "fmdiffwa = frequency-domain Wiener; synthid_bypass = SynthID bypass; "
+        "treering = Tree-Ring notch filter; chain = auto-classify and sequence; "
+        "flux3 = FLUX 3 API regeneration, needs an OpenRouter key)",
+    )
+    p.add_argument(
+        "--classify",
+        action="store_true",
+        help="Classify watermark type on the original image before removal "
+        "and add result to JSON output "
+        "(with chain: classify then run chain in-process; standalone: classify only)",
+    )
+    p.add_argument(
+        "--stealth-check",
+        action="store_true",
+        help="Run forensic stealth check after removal",
     )
     p.add_argument(
         "--ctrlregen-dir",
@@ -121,6 +162,91 @@ def main() -> int:
         default=3600,
         help="Purification subprocess timeout in seconds (default: 3600)",
     )
+    p.add_argument(
+        "--marknull-mode",
+        choices=["optimize", "fast"],
+        default="optimize",
+        help="MarkNull mode: optimize = NLAS gradient descent, fast = one VAE round-trip "
+        "(default: optimize)",
+    )
+    p.add_argument(
+        "--marknull-iterations",
+        type=int,
+        default=100,
+        help="MarkNull optimisation iterations (default: 100)",
+    )
+    p.add_argument(
+        "--marknull-device",
+        type=str,
+        default=None,
+        help="MarkNull device: auto|cpu|cuda|mps (default: auto)",
+    )
+    p.add_argument(
+        "--marknull-timeout",
+        type=int,
+        default=3600,
+        help="MarkNull subprocess timeout in seconds (default: 3600)",
+    )
+    p.add_argument(
+        "--nfpa-flow-strength",
+        type=float,
+        default=0.05,
+        help="NFPA flow field strength in (0, 1] (default: 0.05)",
+    )
+    p.add_argument(
+        "--nfpa-steps",
+        type=int,
+        default=50,
+        help="NFPA DDIM steps per pass (default: 50)",
+    )
+    p.add_argument(
+        "--nfpa-device",
+        type=str,
+        default=None,
+        help="NFPA device: auto|cpu|cuda|mps (default: auto)",
+    )
+    p.add_argument(
+        "--nfpa-timeout",
+        type=int,
+        default=3600,
+        help="NFPA subprocess timeout in seconds (default: 3600)",
+    )
+    p.add_argument(
+        "--flux3-api-key",
+        type=str,
+        default=None,
+        help="OpenRouter API key for FLUX 3 (default: $OPENROUTER_API_KEY)",
+    )
+    p.add_argument(
+        "--flux3-resolution",
+        choices=["768", "1k", "1.5k", "2k", "4k"],
+        default=None,
+        help="FLUX 3 output resolution (default: auto from input size for chain, 1k for direct)",
+    )
+    p.add_argument(
+        "--flux3-strength",
+        choices=["minimal", "normal", "strong", "maximum"],
+        default=None,
+        help="FLUX 3 prompt strength (default: per-scheme for chain, normal for direct)",
+    )
+    p.add_argument(
+        "--flux3-max-cost",
+        type=float,
+        default=0.50,
+        help="Refuse FLUX 3 when the estimated cost in USD exceeds this (default: 0.50)",
+    )
+    p.add_argument(
+        "--flux3-provider",
+        choices=["openrouter", "bfl", "fal"],
+        default="openrouter",
+        help="FLUX 3 provider; only openrouter is implemented so far (default: openrouter)",
+    )
+    p.add_argument(
+        "--flux3-timeout",
+        type=int,
+        default=600,
+        help="FLUX 3 subprocess timeout in seconds (default: 600)",
+    )
     args = p.parse_args()
 
     if not args.path.is_file():
@@ -139,13 +265,25 @@ def main() -> int:
         src = args.path
         dest = args.output or cleaned_path(args.path)
 
+    is_auto = args.remove_pixel == ENGINE_AUTO
+    use_inprocess_chain = is_auto or (args.remove_pixel == "chain" and args.classify)
+    effective_remove_pixel = None if use_inprocess_chain else args.remove_pixel
+
+    pre_classify_result = None
+    if args.classify and not use_inprocess_chain:
+        from classify_watermark import WatermarkClassifier
+
+        classifier = WatermarkClassifier()
+        cr = classifier.classify(str(args.path))
+        pre_classify_result = {"scheme": cr.scheme, "confidence": round(cr.confidence, 4)}
+
     try:
         result = clean_image(
             src,
             dest,
             strip_all_metadata=not args.keep_non_ai_metadata,
             synthid_dir=args.synthid_dir,
-            remove_pixel=args.remove_pixel,
+            remove_pixel=effective_remove_pixel,
             ctrlregen_dir=args.ctrlregen_dir,
             ctrlregen_intensity=args.ctrlregen_intensity,
             ctrlregen_steps=args.ctrlregen_steps,
@@ -159,14 +297,90 @@ def main() -> int:
             markdiffusion_steps=args.markdiffusion_steps,
             markdiffusion_device=args.markdiffusion_device,
             markdiffusion_timeout=args.markdiffusion_timeout,
+            marknull_mode=args.marknull_mode,
+            marknull_iterations=args.marknull_iterations,
+            marknull_device=args.marknull_device,
+            marknull_timeout=args.marknull_timeout,
+            nfpa_flow_strength=args.nfpa_flow_strength,
+            nfpa_steps=args.nfpa_steps,
+            nfpa_device=args.nfpa_device,
+            nfpa_timeout=args.nfpa_timeout,
+            flux3_api_key=args.flux3_api_key,
+            flux3_resolution=args.flux3_resolution,
+            flux3_strength=args.flux3_strength,
+            flux3_max_cost=args.flux3_max_cost,
+            flux3_provider=args.flux3_provider,
+            flux3_timeout=args.flux3_timeout,
         )
     except Exception as e:
         eprint(f"error: {e}")
         return 1
 
+    if use_inprocess_chain:
+        from attack_chain import run_chain
+        from classify_watermark import WatermarkClassifier
+
+        classifier = WatermarkClassifier()
+        cr = classifier.classify(str(dest))
+        scheme = cr.scheme
+        result["classifier"] = {"scheme": scheme, "confidence": round(cr.confidence, 4)}
+        skip_chain = scheme == "none" or (is_auto and scheme == "unknown")
+        if not skip_chain:
+            eprint(f"classified as {scheme} (confidence {cr.confidence:.2f}), running chain")
+            chain_result = run_chain(
+                dest, scheme, output_path=dest,
+                api_key=args.flux3_api_key, max_cost=args.flux3_max_cost,
+                flux3_resolution=args.flux3_resolution,
+                flux3_strength=args.flux3_strength,
+                flux3_timeout=args.flux3_timeout,
+                flux3_provider=args.flux3_provider,
+            )
+            result["pixel_removal"] = {
+                "available": True,
+                "complete": chain_result.complete,
+                "engine": "chain",
+                "scheme": scheme,
+                "steps_run": chain_result.steps_run,
+                "stealth_score": chain_result.stealth_score,
+                "elapsed_s": round(chain_result.elapsed_s, 2),
+            }
+            if not chain_result.complete:
+                eprint(f"chain incomplete: {chain_result.steps_run}/{chain_result.steps_total} steps")
+        else:
+            eprint(f"no watermark detected (scheme={scheme}), skipping chain")
+    elif pre_classify_result is not None:
+        result["classifier"] = pre_classify_result
+
+    if args.stealth_check and dest.is_file():
+        import subprocess as _sp
+
+        from common import subprocess_creationflags
+
+        _fc = _sp.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parent / "forensic_check.py"),
+                str(dest),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+            creationflags=subprocess_creationflags,
+        )
+        if _fc.returncode == 0:
+            try:
+                result["forensic"] = json.loads(_fc.stdout)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                result["forensic"] = {"error": "parse failed"}
+        else:
+            result["forensic"] = {"error": f"exit {_fc.returncode}"}
+
     pr = result.get("pixel_removal")
     residual = result["still_has_c2pa"] or result["still_has_ai_metadata"]
-    failed = residual or (pr is not None and not pr.get("available"))
+    incomplete = pr is not None and not pr.get("complete", True)
+    failed = residual or (pr is not None and not pr.get("available")) or incomplete
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -189,15 +403,16 @@ def main() -> int:
                 f"(watermarked: {label})"
             )
         if pr is not None:
-            if pr.get("available"):
-                engine = (
-                    "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
-                )
-                eprint(f"{engine}: removed on {pr.get('device', 'unknown device')}")
+            engine = ENGINE_NAMES.get(
+                args.remove_pixel or "", pr.get("engine", args.remove_pixel or "")
+            )
+            if pr.get("available") and pr.get("complete", True):
+                where = pr.get("device") or pr.get("provider") or "unknown device"
+                eprint(f"{engine}: removed on {where}")
+            elif pr.get("available") and not pr.get("complete", True):
+                steps = pr.get("steps_run", "?")
+                eprint(f"{engine}: INCOMPLETE ({steps} steps ran, chain did not finish)")
             else:
-                engine = (
-                    "CtrlRegen" if args.remove_pixel == "ctrlregen" else "DiffusionPurification"
-                )
                 eprint(f"{engine}: unavailable: {pr.get('error', 'unknown error')}")
         if residual:
             eprint("warning: residual C2PA/AI signals may remain")

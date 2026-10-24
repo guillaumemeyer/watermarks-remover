@@ -1,0 +1,30 @@
+# Optional local Docker image for the MarkNull latent-space watermark removal engine.
+#
+# Build from the repository root (build context = service/):
+#   docker build -f service/Dockerfile.marknull -t watermarks-remover-marknull service/
+#
+# MarkNull is a reimplementation (arXiv 2608.10166) for the WAVES robustness-
+# evaluation toolchain.  It requires torch and diffusers for VAE access.
+
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/common.py /app/common.py
+COPY scripts/marknull_engine.py /app/marknull_engine.py
+COPY scripts/clean_marknull.py /app/clean_marknull.py
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+    diffusers transformers accelerate Pillow numpy scipy
+
+RUN useradd --system --no-create-home appuser
+USER appuser
+
+ENTRYPOINT ["python", "clean_marknull.py"]

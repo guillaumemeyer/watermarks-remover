@@ -54,3 +54,4 @@ stealer/prompts/**
 posts.md
 *.cleaned.*
 *.bak
+.superpowers/

@@ -178,9 +178,40 @@ services:
     volumes:
       - synthid-cache:/home/scorer/.cache/huggingface
 
+  wr-marknull:
+    profiles: [heavy]
+    build:
+      context: service
+      dockerfile: Dockerfile.marknull
+    image: watermarks-remover-marknull:local
+    command: ["--help"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - marknull-cache:/home/appuser/.cache/huggingface
+
+  wr-forensic:
+    profiles: [harness]
+    build:
+      context: service
+      dockerfile: Dockerfile.forensic
+    image: watermarks-remover-forensic:local
+    command: ["--help"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    user: "10001:10001"
+
 volumes:
   markllm-cache:
   bench-out:
   markdiffusion-cache:
   ctrlregen-cache:
   synthid-cache:
+  marknull-cache:
