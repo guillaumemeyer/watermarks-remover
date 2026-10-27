@@ -138,7 +138,12 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     ),
 )
 
-RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+# Split only when the next character starts a new sentence (capital letter,
+# digit, quote, bracket, or a paragraph break): a plain `(?<=[.!?])\s+` also
+# breaks on abbreviations ("The U.S. is"), version numbers ("2.0 is"), and
+# "e.g. " fragments, inflating sentence_count and skewing the burstiness CV
+# the composite score leans on.
+RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])|\n+")
 RE_WORDS = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
 
@@ -214,7 +219,7 @@ def extract_sentences(text: str) -> list[str]:
     if not raw_text.strip():
         return []
 
-    chunks = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+    chunks = RE_SENTENCE_SPLIT.split(raw_text)
     sentences = [s.strip() for s in chunks if s.strip()]
     return sentences
 
