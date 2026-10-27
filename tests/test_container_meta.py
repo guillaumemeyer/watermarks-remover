@@ -147,7 +147,7 @@ def test_html_data_ai_attribute_value_with_embedded_quote_stripped_whole():
     assert "<span>more</span>" in cleaned
     # No half-removed value may leak into the tag.
     assert "review of the page" not in cleaned
-    assert 'say \"hi\"' not in cleaned
+    assert 'say "hi"' not in cleaned
 
 
 @pytest.mark.parametrize(

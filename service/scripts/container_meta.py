@@ -1681,9 +1681,7 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
     # Quote-aware like _META_CONTENT_VALUE_RE: `[^"']*` stops at the *other*
     # quote character, so a double-quoted value holding an apostrophe was cut
     # short (see #373 for the same bug in the meta content scan).
-    for m in re.finditer(
-        r"\bdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", text, re.I
-    ):
+    for m in re.finditer(r"\bdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", text, re.I):
         has_ai = True
         findings.append(f"attr: {m.group(0)[:80]}")
 
@@ -1735,9 +1733,7 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out, n = _drop_provenance_comments(out)
     if n:
         actions.append(f"drop AI provenance comment x{n}")
-    out2, n = re.subn(
-        r"\sdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", "", out, flags=re.I
-    )
+    out2, n = re.subn(r"\sdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", "", out, flags=re.I)
     if n:
         actions.append(f"drop data-ai* attributes x{n}")
         out = out2
