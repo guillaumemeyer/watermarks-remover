@@ -127,6 +127,29 @@ def test_html_data_ai_prefix_attributes_not_ai():
     assert "no HTML AI meta removed" in actions
 
 
+def test_html_data_ai_attribute_value_with_embedded_quote_stripped_whole():
+    # Regression: the data-ai* scan used `[^"']*` for the value, which stops at
+    # the *other* quote character. A double-quoted value holding an apostrophe
+    # was truncated mid-value: clean_html dropped only `data-ai-summary="Bob'`
+    # and left `s review"` behind, corrupting the tag (same class as #373).
+    html = (
+        "<html><body>"
+        '<div class="wrap" data-ai-summary="Bob\'s review of the page">text</div>'
+        "<span data-ai-note='say \"hi\" now'>more</span>"
+        "</body></html>"
+    )
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert has_ai, findings
+    cleaned, _actions = clean_html(html)
+    assert "data-ai-summary" not in cleaned
+    assert "data-ai-note" not in cleaned
+    assert '<div class="wrap">text</div>' in cleaned
+    assert "<span>more</span>" in cleaned
+    # No half-removed value may leak into the tag.
+    assert "review of the page" not in cleaned
+    assert 'say \"hi\"' not in cleaned
+
+
 @pytest.mark.parametrize(
     "attr",
     ['data-ai="gpt"', 'data-ai-generated="yes"', "data-ai_model='gpt'"],
