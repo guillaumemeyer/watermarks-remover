@@ -150,6 +150,24 @@ def test_html_data_ai_attribute_value_with_embedded_quote_stripped_whole():
     assert 'say "hi"' not in cleaned
 
 
+def test_html_data_ai_attribute_value_spanning_newlines_matched_whole():
+    # Regression: without re.S, `.` cannot match line breaks, so a quoted
+    # data-ai* value containing a newline was missed by inspect_html and
+    # left in the document by clean_html (the pre-`\"`-aware `[^"']*`
+    # pattern did match newlines).
+    html = (
+        "<html><body>"
+        '<div data-ai-note="first\nsecond">text</div>'
+        "</body></html>"
+    )
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert has_ai, findings
+    cleaned, _actions = clean_html(html)
+    assert "data-ai-note" not in cleaned
+    assert "first" not in cleaned and "second" not in cleaned
+    assert "<div>text</div>" in cleaned
+
+
 @pytest.mark.parametrize(
     "attr",
     ['data-ai="gpt"', 'data-ai-generated="yes"', "data-ai_model='gpt'"],
