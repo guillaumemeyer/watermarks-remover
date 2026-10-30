@@ -155,16 +155,48 @@ def test_html_data_ai_attribute_value_spanning_newlines_matched_whole():
     # data-ai* value containing a newline was missed by inspect_html and
     # left in the document by clean_html (the pre-`\"`-aware `[^"']*`
     # pattern did match newlines).
-    html = (
-        "<html><body>"
-        '<div data-ai-note="first\nsecond">text</div>'
-        "</body></html>"
-    )
+    html = '<html><body><div data-ai-note="first\nsecond">text</div></body></html>'
     _c2, has_ai, findings, _ = inspect_html(html)
     assert has_ai, findings
     cleaned, _actions = clean_html(html)
     assert "data-ai-note" not in cleaned
     assert "first" not in cleaned and "second" not in cleaned
+    assert "<div>text</div>" in cleaned
+
+
+def test_html_data_ai_in_body_prose_untouched():
+    # Follow-up regression: the scan ran on the full document text, so prose
+    # that merely mentions `data-ai="..."` lost the quoted words it held --
+    # visible text, not provenance. Only real attributes inside start tags
+    # may be flagged or stripped.
+    html = '<p>Set data-ai="Bob\'s note" in prose.</p>'
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert not has_ai, findings
+    cleaned, actions = clean_html(html)
+    assert cleaned == html
+    assert "no HTML AI meta removed" in actions
+
+
+def test_html_data_ai_inside_other_attribute_value_untouched():
+    # `data-ai=` text inside another attribute's quoted value is not an
+    # attribute; the real data-ai* attribute in the same tag still goes.
+    html = '<div title="keep data-ai=\'x\' here" data-ai="real">text</div>'
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert has_ai, findings
+    assert any("real" in f for f in findings), findings
+    cleaned, _actions = clean_html(html)
+    assert "keep data-ai='x' here" in cleaned
+    assert 'data-ai="real"' not in cleaned
+    assert "<div title=\"keep data-ai='x' here\">text</div>" in cleaned
+
+
+def test_html_data_ai_value_with_tag_close_char_stripped():
+    # Quote-aware tag scanning: a '>' inside a quoted value must not end the
+    # tag and hide the attribute from the strip.
+    html = '<div data-ai="a>b">text</div>'
+    cleaned, _actions = clean_html(html)
+    assert "data-ai" not in cleaned
+    assert "a>b" not in cleaned
     assert "<div>text</div>" in cleaned
 
 

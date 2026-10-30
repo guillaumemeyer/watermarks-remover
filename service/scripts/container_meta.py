@@ -1646,6 +1646,136 @@ def _script_tag_is_jsonld(open_tag: str) -> bool:
     return False
 
 
+_DATA_AI_ATTR_NAME_RE = re.compile(r"data-ai(?:[-_][\w-]*)?", re.I)
+
+
+def _find_start_tag_end(text: str, start: int) -> int:
+    """End index (exclusive) of the start tag at 'start', or -1 if unterminated.
+
+    Quote-aware: a '>' inside a quoted attribute value does not end the tag.
+    Linear, like _find_tag_end, but reports unterminated tags instead of
+    swallowing the rest of the document.
+    """
+    i, n = start + 1, len(text)
+    while i < n:
+        c = text[i]
+        if c == ">":
+            return i + 1
+        if c in "\"'":
+            quote = c
+            i += 1
+            while i < n and text[i] != quote:
+                i += 1
+            if i >= n:
+                return -1  # the quoted value never closes
+            i += 1  # skip closing quote
+        else:
+            i += 1
+    return -1
+
+
+def _iter_start_tags(text: str) -> Iterator[tuple[int, int]]:
+    """Yield (start, end) for start tags: '<' + letter, closed by '>'.
+
+    Comments, doctypes and closing tags do not start a tag. An unterminated
+    tag swallows the rest of the document (like _iter_script_blocks), so a
+    flood of openers with no '>' costs one pass, not a rescan per opener.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        lt = text.find("<", i)
+        if lt < 0 or lt + 1 >= n:
+            return
+        if not text[lt + 1].isalpha():
+            i = lt + 1
+            continue
+        end = _find_start_tag_end(text, lt)
+        if end < 0:
+            return
+        yield lt, end
+        i = end
+
+
+def _data_ai_attr_spans(tag: str) -> list[tuple[int, int]]:
+    """Locate data-ai* attribute units (name + quoted value) in one start tag.
+
+    Quote-aware like _script_tag_is_jsonld: attribute names are read only
+    outside quoted values, so `data-ai=` inside another attribute's value is
+    not found. The separator group keeps the match to the bare `data-ai`
+    attribute or a `data-ai-*`/`data-ai_*` provenance name; without it,
+    `data-aid` / `data-airline` matched too (issue #395).
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 1, len(tag)  # skip '<'
+    while i < n and tag[i] not in _HTML_SPACE + "/>":  # tag name
+        i += 1
+    while i < n:
+        unit_start = i
+        while i < n and tag[i] in _HTML_SPACE:
+            i += 1
+        if i >= n or tag[i] == ">":
+            break
+        name_start = i
+        while i < n and tag[i] not in "=" + _HTML_SPACE + "/>":
+            i += 1
+        name = tag[name_start:i]
+        while i < n and tag[i] in _HTML_SPACE:
+            i += 1
+        quoted = False
+        closed = False
+        if i < n and tag[i] == "=":
+            i += 1
+            while i < n and tag[i] in _HTML_SPACE:
+                i += 1
+            if i < n and tag[i] in "\"'":
+                quote = tag[i]
+                quoted = True
+                i += 1
+                while i < n and tag[i] != quote:
+                    i += 1
+                closed = i < n
+                i += 1  # skip closing quote
+            else:
+                while i < n and tag[i] not in _HTML_SPACE + ">":
+                    i += 1
+        if i == unit_start:
+            i += 1  # stray char, e.g. the '/' of a self-closing tag
+            continue
+        if quoted and closed and _DATA_AI_ATTR_NAME_RE.fullmatch(name):
+            spans.append((unit_start, i))
+    return spans
+
+
+def _drop_data_ai_attrs_from_start_tags(text: str) -> tuple[str, int]:
+    """Strip data-ai* attributes, but only inside real start tags.
+
+    The earlier full-document pattern also deleted `data-ai="..."` written in
+    body prose, losing visible text; scoping to start tags keeps it intact.
+    """
+    parts: list[str] = []
+    total = 0
+    last = 0
+    for tag_start, tag_end in _iter_start_tags(text):
+        tag = text[tag_start:tag_end]
+        spans = _data_ai_attr_spans(tag)
+        if not spans:
+            continue
+        parts.append(text[last:tag_start])
+        last = tag_end
+        tag_parts: list[str] = []
+        tag_last = 0
+        for s, e in spans:
+            tag_parts.append(tag[tag_last:s])
+            tag_last = e
+        tag_parts.append(tag[tag_last:])
+        parts.append("".join(tag_parts))
+        total += len(spans)
+    if not total:
+        return text, 0
+    parts.append(text[last:])
+    return "".join(parts), total
+
+
 def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
     findings: list[str] = []
     has_ai = False
@@ -1675,17 +1805,17 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
         findings.append(f"comment: {block[:120]}")
         if re.search(r"c2pa|content.?credential", block, re.I):
             has_c2pa = True
-    # data-ai* attributes. The optional separator group keeps the match to
-    # the bare `data-ai` attribute or a `data-ai-*`/`data-ai_*` provenance name;
-    # without it, `data-aid` / `data-airline` matched too (issue #395).
-    # Quote-aware like _META_CONTENT_VALUE_RE: `[^"']*` stops at the *other*
-    # quote character, so a double-quoted value holding an apostrophe was cut
-    # short (see #373 for the same bug in the meta content scan).
-    # re.S lets `.` span line breaks, so quoted values containing newlines are
-    # matched whole instead of being missed by both the inspect and clean scans.
-    for m in re.finditer(r"\bdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", text, re.I | re.S):
-        has_ai = True
-        findings.append(f"attr: {m.group(0)[:80]}")
+    # data-ai* attributes, scoped to real attributes inside start tags: quoted
+    # values are read as one unit (either quote character, line breaks
+    # included), so a value holding the other quote is matched whole (same
+    # class as #373), and `data-ai="..."` written in body prose -- visible
+    # text, not provenance -- stays out of the report (follow-up finding on
+    # the earlier full-document pattern).
+    for tag_start, tag_end in _iter_start_tags(text):
+        tag = text[tag_start:tag_end]
+        for attr_start, attr_end in _data_ai_attr_spans(tag):
+            has_ai = True
+            findings.append(f"attr: {tag[attr_start:attr_end].strip()[:80]}")
 
     uri_c2pa, uri_ai, uri_findings = _inspect_embedded_data_uris(text)
     if uri_c2pa:
@@ -1735,7 +1865,9 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out, n = _drop_provenance_comments(out)
     if n:
         actions.append(f"drop AI provenance comment x{n}")
-    out2, n = re.subn(r"\sdata-ai(?:[-_][\w-]*)?\s*=\s*([\"'])(?:(?!\1).)*\1", "", out, flags=re.I | re.S)
+    # Tag-scoped like the inspect scan: the full-document pattern also
+    # deleted `data-ai="..."` written in body prose.
+    out2, n = _drop_data_ai_attrs_from_start_tags(out)
     if n:
         actions.append(f"drop data-ai* attributes x{n}")
         out = out2
