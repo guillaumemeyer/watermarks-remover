@@ -138,8 +138,25 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     ),
 )
 
-RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+# Candidate split gaps: whitespace after sentence punctuation, or any run
+# of newlines (a paragraph break always splits). A whitespace gap after
+# punctuation is kept only when what follows starts a new sentence: a plain
+# `(?<=[.!?])\s+` also breaks on abbreviations ("The U.S. is"), version
+# numbers ("2.0 is"), and "e.g. " fragments, inflating sentence_count and
+# skewing the burstiness CV the composite score leans on.
+RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 RE_WORDS = re.compile(r"\b[\w'-]+\b", re.UNICODE)
+
+
+def _starts_sentence(ch: str) -> bool:
+    """True when *ch* may begin a new sentence.
+
+    `str.isupper()` is Unicode-aware, so non-English prose splits at its
+    sentence starts too (the skill supports non-English text): an ASCII
+    `[A-Z]` class rejected characters like "É", "П", and "Ω" and fused the
+    sentences they began into one, skewing the burstiness CV.
+    """
+    return ch.isupper() or "0" <= ch <= "9" or ch in "\"'(["
 
 
 @dataclass
@@ -214,7 +231,17 @@ def extract_sentences(text: str) -> list[str]:
     if not raw_text.strip():
         return []
 
-    chunks = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+    chunks = []
+    last = 0
+    for m in RE_SENTENCE_SPLIT.finditer(raw_text):
+        gap = m.group(0)
+        nxt = raw_text[m.end() : m.end() + 1]
+        # Paragraph breaks always split; a punctuation gap only when the
+        # next character starts a new sentence.
+        if "\n" in gap or _starts_sentence(nxt):
+            chunks.append(raw_text[last : m.start()])
+            last = m.end()
+    chunks.append(raw_text[last:])
     sentences = [s.strip() for s in chunks if s.strip()]
     return sentences
 

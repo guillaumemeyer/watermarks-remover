@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "service" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from score_stylometry import compute_burstiness
+from score_stylometry import compute_burstiness, extract_sentences
 from score_stylometry import score_text_stylometry as score_text
 
 PLAIN = (
@@ -27,6 +27,37 @@ PLAIN = (
 )
 
 FENCED = "```tex\n" + PLAIN + "\n```\n"
+
+
+def test_sentence_split_does_not_fragment_abbreviations_or_decimals():
+    # Regression: the sentence split broke after every ". " (and friends), so
+    # "The U.S. is", "2.0 is", and "e.g. on" became standalone fragments.
+    # That inflated sentence_count and skewed the burstiness CV the composite
+    # score leans on, even though RE_SENTENCE_SPLIT always carried the
+    # intended sentence-start guard.
+    text = (
+        "The U.S. has 50 states. Version 2.0 is out now. "
+        "Dr. Smith agrees, e.g. on taxes. It was released."
+    )
+    sentences = extract_sentences(text)
+    assert "The U.S. has 50 states." in sentences
+    assert "Version 2.0 is out now." in sentences
+    assert "on taxes." not in sentences
+    assert "The U.S." not in sentences
+
+
+def test_sentence_split_recognizes_unicode_sentence_starts():
+    # Regression: the ASCII [A-Z] sentence-start guard rejected uppercase
+    # letters outside ASCII (e.g. French "É"), so non-English prose stayed
+    # fused into one sentence and skewed the burstiness CV. The skill
+    # supports non-English text, so the check is Unicode-aware now.
+    text = "Il est parti. Émile est resté. Питер открыт. Ωμέγα."
+    sentences = extract_sentences(text)
+    assert "Il est parti." in sentences
+    assert "Émile est resté." in sentences
+    assert "Питер открыт." in sentences
+    assert "Ωμέγα." in sentences
+    assert len(sentences) == 4
 
 
 def test_burstiness_reports_unmeasurable_cv():
