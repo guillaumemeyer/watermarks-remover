@@ -46,6 +46,20 @@ def test_sentence_split_does_not_fragment_abbreviations_or_decimals():
     assert "The U.S." not in sentences
 
 
+def test_sentence_split_recognizes_unicode_sentence_starts():
+    # Regression: the ASCII [A-Z] sentence-start guard rejected uppercase
+    # letters outside ASCII (e.g. French "É"), so non-English prose stayed
+    # fused into one sentence and skewed the burstiness CV. The skill
+    # supports non-English text, so the check is Unicode-aware now.
+    text = "Il est parti. Émile est resté. Питер открыт. Ωμέγα."
+    sentences = extract_sentences(text)
+    assert "Il est parti." in sentences
+    assert "Émile est resté." in sentences
+    assert "Питер открыт." in sentences
+    assert "Ωμέγα." in sentences
+    assert len(sentences) == 4
+
+
 def test_burstiness_reports_unmeasurable_cv():
     assert compute_burstiness([])[2] is None
     assert compute_burstiness(["One sentence only."])[2] is None
