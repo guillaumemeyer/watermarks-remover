@@ -32,6 +32,11 @@ def main() -> int:
     p.add_argument("path", type=Path)
     p.add_argument("-o", "--output", type=Path)
     p.add_argument("--in-place", action="store_true")
+    p.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="In-place: do not write a .bak copy before modifying the file",
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument("--nfkc", action="store_true", help="Text: NFKC normalize")
     p.add_argument(
@@ -135,15 +140,25 @@ def main() -> int:
             advice=ROUTER_ADVICE,
         )
 
+    if args.no_backup and not args.in_place:
+        eprint("refusing --no-backup without --in-place")
+        return 2
+
     if args.in_place:
-        bak, created = backup_path(args.path)
-        if not created and not args.quiet:
-            eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
-        # On a repeated in-place run the backup already holds the original
-        # (pre-clean) bytes; process the current file so an already-clean
-        # destination is not reported as modified against a stale .bak.
-        src = bak if created else args.path
-        dest = args.path
+        if args.no_backup:
+            src = args.path
+            dest = args.path
+        else:
+            bak, created = backup_path(args.path)
+            if not created and not args.quiet:
+                eprint(
+                    f"backup {bak} already exists from an earlier run; keeping the original backup"
+                )
+            # On a repeated in-place run the backup already holds the original
+            # (pre-clean) bytes; process the current file so an already-clean
+            # destination is not reported as modified against a stale .bak.
+            src = bak if created else args.path
+            dest = args.path
     else:
         src = args.path
         dest = args.output or cleaned_path(args.path)
@@ -188,7 +203,7 @@ def main() -> int:
             return 1
         is_changed = (
             (src.read_bytes() != dest.read_bytes())
-            if (src.is_file() and dest.is_file())
+            if (src != dest and src.is_file() and dest.is_file())
             else result_has_changes(result)
         )
         result = {"kind": "image", "changed": is_changed, **result}
@@ -224,7 +239,7 @@ def main() -> int:
             return 1
         is_changed = (
             (src.read_bytes() != dest.read_bytes())
-            if (src.is_file() and dest.is_file())
+            if (src != dest and src.is_file() and dest.is_file())
             else result_has_changes(result)
         )
         result = {"kind": "av", "changed": is_changed, **result}
@@ -261,7 +276,7 @@ def main() -> int:
         return 1
     is_changed = (
         (src.read_bytes() != dest.read_bytes())
-        if (src.is_file() and dest.is_file())
+        if (src != dest and src.is_file() and dest.is_file())
         else result_has_changes(result)
     )
     result = {"kind": "container", "changed": is_changed, **result}
