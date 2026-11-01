@@ -1193,6 +1193,20 @@ Third-party projects that wrap or complement this repository, listed for discove
 
 [Simple Unmark](https://simpleunmark.com) makes `watermarks-remover` available through a simple web app, currently for text only, with no installation or server setup. The service preserves privacy by default without retaining submitted content. Confidential mode runs the remover in a trusted execution environment (TEE), adding cryptographic verification and hardware-backed protection against infrastructure operators accessing content during processing. An independent project with an [open-source core](https://github.com/SimpleUnmark/confidential). See the [privacy architecture](https://github.com/SimpleUnmark/confidential/blob/main/docs/architecture.md) for guarantees and scope.
 
+### CleanMarks — self-hosted Docker web UI
+
+[CleanMarks](https://github.com/MobiusIndex/cleanmarks) is an independent, MIT-licensed web UI
+distributed as a single self-contained container (`indexmobius/cleanmarks` on Docker Hub): it
+embeds this project's official image as the engine, so `docker run` alone is enough, and the
+compose file in that repository is only an optional two-container split. A thin proxy calls the
+engine's `/clean` and `/inspect` service and adds drag-and-drop and folder upload with parallel
+batches, streaming passthrough for large files, before/after image comparison, ZIP export, and a
+Chinese/English interface. Layer B text rewriting is optional: it offers presets for 16 providers
+plus a custom OpenAI-compatible endpoint, and the provider key lives in the browser's
+`localStorage` — only when the user ticks "remember", so it survives a restart — and is forwarded
+per request by the local proxy, which never writes it to disk. It is a separate codebase and is
+not affiliated with this project; see its README for scope and limits.
+
 ### Adding a project
 
 To register a project here, open a PR adding a short entry — project name, what it wraps or adds, and a link to its own repository. Keep entries brief and factual; do not claim compatibility with, or endorsement by, this project. A listed project should build on or integrate this repository — for example, by calling its service or reusing its detection engine — rather than merely address the same problem independently. Please avoid names that start with or closely resemble `watermarks-remover` — look-alike names make it hard to tell which project is which.
