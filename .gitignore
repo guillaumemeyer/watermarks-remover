@@ -54,3 +54,7 @@ stealer/prompts/**
 posts.md
 *.cleaned.*
 *.bak
+
+# Human baseline corpus (built by fetch_human_corpus.py)
+benchmarks/corpus-human/
+.gutenberg-cache/

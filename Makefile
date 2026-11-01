@@ -2,7 +2,7 @@
 	smoke-ctrlregen bootstrap-ctrlregen docker-ctrlregen-build docker-ctrlregen-help \
 	smoke-markllm bootstrap-markllm docker-markllm-build docker-markllm-help \
 	smoke-markdiffusion bootstrap-markdiffusion docker-markdiffusion-build docker-markdiffusion-help \
-	bench-synthid-text bench-full bench-semantic \
+	bench-synthid-text bench-full bench-semantic bench-human-corpus bench-human-fpr \
 	docker-core-build docker-core-help serve compose-up compose-up-heavy compose-check \
 	install-skill install-claude-code-skill install-claude-code-text-skill \
 	install-claude-project-skill package-cowork-skill package-cowork-text-skill \
@@ -92,6 +92,15 @@ bench-full:
 
 # Install the semantic-divergence dependency into the MarkLLM venv and run with a
 # writable HF cache, so the sem-div column is never a silent '—'.
+# Detector false-positive rate on human-written text (no MarkLLM needed).
+# bench-human-corpus downloads ~4 MB of public-domain books from Project Gutenberg once.
+bench-human-corpus:
+	$(PYTHON) $(SCRIPTS)/fetch_human_corpus.py --cache-dir .gutenberg-cache
+
+bench-human-fpr:
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	$(PYTHON) $(SCRIPTS)/bench_human_fpr.py --out-dir out/bench-human-fpr $(if $(BACKENDS),$(foreach b,$(BACKENDS),--backend $(b)),)
+
 bench-semantic:
 	@if [ -z "$(MARKLLM_DIR)" ]; then \
 	  echo "bench-semantic skipped (set MARKLLM_DIR)"; \
