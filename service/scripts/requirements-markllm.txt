@@ -28,7 +28,7 @@ jieba==0.42.1
 tqdm==4.70.1
 matplotlib==3.11.1
 Cython==3.3.0
-numpy==2.5.3
+numpy==2.5.4
 scipy==1.18.1
 scikit-learn==1.9.0
 huggingface_hub==1.27.0
