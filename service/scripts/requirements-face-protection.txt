@@ -1,0 +1,5 @@
+# Optional CPU face detection/blending in the isolated CtrlRegen environment.
+# Python 3.11+; no diffusion weights are downloaded by this extra.
+numpy==2.4.6
+opencv-python-headless==5.0.0.93
+Pillow==12.3.0
