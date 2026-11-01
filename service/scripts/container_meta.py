@@ -1268,7 +1268,7 @@ def _latex_comment_class(line: str) -> tuple[bool, str, bool]:
     Aggressive: drop AI-provenance comment lines, % !TEX tooling comments, and
     Emacs/Vim modelines. Ordinary documentation comments survive.
     """
-    if _comment_is_provenance(line) or AI_META_NAME_RE.search(line):
+    if _comment_is_provenance(line):
         return True, "AI markers", True
     if _LATEX_MAGIC_COMMENT_RE.search(line):
         return True, "magic comment", False
