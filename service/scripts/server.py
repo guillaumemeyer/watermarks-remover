@@ -86,6 +86,7 @@ from text_watermark import (
     parse_watermark_options,
     resolve_timeout,
 )
+from typst_segments import TYPST_EXTS, compile_check, rewrite_prose, typst_metadata
 
 VERSION = os.environ.get("WATERMARKS_SERVER_VERSION", "dev")
 
@@ -540,7 +541,14 @@ _OPENAPI_PATHS: dict[str, dict[str, Any]] = {
                                             "(opt-in; may call vendor APIs and send text "
                                             "to them)"
                                         ),
-                                    )
+                                    ),
+                                    "typst_meta": _schema(
+                                        type="boolean",
+                                        description=(
+                                            "For .typ files, also report #set document(...) "
+                                            "title/author fields (read-only)"
+                                        ),
+                                    ),
                                 },
                                 "required": [],
                             }
@@ -1132,7 +1140,9 @@ def _suspicious_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]:
+def _inspect_payload(
+    data: bytes, name: str, run_detect: bool, typst_meta: bool = False
+) -> dict[str, Any]:
     """Inspect a file and return findings plus a structured suspicious report."""
     kind = classify_bytes(data, Path(name).suffix)
     if kind == "unknown":
@@ -1156,6 +1166,8 @@ def _inspect_payload(data: bytes, name: str, run_detect: bool) -> dict[str, Any]
             report["stylometry"] = s_rep.to_dict()
             if run_detect:
                 report["text_detectors"] = run_all_text_detectors(raw_text)
+            if typst_meta and Path(name).suffix.lower() in TYPST_EXTS:
+                report["typst_metadata"] = typst_metadata(raw_text)
         elif kind == "image":
             report = inspect_image(path, data=data).to_dict()
         elif kind == "av":
@@ -1262,12 +1274,26 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                     "default strategy (config/clean_strategy.json) or pass "
                     "options.strategy"
                 )
-            cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            typst_check = None
+            if Path(name).suffix.lower() in TYPST_EXTS:
+                layer_b = {}
+
+                def _typst_prose(prose: str) -> str:
+                    out, layer_b["strategy"] = _apply_layer_b(prose, strategy, options)
+                    return out
+
+                cleaned_a = cleaned
+                cleaned, layer_b["typst"] = rewrite_prose(cleaned_a, _typst_prose)
+                typst_check = compile_check(text, cleaned, src.parent)
+            else:
+                cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
             report: dict[str, Any] = {"kind": "text", "stats": stats, "length": len(cleaned)}
             report["layer_b"] = layer_b
+            if typst_check is not None:
+                report["typst_compile"] = typst_check
             if detector_reports:
                 report["text_detectors"] = detector_reports
         elif kind == "image":
@@ -1517,18 +1543,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_inspect(self, data: bytes, name: str, body: dict[str, Any]) -> None:
         run_detect = body.get("detect") is True
-        self._respond(HTTPStatus.OK, _inspect_payload(data, name, run_detect))
+        typst_meta = body.get("typst_meta") is True
+        self._respond(HTTPStatus.OK, _inspect_payload(data, name, run_detect, typst_meta))
 
     def _handle_inspect_batch(self, body: dict[str, Any]) -> None:
         items = _batch_items(body)
         run_detect = body.get("detect") is True
+        typst_meta = body.get("typst_meta") is True
         results = []
         for name, data, _options, error in items:
             if error is not None:
                 results.append({"name": name, "ok": False, "error": error})
                 continue
             try:
-                payload = _inspect_payload(data, name, run_detect)
+                payload = _inspect_payload(data, name, run_detect, typst_meta)
             except ValueError as e:
                 results.append({"name": name, "ok": False, "error": str(e)})
                 continue
