@@ -96,7 +96,12 @@ clients.
 
 `options` accepted by `/clean`: `nfkc`, `aggressive_homoglyphs` (text),
 `keep_non_ai_metadata`, `strip_all_metadata`, `remove_pixel` (`ctrlregen` |
-`diffusion`) (images and video), `also_layer_a_text` (containers), `deep_images`
+`diffusion`) (images and video), `also_layer_a_text` (containers: scrub the text
+body of the document, default `true`. On **text** the same option means "run
+Layer A again over the rewrite's output" and defaults to `false` — that is the
+"Layer A again" step of the multi-pass recipe below, done in the same request.
+Do not reach for a second `/clean` call instead: that re-enters the Layer B
+strategy and rewrites the prose again), `deep_images`
 (`auto` | `always` | `lossless` | `never`, PDF: how hard to chase metadata
 carried inside embedded images; anything else is rejected), `clean_attachments`
 (`auto` | `always` | `never`, PDF: how hard to chase metadata inside embedded
@@ -231,7 +236,7 @@ Multi-pass recipe:
 1. Layer A clean (via `/clean`)  
 2. Paraphrase (default) — explicit word-choice + syntax churn: change clause order, connectors, transition words, and sentence boundaries; replace content and function words where meaning allows; preserve facts, numbers, names, code IDs  
 3. Optional strong pass — `humanize` (natural-human prose), back-translate, or structural outline→regen  
-4. Layer A again on the result (`/clean`)  
+4. Layer A again on the result — `also_layer_a_text: true` on the text request, or a container `/clean`  
 5. Report residual risk honestly (short/highly predictable text = lower; long, high-entropy prose = higher)  
 
 **Code files:** Prefer formatter (`prettier`, `black`, `gofmt`, …) + Layer A. Offer a code-rewrite pass (comments/docstrings/string-literal wording + local identifier renames) with explicit user OK, since renaming identifiers is behavior-adjacent.
