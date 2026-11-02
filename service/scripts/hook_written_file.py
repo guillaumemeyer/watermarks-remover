@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from audit_lib import is_actionable, scan_file
 from common import MAX_INPUT_BYTES, eprint, subprocess_creationflags
+from text_unicode import describe_zwsp_joins
 
 CLEAN_FILE_PY = Path(__file__).resolve().parent / "clean_file.py"
 
@@ -220,6 +221,9 @@ def _describe(result: dict) -> str:
             parts.append(f"{removed} character(s) removed")
         if replaced:
             parts.append(f"{replaced} replaced")
+        joins = describe_zwsp_joins(stats)
+        if joins:
+            parts.append(joins)
         if parts:
             return ", ".join(parts)
     actions = result.get("actions")
