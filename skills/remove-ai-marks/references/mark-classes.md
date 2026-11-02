@@ -18,7 +18,8 @@ Invisible or near-invisible characters, exotic spaces, bidi controls, tag charac
 
 **Removal:** `clean_text.py` / Layer A — deterministic, verifiable.
 
-Load-bearing invisibles are preserved by default so real text is not corrupted: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts like Persian or Devanagari), flag tag-char sequences, same-script fillers/selectors (Mongolian free variation selectors after a Mongolian letter, Khmer inherent vowels after a Khmer consonant, Hangul jamo fillers in a partial syllable), orthographic Arabic/Syriac `Cf` marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat controls `U+13430`–`U+1343F`, Duployan shorthand controls `U+1BCA0`–`U+1BCA3`, musical beam/tie/slur/phrase controls `U+1D173`–`U+1D17A`). The same characters between plain ASCII stay carriers and are still stripped. Use `--strip-emoji-glue` for paranoid mode (strips all of them).
+Load-bearing invisibles are preserved by default so real text is not corrupted: emoji glue (ZWJ/VS after an emoji base), script joiners (ZWNJ/ZWJ inside complex scripts like Persian or Devanagari), flag tag-char sequences, same-script fillers/selectors (Mongolian free variation selectors after a Mongolian letter, Khmer inherent vowels after a Khmer consonant, Hangul jamo fillers in a partial syllable), orthographic Arabic/Syriac `Cf` marks, and visible-layout format controls next to their own script (Egyptian hieroglyph quadrat controls `U+13430`–`U+1343F`, Duployan shorthand controls `U+1BCA0`–`U+1BCA3`, musical beam/tie/slur/phrase controls `U+1D173`–`U+1D17A`). The same characters between plain ASCII stay carriers and are still stripped. Use `clean_text.py --strip-emoji-glue`, or `options.strip_emoji_glue` on
+`/clean`, for paranoid mode (strips all of them).
 
 Maps to Nature paper “edit-based watermarking.”
 

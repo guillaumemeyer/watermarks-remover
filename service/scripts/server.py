@@ -106,6 +106,7 @@ ALLOWED_CLEAN_OPTIONS = {
     "nfkc": bool,
     "aggressive_homoglyphs": bool,
     "normalize_spaces": bool,
+    "strip_emoji_glue": bool,
     "keep_non_ai_metadata": bool,
     "also_layer_a_text": bool,
     "remove_pixel": str,
@@ -1251,6 +1252,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 nfkc=bool(options.get("nfkc")),
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
+                strip_emoji_glue=bool(options.get("strip_emoji_glue")),
             )
             # Layer B is a required step for text cleaning: always apply the
             # default (or per-request) rewrite strategy and reject (400) when no
@@ -1395,6 +1397,7 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 deep_images=str(options.get("deep_images", "auto")),
                 clean_attachments=str(options.get("clean_attachments", DEFAULT_CLEAN_ATTACHMENTS)),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
+                strip_emoji_glue=bool(options.get("strip_emoji_glue")),
             )
             cleaned_bytes = dest.read_bytes()
             report = {"kind": "container", **result}
