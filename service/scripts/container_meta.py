@@ -2363,6 +2363,7 @@ def _scrub_text_runs(
     close_re: re.Pattern[str],
     *,
     normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[str, int, int]:
     """Run Layer A over the text runs delimited by open_re/close_re.
 
@@ -2387,7 +2388,9 @@ def _scrub_text_runs(
         inner = xml_text[oe:cs_]
         close_tag = xml_text[cs_:ce]
         new_inner, stats = clean_text(
-            _decode_xml_entities(inner), normalize_spaces=normalize_spaces
+            _decode_xml_entities(inner),
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         if not (stats["removed_count"] or stats["replaced_count"]):
             continue
@@ -2402,7 +2405,9 @@ def _scrub_text_runs(
     return "".join(out), removed, replaced
 
 
-def _scrub_docx_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[str, int, int]:
+def _scrub_docx_text(
+    xml_text: str, *, normalize_spaces: bool = True, strip_emoji_glue: bool = False
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<w:t>`` text runs of a DOCX part.
 
     Only ``w:t`` nodes are touched: field codes (``w:instrText``), run/paragraph
@@ -2415,27 +2420,39 @@ def _scrub_docx_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[s
         re.compile(r"<w:t\b[^>]*>"),
         re.compile(r"</w:t>"),
         normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
-def _scrub_xlsx_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[str, int, int]:
+def _scrub_xlsx_text(
+    xml_text: str, *, normalize_spaces: bool = True, strip_emoji_glue: bool = False
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<t>`` text elements of an XLSX part."""
     return _scrub_text_runs(
-        xml_text, re.compile(r"<t\b[^>]*>"), re.compile(r"</t>"), normalize_spaces=normalize_spaces
+        xml_text,
+        re.compile(r"<t\b[^>]*>"),
+        re.compile(r"</t>"),
+        normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
-def _scrub_pptx_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[str, int, int]:
+def _scrub_pptx_text(
+    xml_text: str, *, normalize_spaces: bool = True, strip_emoji_glue: bool = False
+) -> tuple[str, int, int]:
     """Run Layer A over the ``<a:t>`` text elements of a PPTX part."""
     return _scrub_text_runs(
         xml_text,
         re.compile(r"<a:t\b[^>]*>"),
         re.compile(r"</a:t>"),
         normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
-def _scrub_odt_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[str, int, int]:
+def _scrub_odt_text(
+    xml_text: str, *, normalize_spaces: bool = True, strip_emoji_glue: bool = False
+) -> tuple[str, int, int]:
     """Run Layer A over ODF paragraph text (``text:p`` content, incl. spans).
 
     ``text:span``/``text:tab``/``text:s`` children live inside the paragraph,
@@ -2464,7 +2481,9 @@ def _scrub_odt_text(xml_text: str, *, normalize_spaces: bool = True) -> tuple[st
                 new_parts.append(segment)
                 continue
             new_segment, stats = clean_text(
-                _decode_xml_entities(segment), normalize_spaces=normalize_spaces
+                _decode_xml_entities(segment),
+                normalize_spaces=normalize_spaces,
+                strip_emoji_glue=strip_emoji_glue,
             )
             if stats["removed_count"] or stats["replaced_count"]:
                 removed += stats["removed_count"]
@@ -2707,7 +2726,12 @@ def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[b
 
 
 def _scrub_ooxml_zip(
-    data: bytes, fmt: str, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    fmt: str,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     """Scrub provenance and Layer-A carriers from an OOXML zip container.
 
@@ -2840,21 +2864,33 @@ def _scrub_ooxml_zip(
             if also_layer_a_text and name.endswith(".xml"):
                 if fmt == "docx" and name.startswith("word/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_docx_text(text, normalize_spaces=normalize_spaces)
+                    new, r, rp = _scrub_docx_text(
+                        text,
+                        normalize_spaces=normalize_spaces,
+                        strip_emoji_glue=strip_emoji_glue,
+                    )
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
                         raw = new.encode("utf-8")
                 elif fmt == "xlsx" and name.startswith("xl/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_xlsx_text(text, normalize_spaces=normalize_spaces)
+                    new, r, rp = _scrub_xlsx_text(
+                        text,
+                        normalize_spaces=normalize_spaces,
+                        strip_emoji_glue=strip_emoji_glue,
+                    )
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
                         raw = new.encode("utf-8")
                 elif fmt == "pptx" and name.startswith("ppt/"):
                     text = raw.decode("utf-8", errors="replace")
-                    new, r, rp = _scrub_pptx_text(text, normalize_spaces=normalize_spaces)
+                    new, r, rp = _scrub_pptx_text(
+                        text,
+                        normalize_spaces=normalize_spaces,
+                        strip_emoji_glue=strip_emoji_glue,
+                    )
                     if r or rp:
                         layer_removed += r
                         layer_replaced += rp
@@ -2884,35 +2920,50 @@ def _scrub_ooxml_zip(
 
 
 def clean_docx(
-    data: bytes, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     return _scrub_ooxml_zip(
         data,
         "docx",
         also_layer_a_text=also_layer_a_text,
         normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
 def clean_xlsx(
-    data: bytes, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     return _scrub_ooxml_zip(
         data,
         "xlsx",
         also_layer_a_text=also_layer_a_text,
         normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
 def clean_pptx(
-    data: bytes, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     return _scrub_ooxml_zip(
         data,
         "pptx",
         also_layer_a_text=also_layer_a_text,
         normalize_spaces=normalize_spaces,
+        strip_emoji_glue=strip_emoji_glue,
     )
 
 
@@ -2952,7 +3003,11 @@ def inspect_odt(data: bytes) -> tuple[bool, bool, list[str], dict]:
 
 
 def clean_odt(
-    data: bytes, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     actions: list[str] = []
     budget = [0]
@@ -2999,7 +3054,11 @@ def clean_odt(
             # Layer A over the visible paragraph text of the body part.
             if also_layer_a_text and name == "content.xml":
                 text = raw.decode("utf-8", errors="replace")
-                new, r, rp = _scrub_odt_text(text, normalize_spaces=normalize_spaces)
+                new, r, rp = _scrub_odt_text(
+                    text,
+                    normalize_spaces=normalize_spaces,
+                    strip_emoji_glue=strip_emoji_glue,
+                )
                 if r or rp:
                     layer_removed += r
                     layer_replaced += rp
@@ -3222,7 +3281,11 @@ def _scrub_epub_opf(text: str) -> tuple[str, list[str]]:
 
 
 def clean_epub(
-    data: bytes, *, also_layer_a_text: bool = True, normalize_spaces: bool = True
+    data: bytes,
+    *,
+    also_layer_a_text: bool = True,
+    normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
 ) -> tuple[bytes, list[str]]:
     """Rewrite the EPUB: scrub OPF metadata, XHTML meta/JSON-LD, and Layer A.
 
@@ -3292,7 +3355,11 @@ def clean_epub(
                 if sub_actions and sub_actions != ["no HTML AI meta removed"]:
                     actions.append(f"{name}: {', '.join(sub_actions[:2])}")
                 if also_layer_a_text:
-                    text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
+                    text2, stats = clean_text(
+                        text,
+                        normalize_spaces=normalize_spaces,
+                        strip_emoji_glue=strip_emoji_glue,
+                    )
                     if stats["removed_count"] or stats["replaced_count"]:
                         layer_removed += stats["removed_count"]
                         layer_replaced += stats["replaced_count"]
@@ -4669,6 +4736,7 @@ def clean_container(
     also_layer_a_text: bool = True,
     deep_images: str = "auto",
     normalize_spaces: bool = True,
+    strip_emoji_glue: bool = False,
     clean_attachments: str = DEFAULT_CLEAN_ATTACHMENTS,
     _depth: int = 0,
 ) -> dict[str, Any]:
@@ -4707,34 +4775,53 @@ def clean_container(
         meta.update(meta_extra)
     elif fmt == "docx":
         cleaned, actions = clean_docx(
-            data, also_layer_a_text=also_layer_a_text, normalize_spaces=normalize_spaces
+            data,
+            also_layer_a_text=also_layer_a_text,
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "xlsx":
         cleaned, actions = clean_xlsx(
-            data, also_layer_a_text=also_layer_a_text, normalize_spaces=normalize_spaces
+            data,
+            also_layer_a_text=also_layer_a_text,
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "pptx":
         cleaned, actions = clean_pptx(
-            data, also_layer_a_text=also_layer_a_text, normalize_spaces=normalize_spaces
+            data,
+            also_layer_a_text=also_layer_a_text,
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "odt":
         cleaned, actions = clean_odt(
-            data, also_layer_a_text=also_layer_a_text, normalize_spaces=normalize_spaces
+            data,
+            also_layer_a_text=also_layer_a_text,
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "epub":
         cleaned, actions = clean_epub(
-            data, also_layer_a_text=also_layer_a_text, normalize_spaces=normalize_spaces
+            data,
+            also_layer_a_text=also_layer_a_text,
+            normalize_spaces=normalize_spaces,
+            strip_emoji_glue=strip_emoji_glue,
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "html":
         text = data.decode("utf-8", errors="surrogateescape")
         text, actions = clean_html(text)
         if also_layer_a_text:
-            text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
+            text2, stats = clean_text(
+                text,
+                normalize_spaces=normalize_spaces,
+                strip_emoji_glue=strip_emoji_glue,
+            )
             if stats["removed_count"] or stats["replaced_count"]:
                 actions.append(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
@@ -4745,7 +4832,11 @@ def clean_container(
         text = data.decode("utf-8", errors="surrogateescape")
         text, actions = clean_markdown(text)
         if also_layer_a_text:
-            text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
+            text2, stats = clean_text(
+                text,
+                normalize_spaces=normalize_spaces,
+                strip_emoji_glue=strip_emoji_glue,
+            )
             if stats["removed_count"] or stats["replaced_count"]:
                 actions.append(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
@@ -4756,7 +4847,11 @@ def clean_container(
         text = data.decode("utf-8", errors="surrogateescape")
         text, actions = clean_latex(text)
         if also_layer_a_text:
-            text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
+            text2, stats = clean_text(
+                text,
+                normalize_spaces=normalize_spaces,
+                strip_emoji_glue=strip_emoji_glue,
+            )
             if stats["removed_count"] or stats["replaced_count"]:
                 actions.append(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"

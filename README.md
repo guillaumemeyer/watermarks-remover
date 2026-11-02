@@ -479,6 +479,14 @@ space before `; : ! ?`) should pass `"options": {"normalize_spaces": false}`, th
 HTTP equivalent of `clean_text.py --no-normalize-spaces`. Invisible carriers are
 still removed; only the space rewrite is skipped.
 
+Emoji-heavy or complex-script text can take the CLI's paranoid pass over HTTP as
+well: `"options": {"strip_emoji_glue": true}` is the equivalent of
+`clean_text.py --strip-emoji-glue`. It also strips the load-bearing invisibles
+the default pass preserves — emoji glue, script joiners, flag tags, same-script
+fillers/selectors, orthographic `Cf` — so emoji ZWJ sequences and complex-script
+conjuncts lose their joiners by design. `false` (the default) leaves the current
+behaviour unchanged.
+
 Everything else is optional and lives in a `.env` file at the repo root. `docker compose` **auto-loads `.env`** and interpolates the `${VAR}` references in `compose.yaml` from it (shell exports win over `.env` if both are set).
 
 ```bash

@@ -95,6 +95,11 @@ OpenAPI tooling (client generators, Swagger UI, editors) instead of hand-rolling
 clients.
 
 `options` accepted by `/clean`: `nfkc`, `aggressive_homoglyphs` (text),
+`strip_emoji_glue` (text and containers: the paranoid pass, the HTTP equivalent
+of `clean_text.py --strip-emoji-glue`; it also removes the load-bearing
+invisibles the default keeps — emoji glue, script joiners, flag tags,
+same-script fillers/selectors, orthographic `Cf` — so it breaks emoji ZWJ
+sequences and complex-script conjuncts by design. Default `false`),
 `keep_non_ai_metadata`, `strip_all_metadata`, `remove_pixel` (`ctrlregen` |
 `diffusion`) (images and video), `also_layer_a_text` (containers), `deep_images`
 (`auto` | `always` | `lossless` | `never`, PDF: how hard to chase metadata
