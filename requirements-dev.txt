@@ -1,6 +1,6 @@
 # Dev/test dependencies for CI — exact pins (no drift).
 # Dependabot can bump these; keep them in sync with the local .venv.
-pytest==9.1.1
+pytest==9.2.0
 pip-audit==2.10.1
 openapi-spec-validator==0.9.0
 ruff==0.16.9
