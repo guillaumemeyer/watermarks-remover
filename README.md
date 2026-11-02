@@ -1047,9 +1047,38 @@ Layer B makes sense when you specifically want the premium model's **thinking an
 | WAV | RIFF `C2PA` / `LIST INFO` chunks, embedded `id3\x20` chunk | Drop chunks |
 | MP3 | ID3v2 frames (v2.3/v2.4 per-frame; v2.2 whole-tag) | Drop matched frames or whole tag |
 | FLAC | C2PA manifest in an ID3v2 `GEOB` frame | Drop the matched frame or whole ID3v2 tag |
+| Typst (`.typ`) | Layer A invisible Unicode; `--typst-meta` reports `#set document(...)` title/author | Layer A on the whole file; Layer B rewrites prose only (see below); optional `typst compile` check |
 
 FLAC support covers C2PA's standardized ID3v2 carrier. Native FLAC metadata blocks,
 Vorbis Comments, and waveform-domain watermarks are left untouched.
+
+#### Typst (`.typ`)
+
+Typst source is routed as text (`kind: text`), so the CLI, HTTP service (including the
+batch endpoints), the post-write hook and the pre-commit gate pick it up with no extra setup.
+
+- **Cleaned (Layer A):** invisible Unicode, exotic spaces, tag characters, as for any text
+  file, applied to the whole file, including strings and code. Load-bearing characters stay
+  (emoji ZWJ/variation selectors, Arabic/Hebrew directional marks). The `~` and `-?`
+  shorthands are plain ASCII and are never touched; a *literal* U+00A0 becomes a space and a
+  literal U+00AD is removed, as in other formats.
+- **Protected (Layer B):** the rewrite sees only markup-mode prose, one line at a time.
+  Comments, `#` code (including `#let/#set/#show/#import/#include`, calls, and their
+  `[content]` arguments), math, raw blocks, labels, references, URLs, escapes, and list or
+  heading markers are passed through byte for byte. A rewrite that adds a markup character,
+  a newline, or a line-start marker is discarded. Anything the scanner is unsure of, or any
+  unterminated construct, is protected through the end of the file.
+- **Compile check:** if `typst` is on `PATH`, `clean_file.py` compiles the original and the
+  cleaned file and fails (exit 1) when cleaning broke a file that compiled. Without `typst`
+  the check is reported as skipped. It is never required.
+- **Metadata:** `inspect_file.py FILE.typ --typst-meta` (HTTP `/inspect` body
+  `"typst_meta": true`) reports `#set document(...)` fields. Nothing is removed.
+- **Limits:** text inside `#fn[...]` content blocks is not rewritten; Layer B costs one
+  backend call per prose line; the compile check resolves relative imports from the file's
+  directory but not package or font state; `rewrite_text.py --backend print-prompt` prints a
+  prose-only prompt, not a file. `clean_text.py` / `inspect_text.py` stay format-agnostic
+  (they are vendored byte-for-byte into the lightweight skill); use `clean_file.py` /
+  `inspect_file.py` for Typst-specific behaviour.
 
 #### Why PDF needs qpdf, not just exiftool
 
@@ -1329,6 +1358,7 @@ v0.7.0 brings the Layer B statistical-mark rewrite into the `/clean` service its
 
 ### Unreleased
 
+- **Typst support**: route `.typ` as text; prose-only Layer B segmenter (`typst_segments.py`), optional `typst compile` safety check, and read-only `--typst-meta` for `#set document(...)` fields.
 - **OOXML add-in metadata**: inspect Office web-extension vendor properties and references in DOCX, XLSX, and PPTX, then remove their package parts and dangling relationships; refuse cleaning while a matching Office owner file exists.
 - Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
 - **OOXML container preservation**: keep `<AppVersion>` intact in `docProps/app.xml` during DOCX, XLSX, and PPTX metadata cleaning to satisfy ECMA-376 schema constraints and avoid Microsoft Word/Office "unreadable content" errors (#283)

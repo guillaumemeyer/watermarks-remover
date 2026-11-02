@@ -25,6 +25,7 @@ from container_meta import clean_container, detect_container_format, office_owne
 from format_dispatch import classify
 from image_meta import clean_image
 from text_unicode import clean_text
+from typst_segments import TYPST_EXTS, compile_check
 
 
 def main() -> int:
@@ -164,6 +165,11 @@ def main() -> int:
             "stats": stats,
             "changed": bool(stats["removed_count"] or stats["replaced_count"]),
         }
+        # Typst: verify the cleaned file still compiles (skipped without typst).
+        typst_check = None
+        if args.path.suffix.lower() in TYPST_EXTS:
+            typst_check = compile_check(text, cleaned, args.path.parent)
+            result["typst_compile"] = typst_check
         changed = stats["removed_count"] or stats["replaced_count"]
         should_report = not args.quiet or changed
         if args.json:
@@ -174,6 +180,12 @@ def main() -> int:
                 eprint(
                     f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
                 )
+        if typst_check is not None:
+            if typst_check["status"] == "skipped" and not args.quiet:
+                eprint(f"typst compile check skipped: {typst_check['reason']}")
+            elif typst_check["status"] == "regression":
+                eprint(f"typst compile check FAILED after cleaning: {typst_check['detail']}")
+                return 1
         return 0
 
     if kind == "image":

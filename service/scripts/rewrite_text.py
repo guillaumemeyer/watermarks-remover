@@ -72,6 +72,7 @@ from common import cleaned_path, eprint, read_text_input, write_text_output
 from humanize_pass import humanize_pass
 from text_detectors import GumbelTextDetector, MarkLLMTextDetector
 from text_unicode import clean_text
+from typst_segments import TYPST_EXTS, prose_text, rewrite_prose
 
 DEFAULT_MARKLLM_MODEL = "facebook/opt-1.3b"
 DEFAULT_CANDIDATES = 1
@@ -1379,14 +1380,15 @@ def main() -> int:
         except ValueError as e:
             eprint(f"error: {e}")
             return 2
-    try:
+
+    def run(chunk: str) -> tuple[str, dict]:
         if steps is not None:
             # Enforce the remote-endpoint policy for a strategy, same as the
             # single-tactic rewrite path.
             if any(t in LLM_TACTICS for t, _ in steps) and args.base_url:
                 _check_remote(args.base_url, allow_remote)
             result, info = apply_strategy(
-                text,
+                chunk,
                 steps,
                 backend=args.backend,
                 model=args.model,
@@ -1404,7 +1406,7 @@ def main() -> int:
             )
         else:
             result, info = rewrite(
-                text,
+                chunk,
                 backend=args.backend,
                 model=args.model,
                 base_url=args.base_url,
@@ -1433,6 +1435,32 @@ def main() -> int:
                 chunk_shuffle=args.chunk_shuffle,
                 noop_lex_floor=args.noop_lex_floor,
             )
+        return result, info
+
+    typst_input = args.path not in (None, "-") and Path(args.path).suffix.lower() in TYPST_EXTS
+    try:
+        if typst_input and args.backend == "print-prompt":
+            # A prompt is not a file: build it from the prose only, so syntax is
+            # never offered to a model, and do not splice it back into the .typ.
+            result, info = run(prose_text(text))
+            eprint("note: Typst input; prompt covers prose segments only (syntax omitted)")
+        elif typst_input:
+            infos: list[dict] = []
+
+            def prose_fn(chunk: str) -> str:
+                out_text, chunk_info = run(chunk)
+                infos.append(chunk_info)
+                return out_text
+
+            result, typst_stats = rewrite_prose(text, prose_fn)
+            info = {
+                **(infos[-1] if infos else {"backend": args.backend, "tactic": args.tactic}),
+                "input_chars": len(text),
+                "output_chars": len(result),
+                "typst": typst_stats,
+            }
+        else:
+            result, info = run(text)
     except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
         eprint(f"rewrite failed: {e}")
         return 1

@@ -55,6 +55,7 @@ COPY scripts/common.py /app/common.py
 COPY scripts/bench_synthid_text.py /app/bench_synthid_text.py
 COPY scripts/rewrite_text.py /app/rewrite_text.py
 COPY scripts/humanize_pass.py /app/humanize_pass.py
+COPY scripts/typst_segments.py /app/typst_segments.py
 COPY scripts/text_detectors.py /app/text_detectors.py
 COPY scripts/detect_gumbel.py /app/detect_gumbel.py
 COPY scripts/text_unicode.py /app/text_unicode.py

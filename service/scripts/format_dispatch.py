@@ -109,6 +109,9 @@ TEXT_EXTS = {
     ".adoc",
     ".asciidoc",
     ".org",
+    # Typst source (UTF-8 text). Layer A is syntax-blind; Layer B goes through
+    # typst_segments so rewrites only ever see prose (see that module).
+    ".typ",
     # Localization resources: where user-facing strings actually live. Text is
     # read as UTF-8, so this covers UTF-8 .po/.pot/.arb; UTF-16 .strings still
     # needs the BOM-aware decoder.

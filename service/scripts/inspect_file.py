@@ -22,6 +22,7 @@ from container_meta import inspect_container
 from format_dispatch import classify
 from image_meta import inspect_image
 from text_unicode import human_report, inspect_text
+from typst_segments import TYPST_EXTS, format_metadata, typst_metadata
 
 
 def main() -> int:
@@ -39,6 +40,11 @@ def main() -> int:
         "--force-text",
         action="store_true",
         help="Scan as text even when the bytes look like a binary container",
+    )
+    p.add_argument(
+        "--typst-meta",
+        action="store_true",
+        help="Typst (.typ): also report #set document(...) title/author fields (read-only)",
     )
     args = p.parse_args()
 
@@ -77,12 +83,20 @@ def main() -> int:
             advice=ROUTER_ADVICE,
         )
         report = inspect_text(text, aggressive=args.aggressive)
+        meta = (
+            typst_metadata(text)
+            if args.typst_meta and args.path.suffix.lower() in TYPST_EXTS
+            else None
+        )
         if args.json:
-            emit_json({"kind": "text", "path": file_label, **report.to_dict()})
+            extra = {"typst_metadata": meta} if meta is not None else {}
+            emit_json({"kind": "text", "path": file_label, **report.to_dict(), **extra})
         else:
             print(f"File: {file_label}")
             print("Kind: text")
             print(human_report(report))
+            if meta is not None:
+                print(format_metadata(meta))
         return 0 if report.suspicious_total == 0 else 1
 
     if kind == "image":
