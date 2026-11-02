@@ -2674,12 +2674,26 @@ def _prune_opf_manifest(raw: bytes, opf_name: str, dropped: set[str]) -> tuple[b
     removed_ids: set[str] = set()
 
     def _attr(tag: str, name: str) -> str:
-        m = re.search(rf'\b{name}\s*=\s*"([^"]*)"', tag, re.I)
-        return m.group(1) if m else ""
+        # XML allows single- or double-quoted attribute values; matching only
+        # double quotes reads a single-quoted href/id/idref as empty, so the
+        # dropped part's <item> and <itemref> survive and dangle (#130's
+        # relationship pruner had the same bug).
+        # Scan the attributes in order instead of searching the raw tag text:
+        # each quoted value is consumed whole, so text that merely looks like
+        # an attribute inside another value (data-note="x href='a.bin'") never
+        # matches, and a full-name comparison keeps a prefixed attribute
+        # (ext:href) from winning the leftmost match over the real one.
+        for m in re.finditer(r"([\w:.-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", tag):
+            if m.group(1).lower() == name.lower():
+                return m.group(2) if m.group(2) is not None else m.group(3)
+        return ""
 
     def _drop_item(m: re.Match[str]) -> str:
         tag = m.group(0)
-        href = _attr(tag, "href")
+        # Decode entities before resolving: an XML-escaped href (misc/a&amp;b.bin)
+        # names the same part as the archive member (misc/a&b.bin), the way the
+        # relationship pruner decodes targets (#394).
+        href = _decode_xml_entities(_attr(tag, "href"))
         if not href:
             return tag
         resolved = posixpath.normpath(posixpath.join(base, href))
