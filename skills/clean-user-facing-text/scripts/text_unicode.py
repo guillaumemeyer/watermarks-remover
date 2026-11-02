@@ -776,7 +776,7 @@ def _join_positions(text: str, offsets: list[int]) -> list[dict]:
 
 
 def describe_zwsp_joins(stats: dict) -> str | None:
-    """One-line review prompt for ZWSPs removed from between two letters or digits, or None."""
+    """One-line review prompt for ZWSPs removed from between two word characters, or None."""
     joins = stats.get("zwsp_word_joins") or []
     if not joins:
         return None
@@ -785,8 +785,8 @@ def describe_zwsp_joins(stats: dict) -> str | None:
     shown = ", ".join(str(line) for line in line_numbers[:5])
     more = "" if len(line_numbers) <= 5 else f" (+{len(line_numbers) - 5} more)"
     return (
-        f"{len(joins)} zero-width space(s) between letters or digits removed; "
-        f"check for joined words or numbers on line(s) {shown}{more}"
+        f"{len(joins)} zero-width space(s) between word characters removed; "
+        f"check for joined text on line(s) {shown}{more}"
     )
 
 

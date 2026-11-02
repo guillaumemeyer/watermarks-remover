@@ -180,15 +180,14 @@ def test_join_warning_names_each_line_once_in_order():
     _, stats = clean_text(text)
     assert [join["line"] for join in stats["zwsp_word_joins"]] == [1, 3, 3, 3, 5]
     assert describe_zwsp_joins(stats) == (
-        "5 zero-width space(s) between letters or digits removed; check for joined words or numbers on line(s) 1, 3, 5"
+        "5 zero-width space(s) between word characters removed; check for joined text on line(s) 1, 3, 5"
     )
 
 
 def test_join_warning_names_digit_joins_accurately():
     _, stats = clean_text(f"Call 555{ZWSP}0199 now\n")
     assert describe_zwsp_joins(stats) == (
-        "1 zero-width space(s) between letters or digits removed; "
-        "check for joined words or numbers on line(s) 1"
+        "1 zero-width space(s) between word characters removed; check for joined text on line(s) 1"
     )
 
 
@@ -221,8 +220,8 @@ def test_join_warning_truncates_after_five_distinct_lines():
     text = "".join(f"w{ZWSP}w w{ZWSP}w\n" for _ in range(7))
     _, stats = clean_text(text)
     assert describe_zwsp_joins(stats) == (
-        "14 zero-width space(s) between letters or digits removed; "
-        "check for joined words or numbers on line(s) 1, 2, 3, 4, 5 (+2 more)"
+        "14 zero-width space(s) between word characters removed; "
+        "check for joined text on line(s) 1, 2, 3, 4, 5 (+2 more)"
     )
 
 
@@ -259,7 +258,7 @@ def test_hook_reports_joined_words_for_every_text_route(tmp_path, name):
     target.write_text(f"Title\n\nsecond{ZWSP}line and a real {ZWSP}space\n", encoding="utf-8")
     message = _run_clean_hook(target)["systemMessage"]
     assert target.read_text(encoding="utf-8") == "Title\n\nsecondline and a real space\n"
-    assert "1 zero-width space(s) between letters or digits removed" in message
+    assert "1 zero-width space(s) between word characters removed" in message
     assert "line(s) 3" in message
 
 
@@ -268,8 +267,8 @@ def test_hook_lists_a_line_with_several_joins_once(tmp_path):
     target.write_text(f"Title\n\nDonau{ZWSP}dampf{ZWSP}schiff\nfoo{ZWSP}bar\n", encoding="utf-8")
     message = _run_clean_hook(target)["systemMessage"]
     assert target.read_text(encoding="utf-8") == "Title\n\nDonaudampfschiff\nfoobar\n"
-    assert "3 zero-width space(s) between letters or digits removed" in message
-    assert "check for joined words or numbers on line(s) 3, 4)" in message
+    assert "3 zero-width space(s) between word characters removed" in message
+    assert "check for joined text on line(s) 3, 4)" in message
 
 
 def test_hook_leaves_thai_markdown_untouched(tmp_path):
