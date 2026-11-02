@@ -14,4 +14,4 @@ scipy==1.18.1
 opencv-python==5.0.0.93
 PyWavelets==1.10.0
 scikit-learn==1.9.0
-Pillow==12.3.0
+Pillow==13.0.0

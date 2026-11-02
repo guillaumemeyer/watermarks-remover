@@ -28,5 +28,5 @@ safetensors==0.8.0
 # symbol that diffusers 0.27.2 still imports. Unpinned, pip resolves latest
 # (0.36.2) and the backend fails to import.
 huggingface_hub==0.24.0
-Pillow==12.3.0
+Pillow==13.0.0
 piexif==1.1.3
