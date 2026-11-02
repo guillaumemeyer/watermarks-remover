@@ -60,15 +60,38 @@ L10N_NAMES = (
     "app.properties",
 )
 
+# The same rule applied to what a project logs, ships and reads as data: a
+# carrier in a build log, a subtitle track or an XML resource is as invisible as
+# one in a .txt, and used to be reported as "unknown; not scanned".
+LOG_AND_DATA_NAMES = (
+    "build.log",
+    "talks.srt",
+    "captions.vtt",
+    "fix.diff",
+    "fix.patch",
+    "pom.xml",
+    "schema.xsd",
+    "index.xsl",
+    "app.csproj",
+    "main.tf",
+    "jobs.gradle",
+    "query.graphql",
+    "Main.fs",
+    "main.zig",
+    "solve.jl",
+)
 
-@pytest.mark.parametrize("name", SOURCE_NAMES + L10N_NAMES)
+ALL_NAMES = SOURCE_NAMES + L10N_NAMES + LOG_AND_DATA_NAMES
+
+
+@pytest.mark.parametrize("name", ALL_NAMES)
 def test_extension_classifies_as_text(tmp_path, name):
     path = tmp_path / name
     path.write_text(CARRIER, encoding="utf-8")
     assert classify(path) == "text", f"{name} still routes nowhere"
 
 
-@pytest.mark.parametrize("name", SOURCE_NAMES + L10N_NAMES)
+@pytest.mark.parametrize("name", ALL_NAMES)
 def test_same_carrier_same_verdict_as_txt(tmp_path, name):
     """Identical bytes must not be actionable as .txt and silent as .java."""
     control = tmp_path / "control.txt"
@@ -134,6 +157,13 @@ def test_utf16_handled_the_same_as_the_pre_existing_text_extensions(tmp_path):
         verdicts[name] = is_actionable(scan_file(path))
 
     assert len(set(verdicts.values())) == 1, verdicts
+
+
+def test_every_name_here_is_claimed_by_the_text_table():
+    """A name in these lists must resolve through the text table, not by luck."""
+    for name in ALL_NAMES:
+        suffix = Path(name).suffix.lower()
+        assert suffix in TEXT_EXTS, f"{suffix} ({name}) is not in TEXT_EXTS"
 
 
 def test_extension_tables_stay_disjoint():
