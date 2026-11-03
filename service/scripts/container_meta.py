@@ -2648,7 +2648,7 @@ def _prune_odt_manifest_entries(raw: bytes, dropped: set[str]) -> tuple[bytes, i
 
     def _drop(m: re.Match[str]) -> str:
         tag = m.group(0)
-        path = posixpath.normpath(_full_path(tag).lstrip("/"))
+        path = posixpath.normpath(_decode_xml_entities(_full_path(tag)).lstrip("/"))
         if path in ("", "."):
             return tag  # package root — never pruned
         if path in dropped:
