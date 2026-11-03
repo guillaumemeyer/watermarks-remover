@@ -183,11 +183,23 @@ def test_html_data_ai_inside_other_attribute_value_untouched():
     html = '<div title="keep data-ai=\'x\' here" data-ai="real">text</div>'
     _c2, has_ai, findings, _ = inspect_html(html)
     assert has_ai, findings
-    assert any("real" in f for f in findings), findings
+    assert findings == ['attr: data-ai="real"'], findings
     cleaned, _actions = clean_html(html)
     assert "keep data-ai='x' here" in cleaned
     assert 'data-ai="real"' not in cleaned
     assert "<div title=\"keep data-ai='x' here\">text</div>" in cleaned
+
+
+def test_html_unquoted_value_quote_is_literal():
+    # A quote inside an unquoted attribute value (e.g. title=it's) is literal
+    # text, not the opening of a quoted region; only quotes right after '='
+    # open one. Before the '=' guard this tag scanned as unterminated.
+    html = '<div title=it\'s data-ai="x">text</div>'
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert has_ai, findings
+    cleaned, _actions = clean_html(html)
+    assert 'data-ai="x"' not in cleaned
+    assert "<div title=it's>text</div>" in cleaned
 
 
 def test_html_data_ai_value_with_tag_close_char_stripped():

@@ -1653,8 +1653,10 @@ def _find_start_tag_end(text: str, start: int) -> int:
     """End index (exclusive) of the start tag at 'start', or -1 if unterminated.
 
     Quote-aware: a '>' inside a quoted attribute value does not end the tag.
-    Linear, like _find_tag_end, but reports unterminated tags instead of
-    swallowing the rest of the document.
+    A quote only opens a quoted region right after '=' (whitespace between
+    allowed), so quotes inside unquoted values stay literal. Linear, like
+    _find_tag_end, but reports unterminated tags instead of swallowing the
+    rest of the document.
     """
     i, n = start + 1, len(text)
     while i < n:
@@ -1662,6 +1664,13 @@ def _find_start_tag_end(text: str, start: int) -> int:
         if c == ">":
             return i + 1
         if c in "\"'":
+            j = i - 1
+            while j > start and text[j] in _HTML_SPACE:
+                j -= 1
+            if text[j] != "=":
+                # Literal quote inside an unquoted value: not a region opener.
+                i += 1
+                continue
             quote = c
             i += 1
             while i < n and text[i] != quote:
