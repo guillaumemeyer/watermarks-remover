@@ -881,7 +881,9 @@ def test_odt_prunes_xml_encoded_manifest_paths(quote, encoded, filename):
         'manifest:media-type="text/xml"/>'
     )
     kept = (
-        '<manifest:file-entry manifest:media-type="text/xml" '
+        '<manifest:file-entry xmlns:custom="urn:fixture" '
+        f"custom:full-path={quote}{encoded}{quote} "
+        'manifest:media-type="text/xml" '
         f"manifest:full-path={quote}kept&amp;meta.xml{quote}/>"
     )
     entries = [

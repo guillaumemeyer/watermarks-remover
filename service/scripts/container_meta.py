@@ -2643,7 +2643,7 @@ def _prune_odt_manifest_entries(raw: bytes, dropped: set[str]) -> tuple[bytes, i
 
     def _full_path(tag: str) -> str:
         # Same single/double-quote tolerance as _target_attr (#130).
-        m = re.search(r"\bfull-path\s*=\s*([\"'])(.*?)\1", tag, re.I)
+        m = re.search(r"\smanifest:full-path\s*=\s*([\"'])(.*?)\1", tag, re.I)
         return m.group(2) if m else ""
 
     def _drop(m: re.Match[str]) -> str:
