@@ -863,6 +863,54 @@ def test_odt_manifest_rewrite_is_attribute_order_independent():
         assert 'full-path="content.xml"' in manifest
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize(
+    ("encoded", "filename"),
+    [
+        ("custom&amp;meta.xml", "custom&meta.xml"),
+        ("custom&#38;meta.xml", "custom&meta.xml"),
+        ("custom&#x26;meta.xml", "custom&meta.xml"),
+        ("custom&#109;eta.xml", "custommeta.xml"),
+        ("custom&amp;amp;meta.xml", "custom&amp;meta.xml"),
+    ],
+)
+def test_odt_prunes_xml_encoded_manifest_paths(quote, encoded, filename):
+    """Manifest XML references name decoded ZIP members, not literal entity text."""
+    removed = (
+        f"<manifest:file-entry manifest:full-path={quote}{encoded}{quote} "
+        'manifest:media-type="text/xml"/>'
+    )
+    kept = (
+        '<manifest:file-entry xmlns:custom="urn:fixture" '
+        f"custom:full-path={quote}{encoded}{quote} "
+        'manifest:media-type="text/xml" '
+        f"manifest:full-path={quote}kept&amp;meta.xml{quote}/>"
+    )
+    entries = [
+        '<manifest:file-entry manifest:full-path="/"/>',
+        '<manifest:file-entry manifest:full-path="content.xml"/>',
+        removed,
+        kept,
+    ]
+    data = _make_odt_with_manifest(
+        entries,
+        extra_parts={
+            filename: b"<meta><creator>Anthropic Claude</creator></meta>",
+            "kept&meta.xml": b"<meta>ordinary metadata</meta>",
+        },
+    )
+
+    cleaned, actions = clean_odt(data)
+
+    with zipfile.ZipFile(io.BytesIO(data)) as original, zipfile.ZipFile(io.BytesIO(cleaned)) as zf:
+        assert filename not in zf.namelist()
+        assert zf.read("content.xml") == original.read("content.xml")
+        assert zf.read("kept&meta.xml") == original.read("kept&meta.xml")
+        manifest = zf.read("META-INF/manifest.xml").decode()
+        assert manifest == original.read("META-INF/manifest.xml").decode().replace(removed, "")
+    assert "drop manifest entries x1" in actions
+
+
 def test_odt_manifest_untouched_when_nothing_dropped():
     data = _make_odt_with_manifest(
         [
