@@ -237,8 +237,13 @@ def extract_sentences(text: str) -> list[str]:
         gap = m.group(0)
         nxt = raw_text[m.end() : m.end() + 1]
         # Paragraph breaks always split; a punctuation gap only when the
-        # next character starts a new sentence.
-        if "\n" in gap or _starts_sentence(nxt):
+        # next character starts a new sentence. "e.g." and "i.e." end in a
+        # period, so the capital they often introduce ("e.g. London") is a
+        # proper noun, not a new sentence.
+        prev = raw_text[max(0, m.start() - 4) : m.start()].lower()
+        if "\n" in gap or (
+            _starts_sentence(nxt) and not prev.endswith(("e.g.", "i.e."))
+        ):
             chunks.append(raw_text[last : m.start()])
             last = m.end()
     chunks.append(raw_text[last:])
