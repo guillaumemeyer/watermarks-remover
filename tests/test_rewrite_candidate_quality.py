@@ -1,3 +1,4 @@
+
 """Regression tests for Layer B rewrite candidate quality.
 
 Add to tests/test_rewrite_candidate_quality.py in watermarks-remover.
