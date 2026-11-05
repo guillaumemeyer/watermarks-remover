@@ -171,18 +171,42 @@ def _lexical_divergence(original: str, candidate: str) -> float:
     return 1.0 - len(ba & bb) / len(union)
 
 
-def _select_candidate(original: str, candidates: list[str]) -> tuple[str, list[float]]:
-    """Pick the most lexically diverged rewrite, gently guarding extreme length drift."""
-    scores: list[float] = []
-    for cand in candidates:
-        score = _lexical_divergence(original, cand)
-        if original:
-            ratio = len(cand) / len(original)
-            if ratio > 2.0 or ratio < 0.5:
-                score -= 0.15
-        scores.append(score)
-    best_idx = max(range(len(candidates)), key=lambda i: scores[i])
-    return candidates[best_idx], scores
+
+--- a/service/scripts/rewrite_text.py
++++ b/service/scripts/rewrite_text.py
+@@ -1,12 +1,26 @@
+ def _select_candidate(original: str, candidates: list[str]) -> tuple[str, list[float]]:
+-    """Pick the most lexically diverged rewrite, gently guarding extreme length drift."""
++    """Rank plausible rewrites; divergence alone is not a quality signal.
++
++    This guards against empty/truncated output scoring artificially well.
++    It does not verify content fidelity or vendor watermark removal.
++    """
+     scores: list[float] = []
++    eligible: list[int] = []
+     for cand in candidates:
+         score = _lexical_divergence(original, cand)
+-        if original:
+-            ratio = len(cand) / len(original)
+-            if ratio > 2.0 or ratio < 0.5:
+-                score -= 0.15
++        if not cand.strip():
++            scores.append(float('-inf'))
++            continue
++        # Hard-reject extreme length drift rather than merely penalizing it.
++        # No semantic equivalence is implied by passing this heuristic.
++        if original.strip():
++            ratio = len(cand.strip()) / len(original.strip())
++            if not (0.5 <= ratio <= 2.0):
++                scores.append(float('-inf'))
++                continue
+         scores.append(score)
+-    best_idx = max(range(len(candidates)), key=lambda i: scores[i])
++        eligible.append(len(scores) - 1)
++    if not eligible:
++        return original, scores
++    best_idx = max(eligible, key=lambda i: scores[i])
+     return candidates[best_idx], scores
 
 
 def _env(name: str, default: str | None = None) -> str | None:
