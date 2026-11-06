@@ -241,9 +241,7 @@ def extract_sentences(text: str) -> list[str]:
         # period, so the capital they often introduce ("e.g. London") is a
         # proper noun, not a new sentence.
         prev = raw_text[max(0, m.start() - 4) : m.start()].lower()
-        if "\n" in gap or (
-            _starts_sentence(nxt) and not prev.endswith(("e.g.", "i.e."))
-        ):
+        if "\n" in gap or (_starts_sentence(nxt) and not prev.endswith(("e.g.", "i.e."))):
             chunks.append(raw_text[last : m.start()])
             last = m.end()
     chunks.append(raw_text[last:])

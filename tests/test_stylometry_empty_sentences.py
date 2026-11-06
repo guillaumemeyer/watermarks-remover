@@ -50,10 +50,7 @@ def test_sentence_split_keeps_e_g_proper_noun_attached():
     # "e.g."/"i.e." take a period, so the capital that follows is usually a
     # proper noun ("e.g. London"), not a new sentence; paragraph breaks still
     # split. Mirrored in skills/clean-user-facing-text/scripts/score_stylometry.py.
-    text = (
-        "Try capitals, e.g. London in June. Second sentence here.\n\n"
-        "New paragraph starts."
-    )
+    text = "Try capitals, e.g. London in June. Second sentence here.\n\nNew paragraph starts."
     sentences = extract_sentences(text)
     assert "Try capitals, e.g. London in June." in sentences
     assert "Second sentence here." in sentences
