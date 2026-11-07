@@ -317,6 +317,10 @@ python3 "$SCRIPTS/inspect_image.py" shot.png
 python3 "$SCRIPTS/clean_image.py" shot.png -o shot.cleaned.png
 ```
 
+For text input, `clean_file.py --in-place` leaves an already-clean file untouched
+and creates no `.bak`. When cleaning changes the text, the destination and its
+`.bak` keep the original file's permission bits.
+
 ### Text tools refuse binary input
 
 `inspect_text.py`, `clean_text.py` and `rewrite_text.py` operate on text. Pointed

@@ -271,18 +271,26 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
     dest = Path(path)
     parent = dest.parent
     parent.mkdir(parents=True, exist_ok=True)
-    if dest.is_symlink():
-        raise OSError(f"refusing to write through symlink: {dest}")
+    try:
+        existing_stat = dest.lstat()
+    except FileNotFoundError:
+        existing_mode = None
+    else:
+        if stat.S_ISLNK(existing_stat.st_mode):
+            raise OSError(f"refusing to write through symlink: {dest}")
+        existing_mode = stat.S_IMODE(existing_stat.st_mode)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp", dir=str(parent))
     try:
-        # mkstemp creates 0600; restore the umask-default mode so outputs
-        # keep normal permissions. Windows has no fchmod and no POSIX mode
-        # bits to restore, so the call is skipped there.
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, _default_file_mode())
+        # mkstemp creates 0600. Preserve an existing destination's permission
+        # bits, or use the umask-default mode for a new file. Apply the mode
+        # after writing so the write cannot clear special permission bits.
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
+            # Windows has no fchmod or POSIX mode bits to restore.
+            if hasattr(os, "fchmod"):
+                mode = existing_mode if existing_mode is not None else _default_file_mode()
+                os.fchmod(f.fileno(), mode)
             os.fsync(f.fileno())
         os.replace(tmp_name, dest)
     except BaseException:
@@ -370,8 +378,12 @@ def backup_path(src: Path) -> tuple[Path, bool]:
         raise SystemExit(2) from None
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(src.read_bytes())
+            with src.open("rb") as source:
+                source_mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode)
+                f.write(source.read())
             f.flush()
+            if hasattr(os, "fchmod"):
+                os.fchmod(f.fileno(), source_mode)
             os.fsync(f.fileno())
     except OSError as e:
         with contextlib.suppress(OSError):

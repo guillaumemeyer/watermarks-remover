@@ -31,15 +31,14 @@ def test_clean_file_quiet_suppresses_untouched_text(tmp_path: Path):
     clean_txt = tmp_path / "clean.txt"
     clean_txt.write_text("Hello clean world!", encoding="utf-8")
 
-    # Standard run prints wrote line
+    # Standard run reports the clean file without rewriting it.
     r_normal = subprocess.run(
         [sys.executable, str(CLEAN_FILE_PY), str(clean_txt), "--in-place"],
         capture_output=True,
         text=True,
         check=True,
     )
-    assert "wrote" in r_normal.stderr
-    assert "removed=0" in r_normal.stderr
+    assert "already clean" in r_normal.stderr.lower()
 
     # Quiet run suppresses emission
     r_quiet = subprocess.run(
