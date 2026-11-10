@@ -33,6 +33,8 @@
 !/CONTRIBUTING.md
 !/LICENSE
 !/Makefile
+!/install_cli.py
+!/handoff.md
 !/pytest.ini
 !/README.md
 !/requirements-dev.txt
