@@ -289,6 +289,37 @@ Optional system tools (auto-used when present — preinstalled in the core Docke
 
 Core scripts need **Python 3.10+** stdlib only. Layer B model calls are optional.
 
+## Command line (from any directory)
+
+Install the local command once from this checkout (Python 3.10+, macOS/Linux):
+
+```bash
+python3 install_cli.py
+```
+
+The installer creates `~/.local/bin/watermarks-remover`. Ensure `~/.local/bin`
+is on your `PATH`, then run it from any directory:
+
+```bash
+watermarks-remover
+```
+
+Enter the input file path when prompted, then an output path, or press Enter
+for a sibling named `filename.cleaned.ext`. Paths entered at the prompts may
+contain spaces without shell quotes, and `~` expands to your home directory.
+
+You can also supply paths directly and use any existing cleaner options:
+
+```bash
+watermarks-remover "~/Downloads/my document.docx" -o "~/Downloads/my document_cleaned.docx"
+watermarks-remover draft.md --json
+watermarks-remover --help
+```
+
+Relative paths resolve from your current directory. The command uses this
+checkout and the Python interpreter used for installation; keep both available
+and rerun the installer if you move the checkout.
+
 ## Quick use (scripts)
 
 ```bash
@@ -1328,6 +1359,8 @@ v0.7.0 brings the Layer B statistical-mark rewrite into the `/clean` service its
 - Docs: voice-preserving rewrite guidance and protecting voice/accessibility choices; Ecosystem additions (ClaudeWatermarks, unmark-web) and a note discouraging look-alike names; arXiv 2402.14904 reference; Windows auto-start guide via Task Scheduler; portable base64 in curl examples; pin the vendored Cursor-skill text engine to the service copy (#96)
 
 ### Unreleased
+
+- Add an installable `watermarks-remover` command with interactive file prompts and existing cleaner options, runnable from any directory.
 
 - **OOXML add-in metadata**: inspect Office web-extension vendor properties and references in DOCX, XLSX, and PPTX, then remove their package parts and dangling relationships; refuse cleaning while a matching Office owner file exists.
 - Pre-commit clean hook (`watermarks-remover-clean` / `clean_staged.py`): use content digests (`SHA-256`) and active action detection so clean files on disk are recognized without demanding infinite re-staging (#173)
