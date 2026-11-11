@@ -478,7 +478,7 @@ def test_unreadable_text_file_is_a_failed_scan_not_clean(tmp_path, monkeypatch):
     def _deny(self, *args, **kwargs):
         raise OSError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "read_text", _deny)
+    monkeypatch.setattr(Path, "read_bytes", _deny)
 
     # scan_file raises instead of returning a confidence-less "clean" item.
     try:
