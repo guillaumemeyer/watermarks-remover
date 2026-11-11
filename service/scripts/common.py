@@ -154,6 +154,26 @@ def guard_binary(
     raise SystemExit(2)
 
 
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def decode_utf8_text(data: bytes) -> tuple[str, bool]:
+    """Decode UTF-8, treating a leading BOM as an encoding signature.
+
+    A file-level EF BB BF is not content: PowerShell 5.1, Excel CSV and some
+    .cmd/.resx workflows need it. ``utf-8-sig`` strips that signature so Layer A
+    does not report U+FEFF at offset 0. A U+FEFF later in the file stays in the
+    string for inspect/clean. The bool tells writers to put the signature back.
+    """
+    has_bom = data.startswith(UTF8_BOM)
+    return data.decode("utf-8-sig", errors="surrogateescape"), has_bom
+
+
+def encode_utf8_text(text: str, *, leading_bom: bool = False) -> bytes:
+    payload = text.encode("utf-8", errors="surrogateescape")
+    return UTF8_BOM + payload if leading_bom else payload
+
+
 def read_text_input(
     path: str | None,
     *,
@@ -291,8 +311,8 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
         raise
 
 
-def safe_write_text(path: str | Path, text: str) -> None:
-    safe_write_bytes(path, text.encode("utf-8", errors="surrogateescape"))
+def safe_write_text(path: str | Path, text: str, *, leading_bom: bool = False) -> None:
+    safe_write_bytes(path, encode_utf8_text(text, leading_bom=leading_bom))
 
 
 def is_mutating_action(action: str) -> bool:

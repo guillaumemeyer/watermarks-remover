@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from av_meta import inspect_av
-from common import CONFIDENCE_LEVELS, classify_finding_confidence
+from common import CONFIDENCE_LEVELS, classify_finding_confidence, decode_utf8_text
 from container_meta import inspect_container
 from format_dispatch import classify
 from image_meta import inspect_image
@@ -46,7 +46,7 @@ def scan_file(
 
     if kind == "text":
         try:
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
+            text, _ = decode_utf8_text(path.read_bytes())
         except OSError:
             # A file that could not be read is a FAILED SCAN, not a clean one:
             # the old swallowed-error item carried no confidence key, so
@@ -128,7 +128,7 @@ def scan_file(
 
     if check_stylometry and report.format in ("html", "markdown"):
         try:
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
+            text, _ = decode_utf8_text(path.read_bytes())
         except OSError:
             text = ""
         if text:
