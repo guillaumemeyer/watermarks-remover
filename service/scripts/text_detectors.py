@@ -25,11 +25,16 @@ Detectors:
   detection API. Reports unavailable until a public endpoint exists; the
   interface it must implement is already defined here.
 
-Vendor note (Aug 2026): Google retired SynthID text watermarking on the
-Generative Language API — API text output is no longer watermarked and
-DETECT_TEXT_WATERMARK is rejected on current (3.x) models. The former
-gemini-synthid-text detector was removed for this reason; a vendor seam can
-be re-added if Google exposes detection again (e.g. via Vertex AI).
+Vendor note: Google staff confirmed on its AI developers forum (Aug 19, 2026)
+that Generative Language API text output IS SynthID-watermarked, correcting
+the earlier Aug 5 statement; it also covers Google AI Studio and Antigravity.
+The project removed its Gemini detector and its WATERMARKS_GEMINI_* settings
+in Aug 2026 after reporting that its DETECT_TEXT_WATERMARK request was
+rejected. No public verification exists for hosted Gemini text: Google staff
+confirm there is no public or self-service tool for text from hosted Gemini
+API endpoints (Nov 16, 2026), and the public SynthID Detector portal accepts
+image, video, and audio only. A vendor seam can be re-added if Google offers a
+public text-detection endpoint (e.g. via Vertex AI).
 """
 
 from __future__ import annotations

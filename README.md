@@ -495,7 +495,7 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | Var | Reaches | Purpose |
 | --- | --- | --- |
 | `WATERMARKS_SERVER_API_KEY` | `wr-core` (via compose `environment`) | Require `Authorization: Bearer <key>` on the HTTP API |
-| `WATERMARKS_GEMINI_*` | — | Removed Aug 2026: Google retired SynthID text watermarking on the API (see `vendor-notes.md`) |
+| `WATERMARKS_GEMINI_*` | — | Removed Aug 2026: the project reported its `DETECT_TEXT_WATERMARK` request was rejected; no public Gemini text-detection endpoint to configure (see `vendor-notes.md`) |
 | `WATERMARKS_SYNTHID_SCORER_URL` | `wr-core` | Point core at the `wr-synthid-score` sidecar for SynthID image scoring (e.g. `http://wr-synthid-score:8766` under the heavy profile) |
 | `WATERMARKS_SYNTHID_SCORER_API_KEY` | `wr-core` + `wr-synthid-score` | Shared bearer key for the scorer sidecar (empty = no auth) |
 | `WATERMARKS_SYNTHID_TEXT_URL` | `wr-core` | Point core at the `wr-synthid-text` sidecar for SynthID text watermarking (e.g. `http://wr-synthid-text:8767` under the harness profile) |
@@ -745,9 +745,10 @@ new variants until an evaluation passes (a typical clean rewrite costs one
 attempt). The evaluator is chosen by priority:
 
 1. **MarkLLM** — same-config research detection, when `--markllm-scheme` is
-   passed (with `--markllm-dir`). A vendor-detector slot is reserved above
-   MarkLLM for Google's SynthID-text detector, which Google retired on its API
-   in Aug 2026 — a future vendor endpoint can plug in there.
+   passed (with `--markllm-dir`). The project removed its Gemini detector in
+   Aug 2026 after its `DETECT_TEXT_WATERMARK` request was rejected. A
+   vendor-detector slot ahead of MarkLLM remains available if Google offers a
+   public text-detection endpoint.
 2. **bigram-Jaccard lexical divergence** — when no detector is configured; no
    pass/fail verdict, so every attempt is generated and the most lexically
    diverged one is selected (the original behavior).
@@ -983,7 +984,7 @@ on the host instead. Model downloads still hit the HF hub on first run.
 | Channel | Claude | Gemini/SynthID | OpenAI | Open-LLM |
 | --- | --- | --- | --- | --- |
 | Unicode / edit-based text | Layer A | Layer A | Layer A | Layer A |
-| **Statistical sampling text** | Layer B best-effort (Claude seam when Anthropic's detection API ships) | Layer B best-effort (+ MarkLLM same-config harness; Google retired the vendor detector Aug 2026) | Layer B if present | Layer B best-effort + optional MarkLLM harness |
+| **Statistical sampling text** | Layer B best-effort (Claude seam when Anthropic's detection API ships) | Layer B best-effort (+ MarkLLM same-config harness; this project removed its Gemini detector in Aug 2026 — no public text-detection endpoint) | Layer B if present | Layer B best-effort + optional MarkLLM harness |
 | C2PA / file metadata | Yes (listed formats) | Yes when present | Yes when present | Yes when present |
 | Pixel image marks | Out of scope | Optional SynthID score + CtrlRegen removal (external); optional MarkDiffusion same-scheme detect + DiffusionPurification removal (external) | Out of scope | Optional CtrlRegen / MarkDiffusion removal (external) |
 | Training backdoors | Out of scope | Out of scope | Out of scope | Out of scope |

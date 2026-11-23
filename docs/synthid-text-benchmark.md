@@ -71,10 +71,12 @@ Prerequisites (all external, matching the repo's optional-harness model):
 API keys are read from the environment only (WATERMARKS_REWRITE_API_KEY),
 never argv. Non-loopback rewrite endpoints require --rewrite-allow-remote.
 
-No vendor tier: Google retired SynthID text watermarking on its API in
-Aug 2026 (DETECT_TEXT_WATERMARK is rejected on current models), so detection
-here is MarkLLM same-config only. A vendor tier can be re-added if Google
-exposes detection again (e.g. via Vertex AI).
+No vendor tier: no vendor detector for hosted Gemini text is public
+(API text output IS watermarked per Google's Aug 2026 forum correction, but
+Google's public SynthID Detector accepts images, video, and audio — not text;
+see `skills/remove-ai-marks/references/vendor-notes.md`), so detection here is
+MarkLLM same-config only. A vendor tier can be re-added if Google offers a
+public text-detection endpoint (e.g. via Vertex AI).
 
 **How variants map to rewrites:** each <tactic>:<candidates> variant runs
 the Layer B rewrite with candidates as the **variants per evaluation round**;
@@ -238,8 +240,10 @@ are not a constraint inside the container either.
   reproducible (fixed seeds, pinned MarkLLM commit, recorded commands).
 - Cannot claim: that Google's production SynthID-Text detector will fail.
   MarkLLM's SynthID is a research reimplementation with a different keying,
-  and Google retired text watermark detection on its API (Aug 2026), so no
-  vendor tier exists to verify against. Rewriting with a watermarked model
+  and no vendor detector for hosted Gemini text is public (the project
+  reported in August that its `DETECT_TEXT_WATERMARK` request was rejected;
+  Google's public SynthID Detector accepts images, video, and audio — not
+  text), so no vendor tier exists to verify against. Rewriting with a watermarked model
   can also re-stamp the text - run --restamp-control to check.
 
 ## Humanizer and cross-model hygiene

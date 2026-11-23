@@ -24,8 +24,9 @@ same-key replay (when --gumbel-key / WATERMARKS_GUMBEL_KEY is set), else
 MarkLLM same-config detection (--markllm-scheme), else, when no detector is
 configured, bigram-Jaccard lexical divergence (no pass/fail verdict — all
 attempts are generated and the most diverged one is selected). A vendor-detector
-seam (Google's retired SynthID-text detector) is reserved ahead of the
-same-config detectors should a vendor endpoint return.
+seam (the Gemini SynthID-text detector this project removed in Aug 2026) is
+reserved ahead of the
+same-config detectors should Google offer a public text-detection endpoint.
 
 The rewrite instruction comes from --tactic (a named prompt) and, when
 --rewrite-level is set, that prompt is further modulated by a numeric rewrite
@@ -266,8 +267,9 @@ def _pick_evaluator(
     Priority: keyed-Gumbel same-key replay (when the caller passed
     --gumbel-key) > MarkLLM same-config detection (--markllm-scheme) >
     bigram-Jaccard lexical divergence (fallback with no pass/fail verdict).
-    A vendor-detector seam (Google's SynthID-text detector, retired Aug 2026)
-    is reserved ahead of both should a vendor endpoint return; it only needs
+    A vendor-detector seam (the Gemini SynthID-text detector this project
+    removed in Aug 2026) is reserved ahead of both should Google offer a
+    public text-detection endpoint; it only needs
     available()/detect()/name per the TextDetector protocol in
     text_detectors.py.
     """
