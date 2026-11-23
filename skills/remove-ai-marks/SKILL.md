@@ -182,8 +182,9 @@ Or fold detection into the clean: `/clean` with
 `{"options": {"detect_before": true, "detect_after": true}}` returns
 `text_detectors.before/after` (text) or `synthid_before/synthid_after`
 (images) in the report. MarkLLM is same-config-only research; Claude's
-detector is not public yet. (Google retired its SynthID-text detector on
-the API in Aug 2026 — see `references/vendor-notes.md`.)
+detector is not public yet. (The project removed its Gemini detector in
+Aug 2026 after its `DETECT_TEXT_WATERMARK` request was rejected; no public
+text-detection endpoint exists — see `references/vendor-notes.md`.)
 
 ### 3. Deterministic clean (always for matching inputs)
 
@@ -368,7 +369,7 @@ Always state:
   plus `pdfsubject`/`pdfkeywords` and the PDF date fields), and drops `% !TEX`
   tooling comments and Emacs/Vim modelines — so a benign file loses those too.
 - Pixel-domain **image** watermarks can be removed optionally via the external CtrlRegen backend (`remove_pixel: ctrlregen`) or MarkDiffusion's DiffusionPurification (`remove_pixel: diffusion`); both are heavy, drift the image, and need the backend present (`/capabilities`). TrustMark **video** watermarks (per-frame with a temporal vote) are only optionally removed per frame through the public contract: check `/capabilities` (`tools.ffmpeg` and `pixel_backends.ctrlregen`/`diffusion`), then POST `/clean` on an `.mp4`/`.mov` with `options.remove_pixel` = `ctrlregen`\|`diffusion`. It is partial, re-encodes the video, and is not vendor-detector-verified. **Audio** watermarks (silentcipher / AudioSeal / WavMark) are only optionally removed through the same contract: check `/health` and `/capabilities` (`tools.ffmpeg`), then POST `/clean` on an audio name (`.wav`/`.mp3`/`.flac`) with `options.remove_audio_watermark` = true. This applies a destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) that changes the audio's pitch/tempo/quality/duration, returns bytes in an **M4A (AAC)** container regardless of the input container, and is not vendor-detector-verified.
-- The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; not an official Google detector. Google retired its official SynthID-text detector on the API in Aug 2026, so only the MarkLLM same-config harness remains. Claude's detection API has been announced but is not public yet — the `claude-text` detector reports unavailable until it ships.
+- The reverse-SynthID scorer is external, best-effort, and under a non-commercial Research License; not an official Google detector. The project removed its Gemini detector in Aug 2026 after its `DETECT_TEXT_WATERMARK` request was rejected (Google's public SynthID Detector accepts images, video, and audio — not text), so only the MarkLLM same-config harness remains. Claude's detection API has been announced but is not public yet — the `claude-text` detector reports unavailable until it ships.
 - **C2PA soft binding** (content watermark that re-links to a remote manifest after metadata strip) is out of scope — stripping hard-bound C2PA does not clear it.
 - Data-driven / backdoor model marks (trigger phrases) are out of scope.
 

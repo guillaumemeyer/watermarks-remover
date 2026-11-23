@@ -18,8 +18,9 @@ benchmark:
   4. Emit results.json / results.csv / report.md for sharing.
 
 Detection: same-config-only MarkLLM detection (reproducible,
-no vendor APIs). Google retired SynthID text watermarking on its API in
-Aug 2026, so no vendor tier exists.
+no vendor APIs). No vendor detector for hosted Gemini text is public
+(Google's SynthID Detector accepts images, video, and audio — not text), so
+no vendor tier exists.
 
 See docs/synthid-text-benchmark.md for how to run and share.
 
@@ -2582,7 +2583,7 @@ def render_markdown(
         "**Caveats:** MarkLLM's SynthID is an independent reimplementation under a "
         "config the benchmark controls — detection is only valid against the same "
         "config+keys, and it is **not** Google's production SynthID-Text keying. "
-        "(Google retired text watermarking on its API in Aug 2026, so no vendor "
+        "(No vendor detector for hosted Gemini text is public, so no vendor "
         "tier is available.) Rewriting with a watermarked model can re-stamp the "
         "text."
     )
@@ -2933,7 +2934,7 @@ def render_markdown_strategy(
     L.append("")
     L.append(
         "Same-config MarkLLM detection only; not Google's production SynthID-Text "
-        "keying (retired from the API Aug 2026). Human-likeness and semantic "
+        "keying (no public text-detection API to verify against). Human-likeness and semantic "
         "divergence are gauges, not proof of human authorship. Strategies are "
         "search results on this corpus/backend; re-confirm on a larger powered run."
     )
