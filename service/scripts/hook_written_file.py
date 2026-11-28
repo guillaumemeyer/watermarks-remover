@@ -24,6 +24,8 @@ after the tool has already run.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fnmatch
 import json
 import os
 import shlex
@@ -31,7 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -78,6 +80,111 @@ def resolve_mode(requested: str | None) -> str:
         eprint(f"watermarks-remover: unknown hook mode {value!r}; using {DEFAULT_MODE}")
         return DEFAULT_MODE
     return DEFAULT_MODE
+
+
+def _split_exclude_patterns(raw: str) -> list[str]:
+    """Split comma-, semicolon-, or newline-separated globs.
+
+    On POSIX, colons are also accepted as path-list separators while keeping
+    Windows drive prefixes (``C:/...``) intact.
+    """
+    parts: list[str] = []
+    for chunk in raw.replace(";", "\n").replace(",", "\n").splitlines():
+        item = chunk.strip()
+        if not item:
+            continue
+        if os.name != "nt" and ":" in item:
+            for raw_sub in item.split(":"):
+                sub = raw_sub.strip()
+                if sub:
+                    parts.append(sub)
+        else:
+            parts.append(item)
+    return parts
+
+
+def _is_claude_internal_path(resolved_path: Path) -> bool:
+    """True for Claude Code's agent-internal memory and plan directories."""
+    claude_dir_env = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    claude_dir = Path(claude_dir_env).expanduser() if claude_dir_env else Path.home() / ".claude"
+    try:
+        claude_resolved = claude_dir.resolve()
+    except OSError:
+        claude_resolved = claude_dir
+
+    plans_dir = claude_resolved / "plans"
+    if resolved_path == plans_dir or plans_dir in resolved_path.parents:
+        return True
+
+    projects_dir = claude_resolved / "projects"
+    if projects_dir in resolved_path.parents:
+        rel = resolved_path.relative_to(projects_dir)
+        # ~/.claude/projects/<project>/memory/...
+        if len(rel.parts) >= 3 and rel.parts[1] == "memory":
+            return True
+    return False
+
+
+def _parse_plugin_option_excludes(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    stripped = raw.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            loaded = json.loads(stripped)
+        except json.JSONDecodeError:
+            loaded = None
+        if isinstance(loaded, list):
+            return [str(item).strip() for item in loaded if str(item).strip()]
+    return _split_exclude_patterns(stripped)
+
+
+def resolve_excludes(requested: list[str] | None = None) -> list[str]:
+    """Collect user-configured exclude globs from CLI, plugin option, and env."""
+    patterns: list[str] = []
+    for item in requested or ():
+        patterns.extend(_split_exclude_patterns(item))
+    patterns.extend(
+        _parse_plugin_option_excludes(os.environ.get("CLAUDE_PLUGIN_OPTION_HOOK_EXCLUDE"))
+    )
+    env_raw = os.environ.get("WATERMARKS_HOOK_EXCLUDE", "")
+    if env_raw.strip():
+        patterns.extend(_split_exclude_patterns(env_raw))
+    return patterns
+
+
+def is_excluded(path: Path, patterns: list[str], cwd: Path | None = None) -> bool:
+    """Return True if *path* is an internal Claude file or matches any exclude glob."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    if _is_claude_internal_path(resolved):
+        return True
+
+    if not patterns:
+        return False
+
+    candidates = [path.as_posix(), resolved.as_posix()]
+    if cwd is not None:
+        for base in (cwd, cwd.resolve()):
+            with contextlib.suppress(ValueError):
+                candidates.append(resolved.relative_to(base).as_posix())
+    candidates.append(path.name)
+
+    for raw_pattern in patterns:
+        expanded = Path(raw_pattern).expanduser().as_posix()
+        norm = raw_pattern.replace("\\", "/")
+        for pat in {norm, expanded}:
+            if any(fnmatch.fnmatch(cand, pat) for cand in candidates):
+                return True
+            with contextlib.suppress(ValueError):
+                if PurePosixPath(resolved.as_posix()).match(pat):
+                    return True
+    return False
 
 
 def target_path(payload: dict) -> Path | None:
@@ -238,6 +345,15 @@ def main(argv: list[str] | None = None) -> int:
             "CLAUDE_PLUGIN_OPTION_HOOK_MODE, then WATERMARKS_HOOK_MODE, then check."
         ),
     )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help=(
+            "Glob pattern(s) of paths to skip. Can be passed multiple times. "
+            "Combines with CLAUDE_PLUGIN_OPTION_HOOK_EXCLUDE and WATERMARKS_HOOK_EXCLUDE."
+        ),
+    )
     args = parser.parse_args(argv)
 
     raw = sys.stdin.read()
@@ -255,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
     path = target_path(payload)
     if path is None or not path.is_file():
         return EXIT_QUIET
+
+    cwd_raw = payload.get("cwd")
+    cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw.strip() else None
+    if is_excluded(path, resolve_excludes(args.exclude), cwd=cwd):
+        return EXIT_QUIET
+
     if path.stat().st_size > MAX_INPUT_BYTES:
         return EXIT_QUIET
 

@@ -161,3 +161,10 @@ def test_hook_command_is_cross_platform(hooks):
     for entry in hooks["hooks"]["PostToolUse"]:
         for hook in entry["hooks"]:
             assert hook["command"] == "node"
+
+
+def test_hook_exclude_option_accepts_multiple_globs(plugin):
+    option = plugin["userConfig"]["hook_exclude"]
+    assert option["type"] == "string"
+    assert option["multiple"] is True
+    assert option["default"] == []
