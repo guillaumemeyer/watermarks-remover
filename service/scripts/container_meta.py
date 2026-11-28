@@ -1506,6 +1506,19 @@ _META_CONTENT_VALUE_RE = re.compile(
     re.I,
 )
 
+# A `data-ai*` value ends at the quote that opened it, not at either quote
+# character. `[^"']*` stopped at the first opposite quote, so
+# `data-ai-summary="Bob's review"` matched only up to `Bob'` and `clean_html`
+# deleted the truncated span, leaving `s review"` behind as stray markup inside
+# the tag (#415). Same tempered-dot class as _META_CONTENT_VALUE_RE above.
+#
+# The value is defined once and framed twice: matched for inspection, dropped
+# with its leading whitespace for cleaning. Two hand-copied patterns are how
+# this bug got in.
+_DATA_AI_ATTR_VALUE = r"""data-ai(?:[-_][\w-]*)?\s*=\s*(["'])(?:(?!\1).)*\1"""
+_DATA_AI_ATTR_RE = re.compile(rf"\b{_DATA_AI_ATTR_VALUE}", re.I)
+_DATA_AI_ATTR_DROP_RE = re.compile(rf"\s+{_DATA_AI_ATTR_VALUE}", re.I)
+
 
 def _meta_tag_is_ai(tag: str) -> bool:
     """True when an HTML <meta> tag is evidence of a provenance mark.
@@ -1678,7 +1691,7 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
     # data-ai* attributes. The optional separator group keeps the match to
     # the bare `data-ai` attribute or a `data-ai-*`/`data-ai_*` provenance name;
     # without it, `data-aid` / `data-airline` matched too (issue #395).
-    for m in re.finditer(r"\bdata-ai(?:[-_][\w-]*)?\s*=\s*[\"'][^\"']*[\"']", text, re.I):
+    for m in _DATA_AI_ATTR_RE.finditer(text):
         has_ai = True
         findings.append(f"attr: {m.group(0)[:80]}")
 
@@ -1730,7 +1743,7 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out, n = _drop_provenance_comments(out)
     if n:
         actions.append(f"drop AI provenance comment x{n}")
-    out2, n = re.subn(r"\sdata-ai(?:[-_][\w-]*)?\s*=\s*[\"'][^\"']*[\"']", "", out, flags=re.I)
+    out2, n = _DATA_AI_ATTR_DROP_RE.subn("", out)
     if n:
         actions.append(f"drop data-ai* attributes x{n}")
         out = out2
