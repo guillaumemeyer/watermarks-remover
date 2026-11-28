@@ -111,7 +111,11 @@ convention of check-by-default:
 
 Set the mode from the plugin's settings (**Hook mode** in `/plugin manage`,
 read by the hook as `CLAUDE_PLUGIN_OPTION_HOOK_MODE`), or with
-`WATERMARKS_HOOK_MODE=clean` in the environment. The hook command deliberately
+`WATERMARKS_HOOK_MODE=clean` in the environment. To skip specific paths, set
+**Hook excluded paths** (`CLAUDE_PLUGIN_OPTION_HOOK_EXCLUDE`),
+`WATERMARKS_HOOK_EXCLUDE` (comma- or colon-separated globs), or `--exclude`
+(repeatable); Claude Code's internal memory and plan folders
+(`~/.claude/projects/*/memory/` and `~/.claude/plans/`) are skipped by default. The hook command deliberately
 does **not** interpolate `${user_config.hook_mode}`: Claude Code refuses to run
 a hook that references an option the user has never opened `/plugin manage` to
 set — a declared `default` does not satisfy it — so interpolating it would mean

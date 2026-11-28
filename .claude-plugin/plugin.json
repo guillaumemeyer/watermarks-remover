@@ -27,6 +27,13 @@
       "title": "Hook mode",
       "description": "What the PostToolUse hook does with files the agent writes: 'check' reports provenance marks and leaves the file alone, 'clean' strips them in place.",
       "default": "check"
+    },
+    "hook_exclude": {
+      "type": "string",
+      "multiple": true,
+      "title": "Hook excluded paths",
+      "description": "Glob pattern(s) of file paths the PostToolUse hook skips (in addition to Claude Code memory/plan files).",
+      "default": []
     }
   }
 }
