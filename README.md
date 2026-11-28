@@ -319,7 +319,8 @@ python3 "$SCRIPTS/clean_image.py" shot.png -o shot.cleaned.png
 
 For text input, `clean_file.py --in-place` leaves an already-clean file untouched
 and creates no `.bak`. When cleaning changes the text, the destination and its
-`.bak` keep the original file's permission bits.
+`.bak` keep the original file's ordinary permission bits (`0o777`; special mode
+bits and extended attributes are not preserved).
 
 ### Text tools refuse binary input
 

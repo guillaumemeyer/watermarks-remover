@@ -278,12 +278,12 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
     else:
         if stat.S_ISLNK(existing_stat.st_mode):
             raise OSError(f"refusing to write through symlink: {dest}")
-        existing_mode = stat.S_IMODE(existing_stat.st_mode)
+        existing_mode = stat.S_IMODE(existing_stat.st_mode) & 0o777
     fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp", dir=str(parent))
     try:
-        # mkstemp creates 0600. Preserve an existing destination's permission
-        # bits, or use the umask-default mode for a new file. Apply the mode
-        # after writing so the write cannot clear special permission bits.
+        # mkstemp creates 0600. Preserve an existing destination's ordinary
+        # permission bits (0o777, clearing setuid/setgid/sticky), or use the
+        # umask-default mode for a new file. Apply the mode after writing.
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -379,7 +379,7 @@ def backup_path(src: Path) -> tuple[Path, bool]:
     try:
         with os.fdopen(fd, "wb") as f:
             with src.open("rb") as source:
-                source_mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode)
+                source_mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode) & 0o777
                 f.write(source.read())
             f.flush()
             if hasattr(os, "fchmod"):

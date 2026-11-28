@@ -201,6 +201,52 @@ def test_safe_write_bytes_preserves_existing_file_mode(tmp_path: Path):
     assert stat.S_IMODE(dest.stat().st_mode) == 0o755
 
 
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="requires POSIX file mode support")
+def test_safe_write_bytes_and_backup_path_clear_special_mode_bits(tmp_path: Path, monkeypatch):
+    dest = tmp_path / "tool.sh"
+    dest.write_bytes(b"before")
+    dest.chmod(0o1755)
+    real_stat = dest.lstat()
+    special_stat = os.stat_result(
+        (stat.S_IFREG | 0o6755, *real_stat[1:]),
+    )
+    orig_lstat = Path.lstat
+    orig_fstat = os.fstat
+    orig_fchmod = os.fchmod
+    recorded_modes: list[int] = []
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda self: special_stat if self == dest else orig_lstat(self),
+    )
+    monkeypatch.setattr(
+        os,
+        "fchmod",
+        lambda fd, mode: (recorded_modes.append(mode), orig_fchmod(fd, mode))[1],
+    )
+    safe_write_bytes(dest, b"after")
+    assert recorded_modes[-1] == 0o755
+    assert stat.S_IMODE(orig_lstat(dest).st_mode) == 0o755
+
+    dest_stat = orig_lstat(dest)
+    special_after_stat = os.stat_result(
+        (stat.S_IFREG | 0o6755, *dest_stat[1:]),
+    )
+
+    def _fake_fstat(fd: int):
+        st = orig_fstat(fd)
+        if st.st_dev == dest_stat.st_dev and st.st_ino == dest_stat.st_ino:
+            return special_after_stat
+        return st
+
+    monkeypatch.setattr(os, "fstat", _fake_fstat)
+    bak, created = backup_path(dest)
+    assert created is True
+    assert recorded_modes[-1] == 0o755
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o755
+
+
 def test_safe_write_bytes_without_fchmod(tmp_path: Path, monkeypatch):
     # os.fchmod is POSIX-only; on Windows the write must still go through.
     monkeypatch.delattr(os, "fchmod", raising=False)
