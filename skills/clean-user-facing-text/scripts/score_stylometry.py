@@ -138,7 +138,11 @@ AI_PHRASE_PATTERNS: tuple[tuple[str, str, float], ...] = (
     ),
 )
 
-RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+# Split on a terminator only when the next character opens a new sentence, so
+# "U.S.", "2.0" and "e.g." stay inside their own sentence. The unguarded
+# ``(?<=[.!?])\s+`` this replaces cut every abbreviation and decimal in half,
+# and the fragments were what burstiness measured (#417).
+RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])|\n+")
 RE_WORDS = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
 
@@ -214,7 +218,7 @@ def extract_sentences(text: str) -> list[str]:
     if not raw_text.strip():
         return []
 
-    chunks = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+    chunks = RE_SENTENCE_SPLIT.split(raw_text)
     sentences = [s.strip() for s in chunks if s.strip()]
     return sentences
 
