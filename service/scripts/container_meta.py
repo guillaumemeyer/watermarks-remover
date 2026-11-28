@@ -824,6 +824,7 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
         row_at = {i: n for n, (_k, _l, i) in enumerate(rows)}
         kept: list[str] = []
         dropping = False  # inside the nested block of a dropped top-level key
+        dropped_any = False
         is_agent = _is_agent_frontmatter([k for k, _l, _i in rows])
         for li, line in enumerate(block_lines):
             stripped = line.strip()
@@ -858,20 +859,27 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
             elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
                 actions.append(f"drop frontmatter key: {key}")
                 dropping = True
+                dropped_any = True
                 continue
             if named_value_is_ai(key, val):
                 actions.append(f"drop frontmatter key (value hit): {key}")
                 dropping = True
+                dropped_any = True
                 continue
 
             dropping = False
             kept.append(line)
-        new_block = "\n".join(kept).strip("\n")
-        if new_block:
-            out = f"---\n{new_block}\n---\n{body}"
+        if not dropped_any:
+            # Preserve the original frontmatter block byte-for-byte (including CRLF
+            # line endings) when no provenance field was removed.
+            out = text
         else:
-            out = body.lstrip("\n")
-            actions.append("removed empty frontmatter block")
+            new_block = "\n".join(kept).strip("\n")
+            if new_block:
+                out = f"---\n{new_block}\n---\n{body}"
+            else:
+                out = body.lstrip("\n")
+                actions.append("removed empty frontmatter block")
     else:
         out = text
 
