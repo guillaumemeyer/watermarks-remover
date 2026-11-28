@@ -136,13 +136,20 @@ def main() -> int:
         )
 
     if args.in_place:
-        bak, created = backup_path(args.path)
-        if not created and not args.quiet:
-            eprint(f"backup {bak} already exists from an earlier run; keeping the original backup")
-        # On a repeated in-place run the backup already holds the original
-        # (pre-clean) bytes; process the current file so an already-clean
-        # destination is not reported as modified against a stale .bak.
-        src = bak if created else args.path
+        if kind != "text":
+            bak, created = backup_path(args.path)
+            if not created and not args.quiet:
+                eprint(
+                    f"backup {bak} already exists from an earlier run; keeping the original backup"
+                )
+            # On a repeated in-place run the backup already holds the original
+            # (pre-clean) bytes; process the current file so an already-clean
+            # destination is not reported as modified against a stale .bak.
+            src = bak if created else args.path
+        else:
+            # Text cleaning is computed from the in-memory input below, so its
+            # backup can wait until the output is known to differ.
+            src = args.path
         dest = args.path
     else:
         src = args.path
@@ -155,25 +162,40 @@ def main() -> int:
             nfkc=args.nfkc,
             aggressive_homoglyphs=args.aggressive_homoglyphs,
         )
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        safe_write_text(dest, cleaned)
+        cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
+        changed = cleaned_bytes != raw
+        if args.in_place and not changed and args.path.is_symlink():
+            # Keep the write helper's symlink refusal even when this run has
+            # no content changes and therefore does not need a backup.
+            safe_write_text(dest, cleaned)
+        if args.in_place and changed:
+            bak, created = backup_path(args.path)
+            if not created and not args.quiet:
+                eprint(
+                    f"backup {bak} already exists from an earlier run; keeping the original backup"
+                )
+        if not (args.in_place and not changed):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            safe_write_text(dest, cleaned)
         result = {
             "kind": "text",
             "input": str(args.path),
             "output": str(dest),
             "stats": stats,
-            "changed": bool(stats["removed_count"] or stats["replaced_count"]),
+            "changed": changed,
         }
-        changed = stats["removed_count"] or stats["replaced_count"]
         should_report = not args.quiet or changed
         if args.json:
             if should_report:
                 print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
             if should_report:
-                eprint(
-                    f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
-                )
+                if args.in_place and not changed:
+                    eprint(f"already clean {dest}")
+                else:
+                    eprint(
+                        f"wrote {dest} removed={stats['removed_count']} replaced={stats['replaced_count']}"
+                    )
         return 0
 
     if kind == "image":

@@ -1,3 +1,5 @@
+import os
+import stat
 import struct
 import subprocess
 import sys
@@ -65,6 +67,73 @@ def test_bak_not_overwritten_on_second_in_place_run(tmp_path: Path):
         check=True,
     )
     assert bak.read_text(encoding="utf-8") == original_content
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="requires POSIX file mode support")
+def test_clean_file_in_place_noop_preserves_executable_mode_and_skips_backup(tmp_path: Path):
+    clean_file_py = SCRIPTS / "clean_file.py"
+    target = tmp_path / "s.sh"
+    content = b"#!/bin/sh\necho hi\n"
+    target.write_bytes(content)
+    target.chmod(0o755)
+    original_inode = target.stat().st_ino
+
+    proc = subprocess.run(
+        [sys.executable, str(clean_file_py), str(target), "--in-place"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert target.stat().st_ino == original_inode
+    assert target.read_bytes() == content
+    assert not target.with_suffix(".sh.bak").exists()
+    assert "already clean" in proc.stderr.lower()
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="requires POSIX file mode support")
+def test_clean_file_in_place_preserves_executable_mode_on_changes(tmp_path: Path):
+    clean_file_py = SCRIPTS / "clean_file.py"
+    target = tmp_path / "s.sh"
+    target.write_text("#!/bin/sh\necho hi\u200b\n", encoding="utf-8")
+    target.chmod(0o755)
+
+    subprocess.run(
+        [sys.executable, str(clean_file_py), str(target), "--in-place"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    bak = target.with_suffix(".sh.bak")
+    assert target.read_text(encoding="utf-8") == "#!/bin/sh\necho hi\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o755
+
+
+def test_clean_file_in_place_noop_refuses_symlink(tmp_path: Path):
+    clean_file_py = SCRIPTS / "clean_file.py"
+    target = tmp_path / "target.sh"
+    target.write_bytes(b"#!/bin/sh\necho hi\n")
+    target.chmod(0o755)
+    link = tmp_path / "link.sh"
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    proc = subprocess.run(
+        [sys.executable, str(clean_file_py), str(link), "--in-place"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "refusing to write through symlink" in proc.stderr.lower()
+    assert target.read_bytes() == b"#!/bin/sh\necho hi\n"
+    assert not link.with_suffix(".sh.bak").exists()
 
 
 @pytest.mark.parametrize(
