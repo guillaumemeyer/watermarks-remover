@@ -253,10 +253,24 @@ def write_text_output(text: str, path: str | None) -> None:
 
 
 def _default_file_mode() -> int:
-    """0o666 & ~umask — the mode a plain open() would produce."""
+    """0o666 & ~umask - the mode a plain open() would produce."""
     mask = os.umask(0)
     os.umask(mask)
     return 0o666 & ~mask
+
+
+def _replacement_mode(dest: Path) -> int:
+    """Mode for a file that replaces *dest*: keep its bits, else the umask default.
+
+    A file rewritten in place is the same file to everything downstream - git,
+    a shell that runs it, a package that ships it - so it has to keep its mode.
+    Reading the mode off the destination is what makes a 0755 script come back
+    0755 instead of being flattened to the umask default (#436).
+    """
+    try:
+        return stat.S_IMODE(dest.stat().st_mode)
+    except OSError:
+        return _default_file_mode()
 
 
 def safe_write_bytes(path: str | Path, data: bytes) -> None:
@@ -275,11 +289,12 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
         raise OSError(f"refusing to write through symlink: {dest}")
     fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp", dir=str(parent))
     try:
-        # mkstemp creates 0600; restore the umask-default mode so outputs
-        # keep normal permissions. Windows has no fchmod and no POSIX mode
+        # mkstemp creates 0600; restore the destination's own mode so a file
+        # rewritten in place keeps its bits, and fall back to the umask default
+        # for a file this call creates. Windows has no fchmod and no POSIX mode
         # bits to restore, so the call is skipped there.
         if hasattr(os, "fchmod"):
-            os.fchmod(fd, _default_file_mode())
+            os.fchmod(fd, _replacement_mode(dest))
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -359,8 +374,9 @@ def backup_path(src: Path) -> tuple[Path, bool]:
     if bak.exists() and not bak.is_file():
         eprint(f"cannot create backup {bak}: target exists and is not a regular file")
         raise SystemExit(2)
+    mode = _replacement_mode(src)
     try:
-        fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _default_file_mode())
+        fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     except FileExistsError:
         # Another process or a previous run reserved the backup first; it holds
         # the pristine copy, so write nothing through the existing path.
@@ -373,6 +389,10 @@ def backup_path(src: Path) -> tuple[Path, bool]:
             f.write(src.read_bytes())
             f.flush()
             os.fsync(f.fileno())
+        # The open() mode is filtered through the umask, so a 0755 source under
+        # umask 022 would land as 0755 only by luck and a 0700 one never would.
+        # chmod sets the bits exactly, so the pristine copy matches the original.
+        os.chmod(bak, mode)
     except OSError as e:
         with contextlib.suppress(OSError):
             os.unlink(bak)
