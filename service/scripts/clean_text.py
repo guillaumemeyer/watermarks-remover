@@ -14,7 +14,7 @@ from common import (
     backup_path,
     cleaned_path,
     eprint,
-    read_text_input,
+    read_text_input_with_bom,
     write_text_output,
 )
 from text_unicode import clean_text
@@ -59,7 +59,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    text = read_text_input(args.path, allow_binary=args.force_text)
+    text, has_bom = read_text_input_with_bom(args.path, allow_binary=args.force_text)
     cleaned, stats = clean_text(
         text,
         nfkc=args.nfkc,
@@ -82,7 +82,7 @@ def main() -> int:
     elif out is None and args.path not in (None, "-"):
         out = str(cleaned_path(Path(args.path)))
 
-    write_text_output(cleaned, out)
+    write_text_output(cleaned, out, bom=has_bom)
 
     if args.stats:
         eprint(json.dumps(stats, indent=2, ensure_ascii=False))

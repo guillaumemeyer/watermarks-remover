@@ -154,14 +154,36 @@ def guard_binary(
     raise SystemExit(2)
 
 
-def read_text_input(
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def decode_utf8_bom(data: bytes) -> tuple[str, bool]:
+    """Decode UTF-8 bytes with surrogateescape, separating a leading UTF-8 BOM.
+
+    A leading ``EF BB BF`` byte order mark is an encoding signature (required by
+    tools such as Windows PowerShell 5.1 and Excel CSV), not a Layer A ``U+FEFF``
+    carrier. Any ``U+FEFF`` after offset 0 stays in the decoded text so
+    inspectors and cleaners still report and strip embedded carriers.
+    """
+    if data.startswith(UTF8_BOM):
+        return data[len(UTF8_BOM) :].decode("utf-8", errors="surrogateescape"), True
+    return data.decode("utf-8", errors="surrogateescape"), False
+
+
+def encode_utf8_bom(text: str, *, bom: bool = False) -> bytes:
+    """Encode *text* as UTF-8 with surrogateescape, restoring a leading UTF-8 BOM if requested."""
+    raw = text.encode("utf-8", errors="surrogateescape")
+    return UTF8_BOM + raw if bom else raw
+
+
+def read_text_input_with_bom(
     path: str | None,
     *,
     allow_binary: bool = False,
     advice: tuple[str, ...] | None = None,
-) -> str:
+) -> tuple[str, bool]:
     if path is None or path == "-":
-        return _read_stdin_capped(allow_binary=allow_binary, advice=advice)
+        return _read_stdin_capped(allow_binary=allow_binary, advice=advice), False
     p = Path(path)
     try:
         st = p.stat()
@@ -189,7 +211,21 @@ def read_text_input(
         eprint(f"refusing input larger than {MAX_INPUT_BYTES} bytes: {path}")
         raise SystemExit(2)
     guard_binary(data, str(path), allow_binary=allow_binary, advice=advice)
-    return data.decode("utf-8", errors="surrogateescape")
+    return decode_utf8_bom(data)
+
+
+def read_text_input(
+    path: str | None,
+    *,
+    allow_binary: bool = False,
+    advice: tuple[str, ...] | None = None,
+) -> str:
+    text, _has_bom = read_text_input_with_bom(
+        path,
+        allow_binary=allow_binary,
+        advice=advice,
+    )
+    return text
 
 
 def _read_stdin_capped(
@@ -243,13 +279,13 @@ def _read_stdin_capped(
     return b"".join(chunks).decode("utf-8", errors="surrogateescape")
 
 
-def write_text_output(text: str, path: str | None) -> None:
+def write_text_output(text: str, path: str | None, *, bom: bool = False) -> None:
     if path is None or path == "-":
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
             sys.stdout.write("\n")
         return
-    safe_write_text(path, text)
+    safe_write_text(path, text, bom=bom)
 
 
 def _default_file_mode() -> int:
@@ -291,8 +327,8 @@ def safe_write_bytes(path: str | Path, data: bytes) -> None:
         raise
 
 
-def safe_write_text(path: str | Path, text: str) -> None:
-    safe_write_bytes(path, text.encode("utf-8", errors="surrogateescape"))
+def safe_write_text(path: str | Path, text: str, *, bom: bool = False) -> None:
+    safe_write_bytes(path, encode_utf8_bom(text, bom=bom))
 
 
 def is_mutating_action(action: str) -> bool:

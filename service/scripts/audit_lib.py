@@ -46,7 +46,7 @@ def scan_file(
 
     if kind == "text":
         try:
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
+            text = path.read_text(encoding="utf-8-sig", errors="surrogateescape")
         except OSError:
             # A file that could not be read is a FAILED SCAN, not a clean one:
             # the old swallowed-error item carried no confidence key, so
@@ -128,7 +128,7 @@ def scan_file(
 
     if check_stylometry and report.format in ("html", "markdown"):
         try:
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
+            text = path.read_text(encoding="utf-8-sig", errors="surrogateescape")
         except OSError:
             text = ""
         if text:

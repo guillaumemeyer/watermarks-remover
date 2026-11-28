@@ -28,6 +28,7 @@ from xml.etree import ElementTree as ET
 from common import (
     c2patool_probe_note,
     classify_finding_confidence,
+    decode_utf8_bom,
     safe_arg,
     safe_write_bytes,
     safe_write_text,
@@ -823,6 +824,7 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
         row_at = {i: n for n, (_k, _l, i) in enumerate(rows)}
         kept: list[str] = []
         dropping = False  # inside the nested block of a dropped top-level key
+        dropped_any = False
         is_agent = _is_agent_frontmatter([k for k, _l, _i in rows])
         for li, line in enumerate(block_lines):
             stripped = line.strip()
@@ -857,20 +859,27 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
             elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
                 actions.append(f"drop frontmatter key: {key}")
                 dropping = True
+                dropped_any = True
                 continue
             if named_value_is_ai(key, val):
                 actions.append(f"drop frontmatter key (value hit): {key}")
                 dropping = True
+                dropped_any = True
                 continue
 
             dropping = False
             kept.append(line)
-        new_block = "\n".join(kept).strip("\n")
-        if new_block:
-            out = f"---\n{new_block}\n---\n{body}"
+        if not dropped_any:
+            # Preserve the original frontmatter block byte-for-byte (including CRLF
+            # line endings) when no provenance field was removed.
+            out = text
         else:
-            out = body.lstrip("\n")
-            actions.append("removed empty frontmatter block")
+            new_block = "\n".join(kept).strip("\n")
+            if new_block:
+                out = f"---\n{new_block}\n---\n{body}"
+            else:
+                out = body.lstrip("\n")
+                actions.append("removed empty frontmatter block")
     else:
         out = text
 
@@ -4562,13 +4571,13 @@ def inspect_container(
     elif fmt == "html":
         # surrogateescape, not replace: clean_container() decodes the same way,
         # and U+FFFD substitutions would make the two disagree on the counts.
-        body = data.decode("utf-8", errors="surrogateescape")
+        body, _ = decode_utf8_bom(data)
         has_c2pa, has_ai, findings, details = inspect_html(body)
     elif fmt == "markdown":
-        body = data.decode("utf-8", errors="surrogateescape")
+        body, _ = decode_utf8_bom(data)
         has_c2pa, has_ai, findings, details = inspect_markdown(body)
     elif fmt == "latex":
-        body = data.decode("utf-8", errors="surrogateescape")
+        body, _ = decode_utf8_bom(data)
         has_c2pa, has_ai, findings, details = inspect_latex(body)
     else:
         has_c2pa, has_ai, findings = False, False, [f"unsupported container: {fmt}"]
@@ -4731,7 +4740,7 @@ def clean_container(
         )
         safe_write_bytes(dest, cleaned)
     elif fmt == "html":
-        text = data.decode("utf-8", errors="surrogateescape")
+        text, has_bom = decode_utf8_bom(data)
         text, actions = clean_html(text)
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
@@ -4740,9 +4749,9 @@ def clean_container(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
                 )
                 text = text2
-        safe_write_text(dest, text)
+        safe_write_text(dest, text, bom=has_bom)
     elif fmt == "markdown":
-        text = data.decode("utf-8", errors="surrogateescape")
+        text, has_bom = decode_utf8_bom(data)
         text, actions = clean_markdown(text)
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
@@ -4751,9 +4760,9 @@ def clean_container(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
                 )
                 text = text2
-        safe_write_text(dest, text)
+        safe_write_text(dest, text, bom=has_bom)
     elif fmt == "latex":
-        text = data.decode("utf-8", errors="surrogateescape")
+        text, has_bom = decode_utf8_bom(data)
         text, actions = clean_latex(text)
         if also_layer_a_text:
             text2, stats = clean_text(text, normalize_spaces=normalize_spaces)
@@ -4762,7 +4771,7 @@ def clean_container(
                     f"layer A text: removed={stats['removed_count']} replaced={stats['replaced_count']}"
                 )
                 text = text2
-        safe_write_text(dest, text)
+        safe_write_text(dest, text, bom=has_bom)
     else:
         raise ValueError(f"unsupported container format: {fmt}")
 

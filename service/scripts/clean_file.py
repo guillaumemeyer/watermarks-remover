@@ -16,6 +16,7 @@ from common import (
     ROUTER_ADVICE,
     backup_path,
     cleaned_path,
+    decode_utf8_bom,
     eprint,
     guard_binary,
     result_has_changes,
@@ -149,14 +150,14 @@ def main() -> int:
         dest = args.output or cleaned_path(args.path)
 
     if kind == "text":
-        text = raw.decode("utf-8", errors="surrogateescape")
+        text, has_bom = decode_utf8_bom(raw)
         cleaned, stats = clean_text(
             text,
             nfkc=args.nfkc,
             aggressive_homoglyphs=args.aggressive_homoglyphs,
         )
         dest.parent.mkdir(parents=True, exist_ok=True)
-        safe_write_text(dest, cleaned)
+        safe_write_text(dest, cleaned, bom=has_bom)
         result = {
             "kind": "text",
             "input": str(args.path),
